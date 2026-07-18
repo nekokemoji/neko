@@ -74,6 +74,8 @@ fi
 grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
+grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
+grep -Fq 'NEKO_RELEASE="1.0.4"' "$ROOT/versions.env"
 if grep -Eq '\|[[:space:]]*head([[:space:]]|$)' "$ROOT/install.sh"; then
   printf '安装器包含可能在 pipefail 下触发 SIGPIPE 的 head 管道。\n' >&2
   exit 1
@@ -87,6 +89,19 @@ cp "$ROOT/tests/fixtures/state.json" "$WORK/etc/state.json"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=example.com \
   -keyout "$WORK/var/lego/certificates/example.com.key" \
   -out "$WORK/var/lego/certificates/example.com.crt" >/dev/null 2>&1
+
+tar --exclude='neko/tests/run.*' -czf "$WORK/bootstrap-source.tar.gz" \
+  -C "$ROOT/.." neko
+mkdir -p "$WORK/bootstrap-work"
+NEKO_BOOTSTRAP_ARCHIVE="$WORK/bootstrap-source.tar.gz" \
+  NEKO_BOOTSTRAP_WORK_BASE="$WORK/bootstrap-work" NEKO_BOOTSTRAP_TEST_MODE=1 \
+  bash "$ROOT/bootstrap.sh" > "$WORK/bootstrap.log"
+grep -Fq '[测试] Bootstrap 已成功校验固定安装包。' "$WORK/bootstrap.log"
+if find "$WORK/bootstrap-work" -mindepth 1 -maxdepth 1 -name 'neko-bootstrap.*' | grep -q .; then
+  printf 'Bootstrap 没有清理临时源码目录。\n' >&2
+  exit 1
+fi
+
 NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO_USER=root \
   bash -c 'source "$1"; source "$2"; render_all' \
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"

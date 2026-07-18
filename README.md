@@ -4,6 +4,18 @@
 
 请只在你有权管理的服务器和网络中使用，并遵守所在地法律、服务商条款与组织政策。
 
+## 新手一行安装
+
+先把域名的 A 和/或 AAAA 记录直接解析到 VPS，并关闭 CDN/代理。然后登录 VPS，在终端只复制下面这一行：
+
+```bash
+TMP="$(mktemp)" && curl -fsSL --retry 4 https://raw.githubusercontent.com/nekokemoji/neko/main/bootstrap.sh -o "$TMP" && bash "$TMP"
+```
+
+引导脚本会下载固定的 Neko 1.0.4 源码，然后依次询问域名、ACME 邮箱和确认信息。它不会下载“最新”的 Xray、sing-box 等核心；核心版本和 SHA-256 仍由本项目的 `versions.env` 冻结。如果当前用户不是 root，引导脚本会在系统存在 `sudo` 时自动提权。
+
+一行安装入口本身可在执行前查看：[bootstrap.sh](bootstrap.sh)。不建议使用 `curl ... | bash`，因为管道会占用标准输入，导致域名和邮箱的交互询问无法正常读取键盘输入。
+
 ## 支持范围
 
 | 系统 | 版本 | 架构 | 网络 |
@@ -174,6 +186,7 @@ bash tests/run.sh
 ## 主要文件
 
 ```text
+bootstrap.sh               新手一行安装入口与固定源码下载
 install.sh                 安装、硬门槛、失败回滚
 versions.env               固定版本和双架构 SHA-256
 lib/common.sh              系统检测、随机端口、状态读取

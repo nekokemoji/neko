@@ -39,6 +39,7 @@ Hysteria 没有独立的“只校验”命令。测试将 `PATH` 指向空目录
 
 - ShellCheck 0.11.0：通过（排除动态 source、跨文件全局变量和 jq 单引号表达式等有意用法）。
 - Bash `-n`：全部脚本通过。
+- Bootstrap：离线打包并解压固定 1.0.4 源码，校验必需文件、版本标记和临时目录清理；交互安装仍由同一 `install.sh` 执行。
 - 随机端口分配：连续运行 50 轮；128 个 Hysteria2 端口与其余五个端口均无冲突。
 - Mihomo 1.19.28：实际执行 `mihomo -t`，6 节点配置通过。
 - Stash：按官方字段生成 5 节点配置；确认 Hysteria2 使用 `auth`、TUIC 使用 `version: 5`，且不存在 XHTTP。
