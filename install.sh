@@ -12,6 +12,7 @@ NEKO_LIBEXEC=/usr/local/libexec/neko
 NEKO_SYSTEMD=/etc/systemd/system
 NEKO_STATE=/etc/neko/state.json
 NEKO_USER=neko-proxy
+NEKO_WORK_BASE=/var/tmp
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
 # shellcheck source=versions.env
@@ -127,7 +128,7 @@ finish() {
   if (( rc != 0 && ROLLBACK_NEEDED == 1 )); then
     cleanup_failed_install
   fi
-  if [[ -n "$WORKDIR" && "$WORKDIR" == /tmp/neko-install.* && -d "$WORKDIR" ]]; then
+  if [[ -n "$WORKDIR" && "$WORKDIR" == /var/tmp/neko-install.* && -d "$WORKDIR" ]]; then
     rm -rf -- "$WORKDIR"
   fi
   exit "$rc"
@@ -163,6 +164,18 @@ collect_identity() {
     read -r -p "确认域名已直连本机且接受 ACME 服务条款？[y/N] " answer
     [[ "$answer" =~ ^[Yy]$ ]] || die "用户取消。"
   fi
+}
+
+assert_work_space() {
+  local available_kib minimum_kib=$((768 * 1024))
+
+  [[ -d "$NEKO_WORK_BASE" && -w "$NEKO_WORK_BASE" ]] || \
+    die "临时工作目录不可写：${NEKO_WORK_BASE}"
+  available_kib="$(df -Pk "$NEKO_WORK_BASE" | awk 'NR == 2 {print $4}')"
+  [[ "$available_kib" =~ ^[0-9]+$ ]] || \
+    die "无法读取 ${NEKO_WORK_BASE} 的剩余空间。"
+  (( available_kib >= minimum_kib )) || \
+    die "${NEKO_WORK_BASE} 剩余空间不足：至少需要 768 MiB，当前约 $((available_kib / 1024)) MiB。"
 }
 
 download_release_binaries() {
@@ -443,14 +456,15 @@ main() {
   # between two installers that passed the initial read-only check.
   assert_clean_target
   install_dependencies
-  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd
+  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk
 
   exec 9>/run/lock/neko-install.lock
   flock -n 9 || die "另一个 Neko 安装进程正在运行。"
   assert_clean_target
   assert_public_ports_free
+  assert_work_space
 
-  WORKDIR="$(mktemp -d /tmp/neko-install.XXXXXX)"
+  WORKDIR="$(mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX")"
   download_release_binaries
   issue_initial_certificate
   create_service_user_and_dirs

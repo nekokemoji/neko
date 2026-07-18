@@ -49,6 +49,7 @@ REALITY 本身没有 PEM 证书字段。这里让它的 `target` 指向 `127.0.0
 3. 关闭该记录的 CDN、橙云或反向代理。随机协议端口不能穿过普通 HTTP CDN。
 4. 在云厂商安全组中先放行 TCP 80 和 443；HTTP-01 只能通过 80 端口完成，见 [Let’s Encrypt 挑战类型说明](https://letsencrypt.org/docs/challenge-types/)。
 5. 确保 TCP 80、443、8443 未被已有服务占用。安装器发现占用会拒绝覆盖。
+6. 确保 `/var/tmp` 所在文件系统至少有 768 MiB 可用空间。安装器会在这里下载并解压冻结核心，完成或失败后都会清理；这可避开部分 VPS 只有几百 MiB 的 `/tmp` 内存盘。
 
 域名解析只是第一道检查。真正的硬门槛是 Let’s Encrypt 从公网完成 HTTP-01 验证并签发证书；失败后安装会停止并回滚本项目已创建的文件。
 
@@ -178,4 +179,3 @@ tests/                     可重复测试
 - [TUIC v5 规范与实现列表](https://github.com/tuic-protocol/tuic)
 - [Caddy 自定义 TLS 证书](https://caddyserver.com/docs/caddyfile/directives/tls)
 - [Let’s Encrypt 证书说明](https://letsencrypt.org/docs/faq/)
-

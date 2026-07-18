@@ -58,6 +58,9 @@ if grep -R "releases/latest\|/latest/download" "$ROOT/install.sh" "$ROOT/tests/f
   printf '发现未冻结的 latest 下载地址。\n' >&2
   exit 1
 fi
+grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
+grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
+grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 
 printf '[4/7] 渲染服务端配置与客户端订阅……\n'
 WORK="$(mktemp -d "$ROOT/tests/run.XXXXXX")"
