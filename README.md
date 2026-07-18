@@ -91,9 +91,9 @@ sudo jq '.ports' /etc/neko/state.json
 |---|---:|---|
 | Mihomo 内核应用 | 6 | 全部协议 |
 | Stash | 5 | 除 VLESS + REALITY + XHTTP 外的全部协议 |
-| Shadowrocket | 6 | 全部协议 |
+| Shadowrocket 2.2.90 | 6 | 全部协议，使用其新版 Clash/YAML 结构化解析路径 |
 
-Mihomo 格式依据其 [Hysteria2](https://wiki.metacubex.one/en/config/proxies/hysteria2/)、[TUIC](https://wiki.metacubex.one/en/config/proxies/tuic/)、[AnyTLS](https://wiki.metacubex.one/en/config/proxies/anytls/)、[VLESS](https://wiki.metacubex.one/en/config/proxies/vless/) 与 [XHTTP 传输](https://wiki.metacubex.one/en/config/proxies/transport/) 文档生成。Stash 使用单独的字段映射，其中 Hysteria2 使用 `auth`、TUIC 明确使用 v5，并根据 [Stash 协议文档](https://stash.wiki/en/proxy-protocols/proxy-types) 排除尚未支持的 XHTTP。Shadowrocket 的协议可用性以 [Apple App Store 版本记录](https://apps.apple.com/us/app/shadowrocket/id932747118) 为准。
+Mihomo 格式依据其 [Hysteria2](https://wiki.metacubex.one/en/config/proxies/hysteria2/)、[TUIC](https://wiki.metacubex.one/en/config/proxies/tuic/)、[AnyTLS](https://wiki.metacubex.one/en/config/proxies/anytls/)、[VLESS](https://wiki.metacubex.one/en/config/proxies/vless/) 与 [XHTTP 传输](https://wiki.metacubex.one/en/config/proxies/transport/) 文档生成。Stash 使用单独的字段映射，其中 Hysteria2 使用 `auth`、TUIC 明确使用 v5，并根据 [Stash 协议文档](https://stash.wiki/en/proxy-protocols/proxy-types) 排除尚未支持的 XHTTP。Shadowrocket 使用单独的结构化 Clash/YAML 订阅，显式提供 `port-range`、TUIC v5、REALITY 与 `xhttp-opts`；对应能力以 [Apple App Store 版本记录](https://apps.apple.com/us/app/shadowrocket/id932747118) 为准。
 
 订阅令牌等同于密码，不要公开。终端面板的重置功能会生成新令牌、重写 Caddy 路由并重启服务，旧 URL 随即返回 404。
 

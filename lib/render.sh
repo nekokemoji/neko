@@ -222,7 +222,7 @@ https://${DOMAIN} {
 	handle /${SUB_TOKEN}/shadowrocket.txt {
 		rewrite * /shadowrocket.txt
 		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/plain; charset=utf-8"
+		header Content-Type "text/yaml; charset=utf-8"
 		file_server
 	}
 	handle / {
@@ -437,34 +437,90 @@ EOF
   } | write_atomic "$target"
 }
 
-base64url_no_pad() {
-  base64 -w 0 | tr '+/' '-_' | tr -d '='
-}
-
-uri_fragment() {
-  local value="$1"
-  value="${value//%/%25}"
-  value="${value//#/%23}"
-  value="${value// /%20}"
-  printf '%s' "$value"
-}
-
 render_shadowrocket() {
-  local ss_userinfo xhttp_path_encoded raw
-  ss_userinfo="$(printf '%s' "2022-blake3-aes-128-gcm:${SS_PASSWORD}" | base64url_no_pad)"
-  xhttp_path_encoded="$(urlencode_path "$XHTTP_PATH")"
-
-  raw="$(mktemp "${NEKO_SUB_DIR}/shadowrocket.raw.XXXXXX")"
-  cat > "$raw" <<EOF
-hysteria2://${HY2_PASSWORD}@${DOMAIN}:${HY2_START}-${HY2_END}/?sni=${DOMAIN}&obfs=salamander&obfs-password=${HY2_OBFS_PASSWORD}&insecure=0#$(uri_fragment 'HY2')
-tuic://${TUIC_UUID}:${TUIC_PASSWORD}@${DOMAIN}:${TUIC_PORT}?congestion_control=bbr&alpn=h3&sni=${DOMAIN}&udp_relay_mode=native#$(uri_fragment 'TUIC-v5')
-ss://${ss_userinfo}@${DOMAIN}:${SS_PORT}#$(uri_fragment 'SS2022')
-anytls://${ANYTLS_PASSWORD}@${DOMAIN}:${ANYTLS_PORT}/?sni=${DOMAIN}&insecure=0#$(uri_fragment 'AnyTLS')
-vless://${VISION_UUID}@${DOMAIN}:${VISION_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${DOMAIN}&fp=chrome&pbk=${VISION_PUBLIC_KEY}&sid=${VISION_SHORT_ID}&type=tcp#$(uri_fragment 'VLESS-Reality-Vision')
-vless://${XHTTP_UUID}@${DOMAIN}:${XHTTP_PORT}?encryption=none&security=reality&sni=${DOMAIN}&fp=chrome&pbk=${XHTTP_PUBLIC_KEY}&sid=${XHTTP_SHORT_ID}&type=xhttp&path=${xhttp_path_encoded}&host=${DOMAIN}&mode=stream-one#$(uri_fragment 'VLESS-Reality-XHTTP')
+  # Shadowrocket 2.2.87+ explicitly supports structured Clash port-range and
+  # XHTTP options.  A dedicated YAML feed avoids lossy per-URI imports for
+  # modern protocols while keeping all six requested nodes in one URL.
+  write_atomic "${NEKO_SUB_DIR}/shadowrocket.txt" <<EOF
+proxies:
+  - name: "HY2"
+    type: hysteria2
+    server: "${DOMAIN}"
+    port: ${HY2_START}
+    ports: "${HY2_START}-${HY2_END}"
+    port-range: "${HY2_START}-${HY2_END}"
+    hop-interval: 30
+    password: "${HY2_PASSWORD}"
+    obfs: salamander
+    obfs-password: "${HY2_OBFS_PASSWORD}"
+    sni: "${DOMAIN}"
+    alpn: [h3]
+    skip-cert-verify: false
+  - name: "TUIC-v5"
+    type: tuic
+    version: 5
+    server: "${DOMAIN}"
+    port: ${TUIC_PORT}
+    uuid: "${TUIC_UUID}"
+    password: "${TUIC_PASSWORD}"
+    sni: "${DOMAIN}"
+    alpn: [h3]
+    udp-relay-mode: native
+    congestion-controller: bbr
+    skip-cert-verify: false
+  - name: "SS2022"
+    type: ss
+    server: "${DOMAIN}"
+    port: ${SS_PORT}
+    cipher: "2022-blake3-aes-128-gcm"
+    password: "${SS_PASSWORD}"
+    udp: true
+  - name: "AnyTLS"
+    type: anytls
+    server: "${DOMAIN}"
+    port: ${ANYTLS_PORT}
+    password: "${ANYTLS_PASSWORD}"
+    sni: "${DOMAIN}"
+    alpn: [h2, http/1.1]
+    client-fingerprint: chrome
+    skip-cert-verify: false
+  - name: "VLESS-Reality-Vision"
+    type: vless
+    server: "${DOMAIN}"
+    port: ${VISION_PORT}
+    uuid: "${VISION_UUID}"
+    encryption: ""
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: "${DOMAIN}"
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: "${VISION_PUBLIC_KEY}"
+      short-id: "${VISION_SHORT_ID}"
+    skip-cert-verify: false
+  - name: "VLESS-Reality-XHTTP"
+    type: vless
+    server: "${DOMAIN}"
+    port: ${XHTTP_PORT}
+    uuid: "${XHTTP_UUID}"
+    encryption: ""
+    network: xhttp
+    tls: true
+    udp: true
+    alpn: [h2]
+    servername: "${DOMAIN}"
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: "${XHTTP_PUBLIC_KEY}"
+      short-id: "${XHTTP_SHORT_ID}"
+    xhttp-opts:
+      path: "${XHTTP_PATH}"
+      host: "${DOMAIN}"
+      mode: stream-one
+    skip-cert-verify: false
 EOF
-  { base64 -w 0 < "$raw"; printf '\n'; } | write_atomic "${NEKO_SUB_DIR}/shadowrocket.txt"
-  rm -f "$raw"
 }
 
 render_subscriptions() {

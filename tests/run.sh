@@ -128,7 +128,7 @@ xray = json.loads((root / "etc/config/xray.json").read_text())
 sing = json.loads((root / "etc/config/sing-box.json").read_text())
 hysteria = yaml.safe_load((root / "etc/config/hysteria.yaml").read_text())
 caddy = (root / "etc/config/Caddyfile").read_text()
-shadow = base64.b64decode((root / "etc/subscriptions/shadowrocket.txt").read_text()).decode().splitlines()
+shadow = yaml.safe_load((root / "etc/subscriptions/shadowrocket.txt").read_text())
 
 assert len(mihomo["proxies"]) == 6
 assert len(stash["proxies"]) == 5
@@ -139,10 +139,19 @@ stash_vision = next(p for p in stash["proxies"] if p["type"] == "vless")
 assert stash_hy2["auth"] == "test-hy2-password" and "password" not in stash_hy2
 assert stash_tuic["version"] == 5
 assert stash_vision["sni"] == "example.com" and "servername" not in stash_vision
-assert [line.split(":", 1)[0] for line in shadow] == [
+shadow_proxies = shadow["proxies"]
+assert [p["type"] for p in shadow_proxies] == [
     "hysteria2", "tuic", "ss", "anytls", "vless", "vless"
 ]
-assert "type=xhttp" in shadow[-1]
+shadow_hy2, shadow_tuic, _, _, shadow_vision, shadow_xhttp = shadow_proxies
+assert shadow_hy2["port-range"] == "21000-21127"
+assert shadow_hy2["ports"] == "21000-21127"
+assert shadow_tuic["version"] == 5
+assert shadow_vision["network"] == "tcp"
+assert shadow_vision["reality-opts"]["public-key"] == state["reality"]["vision_public_key"]
+assert shadow_xhttp["network"] == "xhttp"
+assert shadow_xhttp["xhttp-opts"]["mode"] == "stream-one"
+assert shadow_xhttp["xhttp-opts"]["path"] == state["reality"]["xhttp_path"]
 
 ports = state["ports"]
 singles = [ports[k] for k in ("tuic", "ss2022", "anytls", "vless_reality_vision", "vless_reality_xhttp")]
@@ -163,6 +172,7 @@ assert hysteria["tls"] == {"cert": cert_path, "key": key_path}
 assert hysteria["auth"]["password"] == "test-hy2-password"
 assert hysteria["obfs"]["salamander"]["password"] == "test-hy2-obfs-password"
 assert caddy.count(f"tls {cert_path} {key_path}") == 2
+assert 'header Content-Type "text/yaml; charset=utf-8"' in caddy
 PY
 
 links="$(
