@@ -190,6 +190,30 @@ diagnostic_count="$(wc -l < "$WORK/shadowrocket-diagnostic.raw" | tr -d ' ')"
 [[ "$diagnostic_count" == 5 || "$diagnostic_count" == 10 ]]
 grep -Fq '#A-SIP002-Plain-Domain' "$WORK/shadowrocket-diagnostic.raw"
 grep -Fq '#E-Legacy-FullB64-Domain' "$WORK/shadowrocket-diagnostic.raw"
+
+# Exercise the real handoff: the all-protocol diagnostic must recover the
+# structured source even while the SS2022 Base64 diagnostic is still active.
+NEKO_ETC="$WORK/etc" NEKO_STATE="$WORK/etc/state.json" \
+  NEKO_DIAG_ENDPOINT_OVERRIDE=192.0.2.10 NEKO_DIAG_NO_CAPTURE=1 NEKO_DIAG_TEST_MODE=1 \
+  bash "$ROOT/diagnose-shadowrocket-all.sh" >/dev/null
+python3 - "$WORK/etc/subscriptions/shadowrocket.txt" <<'PY'
+import pathlib
+import sys
+import yaml
+
+subscription = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
+proxies = subscription["proxies"]
+assert len(proxies) == 6
+assert all(proxy["server"] == "192.0.2.10" for proxy in proxies)
+assert all(
+    proxy.get("sni", proxy.get("servername", "example.com")) == "example.com"
+    for proxy in proxies
+    if proxy["type"] in {"hysteria2", "tuic", "anytls", "vless"}
+)
+PY
+NEKO_ETC="$WORK/etc" NEKO_STATE="$WORK/etc/state.json" NEKO_DIAG_TEST_MODE=1 \
+  bash "$ROOT/diagnose-shadowrocket-all.sh" --restore >/dev/null
+cmp -s "$WORK/shadowrocket.before-diagnostic" "$WORK/etc/subscriptions/shadowrocket.txt"
 NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" \
   NEKO_TMP_DIR="$WORK" NEKO_DIAG_TEST_MODE=1 \
   bash "$ROOT/diagnose-shadowrocket-ss2022.sh" --restore >/dev/null
