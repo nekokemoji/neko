@@ -1,0 +1,472 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 0077
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# Installation paths are intentionally fixed.  This also keeps uninstall scoped.
+NEKO_ETC=/etc/neko
+NEKO_VAR=/var/lib/neko
+NEKO_LIBEXEC=/usr/local/libexec/neko
+NEKO_SYSTEMD=/etc/systemd/system
+NEKO_STATE=/etc/neko/state.json
+NEKO_USER=neko-proxy
+export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
+
+# shellcheck source=versions.env
+source "$SCRIPT_DIR/versions.env"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/render.sh
+source "$SCRIPT_DIR/lib/render.sh"
+# shellcheck source=lib/firewall.sh
+source "$SCRIPT_DIR/lib/firewall.sh"
+
+DOMAIN_INPUT=""
+EMAIL_INPUT=""
+ASSUME_YES=0
+WORKDIR=""
+ROLLBACK_NEEDED=0
+CREATED_USER=0
+
+usage() {
+  cat <<EOF
+用法：sudo bash install.sh [选项]
+
+  --domain example.com     必填域名（不提供时交互询问）
+  --email admin@example.com  ACME 账户邮箱
+  --yes                    接受确认提示（仍会执行域名与证书硬校验）
+  -h, --help               显示帮助
+EOF
+}
+
+parse_args() {
+  while (( $# )); do
+    case "$1" in
+      --domain)
+        (( $# >= 2 )) || die "--domain 缺少值。"
+        DOMAIN_INPUT="$2"
+        shift 2
+        ;;
+      --email)
+        (( $# >= 2 )) || die "--email 缺少值。"
+        EMAIL_INPUT="$2"
+        shift 2
+        ;;
+      --yes)
+        ASSUME_YES=1
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "未知选项：$1"
+        ;;
+    esac
+  done
+}
+
+assert_clean_target() {
+  local path unit
+  for path in \
+    /etc/neko \
+    /var/lib/neko \
+    /usr/local/libexec/neko \
+    /usr/local/bin/neko \
+    /etc/systemd/system/neko-caddy.service \
+    /etc/systemd/system/neko-sing-box.service \
+    /etc/systemd/system/neko-xray.service \
+    /etc/systemd/system/neko-hysteria.service \
+    /etc/systemd/system/neko-renew.service \
+    /etc/systemd/system/neko-renew.timer \
+    /etc/firewalld/services/neko-proxy.xml \
+    /etc/ufw/applications.d/neko-proxy; do
+    [[ ! -e "$path" && ! -L "$path" ]] || die "目标已存在，为保护现有数据不会覆盖：${path}"
+  done
+  ! id "$NEKO_USER" >/dev/null 2>&1 || die "系统用户 ${NEKO_USER} 已存在，不会复用。"
+  ! getent group "$NEKO_USER" >/dev/null 2>&1 || die "系统组 ${NEKO_USER} 已存在，不会复用。"
+  for unit in \
+    neko-caddy.service neko-sing-box.service neko-xray.service \
+    neko-hysteria.service neko-renew.service neko-renew.timer; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      die "systemd 已存在同名单元，不会覆盖：${unit}"
+    fi
+  done
+}
+
+cleanup_failed_install() {
+  set +e
+  warn "安装未完成，正在回滚本次创建的内容……"
+  systemctl disable --now neko-renew.timer >/dev/null 2>&1
+  systemctl disable --now \
+    neko-hysteria.service neko-xray.service neko-sing-box.service neko-caddy.service \
+    >/dev/null 2>&1
+  [[ -r "$NEKO_STATE" ]] && remove_firewall
+  rm -f -- \
+    /etc/systemd/system/neko-caddy.service \
+    /etc/systemd/system/neko-sing-box.service \
+    /etc/systemd/system/neko-xray.service \
+    /etc/systemd/system/neko-hysteria.service \
+    /etc/systemd/system/neko-renew.service \
+    /etc/systemd/system/neko-renew.timer \
+    /usr/local/bin/neko
+  rm -rf -- /etc/neko /var/lib/neko /usr/local/libexec/neko
+  systemctl daemon-reload >/dev/null 2>&1
+  if (( CREATED_USER == 1 )) && id "$NEKO_USER" >/dev/null 2>&1; then
+    userdel "$NEKO_USER" >/dev/null 2>&1
+    getent group "$NEKO_USER" >/dev/null 2>&1 && groupdel "$NEKO_USER" >/dev/null 2>&1
+  fi
+}
+
+finish() {
+  local rc=$?
+  trap - EXIT
+  if (( rc != 0 && ROLLBACK_NEEDED == 1 )); then
+    cleanup_failed_install
+  fi
+  if [[ -n "$WORKDIR" && "$WORKDIR" == /tmp/neko-install.* && -d "$WORKDIR" ]]; then
+    rm -rf -- "$WORKDIR"
+  fi
+  exit "$rc"
+}
+
+trap finish EXIT
+
+collect_identity() {
+  local answer
+  if [[ -z "$DOMAIN_INPUT" ]]; then
+    [[ -t 0 ]] || die "非交互安装必须提供 --domain；没有域名绝不继续。"
+    read -r -p "请输入已解析到本机的域名：" DOMAIN_INPUT
+  fi
+  DOMAIN_INPUT="${DOMAIN_INPUT,,}"
+  validate_domain "$DOMAIN_INPUT" || die "域名格式无效：${DOMAIN_INPUT}"
+
+  if [[ -z "$EMAIL_INPUT" ]]; then
+    if [[ -t 0 && $ASSUME_YES -eq 0 ]]; then
+      read -r -p "ACME 邮箱 [admin@${DOMAIN_INPUT}]：" EMAIL_INPUT
+    fi
+    EMAIL_INPUT="${EMAIL_INPUT:-admin@${DOMAIN_INPUT}}"
+  fi
+  validate_email "$EMAIL_INPUT" || die "邮箱格式无效：${EMAIL_INPUT}"
+
+  DOMAIN="$DOMAIN_INPUT"
+  ACME_EMAIL="$EMAIL_INPUT"
+  export DOMAIN ACME_EMAIL
+
+  check_domain_resolution "$DOMAIN"
+  if (( ASSUME_YES == 0 )); then
+    printf '\n域名：%s\n邮箱：%s\n' "$DOMAIN" "$ACME_EMAIL"
+    printf '安装会用 Let\x27s Encrypt HTTP-01 验证，并占用 TCP 80/443。\n'
+    read -r -p "确认域名已直连本机且接受 ACME 服务条款？[y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || die "用户取消。"
+  fi
+}
+
+download_release_binaries() {
+  local xray_asset sing_asset hysteria_asset caddy_asset lego_asset
+  if [[ "$ARCH" == "amd64" ]]; then
+    xray_asset="Xray-linux-64.zip"
+  else
+    xray_asset="Xray-linux-arm64-v8a.zip"
+  fi
+  sing_asset="sing-box-${SING_BOX_VERSION}-linux-${ARCH}.tar.gz"
+  hysteria_asset="hysteria-linux-${ARCH}"
+  caddy_asset="caddy_${CADDY_VERSION}_linux_${ARCH}.tar.gz"
+  lego_asset="lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz"
+
+  mkdir -p "$WORKDIR/downloads" "$WORKDIR/unpack" "$WORKDIR/bin"
+  download_verified "Xray ${XRAY_VERSION}" \
+    "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/${xray_asset}" \
+    "$(sha_for_arch XRAY)" "$WORKDIR/downloads/xray.zip"
+  download_verified "sing-box ${SING_BOX_VERSION}" \
+    "https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/${sing_asset}" \
+    "$(sha_for_arch SING_BOX)" "$WORKDIR/downloads/sing-box.tar.gz"
+  download_verified "Hysteria ${HYSTERIA_VERSION}" \
+    "https://github.com/apernet/hysteria/releases/download/app%2Fv${HYSTERIA_VERSION}/${hysteria_asset}" \
+    "$(sha_for_arch HYSTERIA)" "$WORKDIR/downloads/hysteria"
+  download_verified "Caddy ${CADDY_VERSION}" \
+    "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/${caddy_asset}" \
+    "$(sha_for_arch CADDY)" "$WORKDIR/downloads/caddy.tar.gz"
+  download_verified "lego ${LEGO_VERSION}" \
+    "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/${lego_asset}" \
+    "$(sha_for_arch LEGO)" "$WORKDIR/downloads/lego.tar.gz"
+
+  unzip -q "$WORKDIR/downloads/xray.zip" -d "$WORKDIR/unpack/xray"
+  tar --no-same-owner -xzf "$WORKDIR/downloads/sing-box.tar.gz" -C "$WORKDIR/unpack"
+  mkdir -p "$WORKDIR/unpack/caddy" "$WORKDIR/unpack/lego"
+  tar --no-same-owner -xzf "$WORKDIR/downloads/caddy.tar.gz" -C "$WORKDIR/unpack/caddy"
+  tar --no-same-owner -xzf "$WORKDIR/downloads/lego.tar.gz" -C "$WORKDIR/unpack/lego"
+
+  install -m 0755 "$WORKDIR/unpack/xray/xray" "$WORKDIR/bin/xray"
+  install -m 0755 \
+    "$WORKDIR/unpack/sing-box-${SING_BOX_VERSION}-linux-${ARCH}/sing-box" \
+    "$WORKDIR/bin/sing-box"
+  install -m 0755 "$WORKDIR/downloads/hysteria" "$WORKDIR/bin/hysteria"
+  install -m 0755 "$WORKDIR/unpack/caddy/caddy" "$WORKDIR/bin/caddy"
+  install -m 0755 "$WORKDIR/unpack/lego/lego" "$WORKDIR/bin/lego"
+
+  "$WORKDIR/bin/xray" version | head -n 1
+  "$WORKDIR/bin/sing-box" version | head -n 1
+  "$WORKDIR/bin/hysteria" version | head -n 1
+  "$WORKDIR/bin/caddy" version
+  "$WORKDIR/bin/lego" --version
+}
+
+issue_initial_certificate() {
+  info "使用 HTTP-01 申请 ${DOMAIN} 的证书；失败时安装会停止并回滚。"
+  ROLLBACK_NEEDED=1
+  install -d -m 0700 "$NEKO_VAR" "$NEKO_VAR/lego"
+  "$WORKDIR/bin/lego" run \
+    --path "$NEKO_VAR/lego" \
+    --email "$ACME_EMAIL" \
+    --domains "$DOMAIN" \
+    --accept-tos \
+    --key-type EC256 \
+    --http
+
+  CERT_FILE="$NEKO_VAR/lego/certificates/${DOMAIN}.crt"
+  KEY_FILE="$NEKO_VAR/lego/certificates/${DOMAIN}.key"
+  [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]] || die "ACME 返回成功但证书文件不存在。"
+  openssl x509 -in "$CERT_FILE" -noout -checkend 2592000 >/dev/null \
+    || die "取得的证书有效期不足 30 天。"
+  ok "域名验证与证书申请成功。"
+}
+
+create_service_user_and_dirs() {
+  local nologin_shell
+  nologin_shell="$(command -v nologin || printf '/usr/sbin/nologin')"
+  useradd --system --user-group --home-dir "$NEKO_VAR" --no-create-home \
+    --shell "$nologin_shell" --comment "Neko proxy services" "$NEKO_USER"
+  CREATED_USER=1
+
+  install -d -m 0750 -o root -g "$NEKO_USER" "$NEKO_VAR"
+  install -d -m 0750 -o root -g "$NEKO_USER" \
+    "$NEKO_ETC" "$NEKO_ETC/config" "$NEKO_ETC/subscriptions"
+  # setgid makes lego's root-created HTTP-01 challenge files inherit the
+  # service group, so the unprivileged Caddy process can serve them.
+  install -d -m 2750 -o root -g "$NEKO_USER" "$NEKO_VAR/acme"
+  install -d -m 0755 -o root -g root "$NEKO_LIBEXEC" "$NEKO_LIBEXEC/lib"
+  install -d -m 0750 -o "$NEKO_USER" -g "$NEKO_USER" \
+    "$NEKO_VAR/caddy" "$NEKO_VAR/caddy/data" "$NEKO_VAR/caddy/config"
+
+  chown -R root:root "$NEKO_VAR/lego"
+  find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
+  find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
+  chown "root:${NEKO_USER}" "$NEKO_VAR/lego"
+  chmod 0750 "$NEKO_VAR/lego"
+  chown -R "root:${NEKO_USER}" "$NEKO_VAR/lego/certificates"
+  find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} +
+  find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
+}
+
+install_payload() {
+  install -m 0755 "$WORKDIR/bin/xray" "$NEKO_LIBEXEC/xray"
+  install -m 0755 "$WORKDIR/bin/sing-box" "$NEKO_LIBEXEC/sing-box"
+  install -m 0755 "$WORKDIR/bin/hysteria" "$NEKO_LIBEXEC/hysteria"
+  install -m 0755 "$WORKDIR/bin/caddy" "$NEKO_LIBEXEC/caddy"
+  install -m 0755 "$WORKDIR/bin/lego" "$NEKO_LIBEXEC/lego"
+  install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
+  install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
+  install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
+  install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
+  install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
+  install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
+  ln -s "$NEKO_LIBEXEC/panel.sh" /usr/local/bin/neko
+
+  local unit
+  for unit in \
+    neko-caddy.service neko-sing-box.service neko-xray.service \
+    neko-hysteria.service neko-renew.service neko-renew.timer; do
+    install -m 0644 "$SCRIPT_DIR/systemd/$unit" "$NEKO_SYSTEMD/$unit"
+  done
+}
+
+generate_reality_pair() {
+  local output private_key public_key
+  output="$("$WORKDIR/bin/xray" x25519)"
+  private_key="$(awk -F': ' '/^PrivateKey:/ {print $2}' <<< "$output")"
+  public_key="$(awk -F': ' '/^Password \(PublicKey\):/ {print $2}' <<< "$output")"
+  [[ "$private_key" =~ ^[A-Za-z0-9_-]{43}$ ]] || die "无法解析 REALITY 私钥。"
+  [[ "$public_key" =~ ^[A-Za-z0-9_-]{43}$ ]] || die "无法解析 REALITY 公钥。"
+  printf '%s %s\n' "$private_key" "$public_key"
+}
+
+write_initial_state() {
+  local hy2_password hy2_obfs_password tuic_uuid tuic_password ss_password
+  local anytls_password vision_uuid xhttp_uuid vision_pair xhttp_pair
+  local vision_private vision_public xhttp_private xhttp_public
+  local vision_sid xhttp_sid xhttp_path sub_token installed_at listen_address
+  local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT VISION_PORT XHTTP_PORT
+
+  initialize_port_reservations
+  reserve_random_range 128 HY2_START HY2_END
+  reserve_random_port TUIC_PORT
+  reserve_random_port SS_PORT
+  reserve_random_port ANYTLS_PORT
+  reserve_random_port VISION_PORT
+  reserve_random_port XHTTP_PORT
+
+  hy2_password="$(random_urlsafe 24)"
+  hy2_obfs_password="$(random_urlsafe 24)"
+  tuic_uuid="$(new_uuid)"
+  tuic_password="$(random_urlsafe 24)"
+  ss_password="$(random_base64 16)"
+  anytls_password="$(random_urlsafe 24)"
+  vision_uuid="$(new_uuid)"
+  xhttp_uuid="$(new_uuid)"
+  vision_pair="$(generate_reality_pair)"
+  xhttp_pair="$(generate_reality_pair)"
+  read -r vision_private vision_public <<< "$vision_pair"
+  read -r xhttp_private xhttp_public <<< "$xhttp_pair"
+  vision_sid="$(random_hex 8)"
+  xhttp_sid="$(random_hex 8)"
+  xhttp_path="/$(random_urlsafe 12)"
+  sub_token="$(random_urlsafe 24)"
+  installed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  if [[ -s /proc/net/if_inet6 ]]; then
+    listen_address="::"
+  else
+    listen_address="0.0.0.0"
+  fi
+
+  jq -n \
+    --arg release "$NEKO_RELEASE" \
+    --arg installed_at "$installed_at" \
+    --arg os_id "$OS_ID" --arg os_version "$OS_VERSION" --arg arch "$ARCH" \
+    --arg xray_version "$XRAY_VERSION" --arg sing_version "$SING_BOX_VERSION" \
+    --arg hysteria_version "$HYSTERIA_VERSION" --arg caddy_version "$CADDY_VERSION" \
+    --arg lego_version "$LEGO_VERSION" \
+    --arg domain "$DOMAIN" --arg email "$ACME_EMAIL" --arg listen "$listen_address" \
+    --argjson hy2_start "$HY2_START" --argjson hy2_end "$HY2_END" \
+    --argjson tuic_port "$TUIC_PORT" --argjson ss_port "$SS_PORT" \
+    --argjson anytls_port "$ANYTLS_PORT" --argjson vision_port "$VISION_PORT" \
+    --argjson xhttp_port "$XHTTP_PORT" \
+    --arg hy2_password "$hy2_password" --arg hy2_obfs "$hy2_obfs_password" \
+    --arg tuic_uuid "$tuic_uuid" --arg tuic_password "$tuic_password" \
+    --arg ss_password "$ss_password" --arg anytls_password "$anytls_password" \
+    --arg vision_uuid "$vision_uuid" --arg xhttp_uuid "$xhttp_uuid" \
+    --arg vision_private "$vision_private" --arg vision_public "$vision_public" \
+    --arg vision_sid "$vision_sid" --arg xhttp_private "$xhttp_private" \
+    --arg xhttp_public "$xhttp_public" --arg xhttp_sid "$xhttp_sid" \
+    --arg xhttp_path "$xhttp_path" --arg sub_token "$sub_token" \
+    '{
+      schema: 1,
+      release: $release,
+      installed_at: $installed_at,
+      platform: {id: $os_id, version: $os_version, arch: $arch},
+      versions: {
+        xray: $xray_version,
+        sing_box: $sing_version,
+        hysteria: $hysteria_version,
+        caddy: $caddy_version,
+        lego: $lego_version
+      },
+      domain: $domain,
+      acme_email: $email,
+      network: {listen_address: $listen},
+      system_user_created: true,
+      ports: {
+        hysteria2_start: $hy2_start,
+        hysteria2_end: $hy2_end,
+        tuic: $tuic_port,
+        ss2022: $ss_port,
+        anytls: $anytls_port,
+        vless_reality_vision: $vision_port,
+        vless_reality_xhttp: $xhttp_port
+      },
+      credentials: {
+        hysteria2_password: $hy2_password,
+        hysteria2_obfs_password: $hy2_obfs,
+        tuic_uuid: $tuic_uuid,
+        tuic_password: $tuic_password,
+        ss2022_password: $ss_password,
+        anytls_password: $anytls_password,
+        vision_uuid: $vision_uuid,
+        xhttp_uuid: $xhttp_uuid
+      },
+      reality: {
+        vision_private_key: $vision_private,
+        vision_public_key: $vision_public,
+        vision_short_id: $vision_sid,
+        xhttp_private_key: $xhttp_private,
+        xhttp_public_key: $xhttp_public,
+        xhttp_short_id: $xhttp_sid,
+        xhttp_path: $xhttp_path
+      },
+      subscription: {token: $sub_token},
+      firewall: {manager: "none", zone: ""},
+      bbr: {managed: false, previous_qdisc: "", previous_congestion_control: ""}
+    }' > "$NEKO_STATE"
+  chmod 0600 "$NEKO_STATE"
+  chown root:root "$NEKO_STATE"
+}
+
+validate_generated_configs() {
+  info "用冻结的核心二进制校验生成配置……"
+  "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/config/sing-box.json"
+  "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json"
+  "$NEKO_LIBEXEC/caddy" validate --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile
+  ok "sing-box、Xray 与 Caddy 配置校验通过。"
+}
+
+start_services() {
+  local service
+  systemctl daemon-reload
+  systemctl enable \
+    neko-caddy.service neko-sing-box.service neko-xray.service \
+    neko-hysteria.service neko-renew.timer >/dev/null
+
+  for service in neko-caddy neko-sing-box neko-hysteria neko-xray; do
+    if ! systemctl start "${service}.service"; then
+      journalctl -u "${service}.service" -n 60 --no-pager >&2 || true
+      die "${service} 启动失败。"
+    fi
+    systemctl is-active --quiet "${service}.service" || die "${service} 未保持运行。"
+  done
+  systemctl start neko-renew.timer
+  systemctl is-active --quiet neko-renew.timer || die "证书续期定时器未运行。"
+}
+
+main() {
+  parse_args "$@"
+  require_root
+  detect_platform
+  require_systemd
+
+  require_commands getent
+  collect_identity
+  # Keep the domain gate ahead of package installation and all Neko file
+  # creation.  Recheck the target after taking the lock to close the race
+  # between two installers that passed the initial read-only check.
+  assert_clean_target
+  install_dependencies
+  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd
+
+  exec 9>/run/lock/neko-install.lock
+  flock -n 9 || die "另一个 Neko 安装进程正在运行。"
+  assert_clean_target
+  assert_public_ports_free
+
+  WORKDIR="$(mktemp -d /tmp/neko-install.XXXXXX)"
+  download_release_binaries
+  issue_initial_certificate
+  create_service_user_and_dirs
+  install_payload
+  write_initial_state
+  render_all
+  validate_generated_configs
+  configure_firewall
+  start_services
+
+  ROLLBACK_NEEDED=0
+  ok "Neko ${NEKO_RELEASE} 安装完成。"
+  show_subscription_links
+  show_required_ports
+  warn "请按上面的精确列表配置云厂商安全组；本机防火墙规则不能代替云安全组。"
+  printf '以后输入 neko 打开终端控制面板。\n'
+}
+
+main "$@"

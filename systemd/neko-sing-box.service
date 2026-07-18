@@ -1,0 +1,37 @@
+[Unit]
+Description=Neko sing-box (TUIC, SS2022, AnyTLS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neko-proxy
+Group=neko-proxy
+ExecStart=/usr/local/libexec/neko/sing-box run -c /etc/neko/config/sing-box.json
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=1048576
+CapabilityBoundingSet=
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

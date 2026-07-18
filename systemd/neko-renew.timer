@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily randomized Neko certificate-renewal check
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1d
+RandomizedDelaySec=12h
+Persistent=true
+Unit=neko-renew.service
+
+[Install]
+WantedBy=timers.target

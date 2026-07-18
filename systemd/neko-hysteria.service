@@ -1,0 +1,39 @@
+[Unit]
+Description=Neko Hysteria2 with UDP port hopping
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neko-proxy
+Group=neko-proxy
+Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
+ExecStart=/usr/local/libexec/neko/hysteria server --disable-update-check --config /etc/neko/config/hysteria.yaml
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=1048576
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
