@@ -91,13 +91,25 @@ sudo jq '.ports' /etc/neko/state.json
 |---|---:|---|
 | Mihomo 内核应用 | 6 | 全部协议 |
 | Stash | 5 | 除 VLESS + REALITY + XHTTP 外的全部协议 |
-| Shadowrocket 2.2.90 | 6 | 全部协议，使用其新版 Clash/YAML 结构化解析路径 |
+| Shadowrocket 2.2.90 | 6 | 全部协议，结构化 YAML；节点直连 IP，SNI/证书仍绑定域名 |
 
 Mihomo 格式依据其 [Hysteria2](https://wiki.metacubex.one/en/config/proxies/hysteria2/)、[TUIC](https://wiki.metacubex.one/en/config/proxies/tuic/)、[AnyTLS](https://wiki.metacubex.one/en/config/proxies/anytls/)、[VLESS](https://wiki.metacubex.one/en/config/proxies/vless/) 与 [XHTTP 传输](https://wiki.metacubex.one/en/config/proxies/transport/) 文档生成。Stash 使用单独的字段映射，其中 Hysteria2 使用 `auth`、TUIC 明确使用 v5，并根据 [Stash 协议文档](https://stash.wiki/en/proxy-protocols/proxy-types) 排除尚未支持的 XHTTP。Shadowrocket 使用单独的结构化 Clash/YAML 订阅，显式提供 `port-range`、TUIC v5、REALITY 与 `xhttp-opts`；对应能力以 [Apple App Store 版本记录](https://apps.apple.com/us/app/shadowrocket/id932747118) 为准。
 
+Shadowrocket 的 HTTPS 订阅下载与节点连接可能走不同的 DNS 路径。为避免“订阅能下载、六个域名节点却全部超时”，安装器会为 Shadowrocket 固定域名当前的直连地址：双栈优先 A，只有 IPv6 时使用 AAAA。订阅 URL 仍是绑定域名的 HTTPS；Hysteria2、TUIC、AnyTLS 的 SNI、两种 REALITY 的 `serverName`、XHTTP Host 和证书校验也仍使用该域名。Mihomo 与 Stash 节点继续使用域名。选择结果保存在仅 root 可读的 `state.json` 中：
+
+```bash
+sudo jq -r '.subscription.shadowrocket_server' /etc/neko/state.json
+```
+
 订阅令牌等同于密码，不要公开。终端面板的重置功能会生成新令牌、重写 Caddy 路由并重启服务，旧 URL 随即返回 404。
 
-从 Neko 1.0.2 原地升级 Shadowrocket 订阅格式时，解压新版源码后以 root 运行 `bash update-shadowrocket.sh`。它只替换已安装的订阅渲染器、重新生成配置并重启 Caddy；任何校验失败都会恢复旧渲染器，不会重装协议、轮换凭据或重新申请证书。
+从 Neko 1.0.2 或 1.0.3 原地升级到 1.0.4 时，解压新版源码后以 root 运行：
+
+```bash
+sudo bash update-shadowrocket.sh
+```
+
+更新器只替换公共辅助库和订阅渲染器、记录 Shadowrocket 直连地址、重新生成配置并重启 Caddy。它不会重装协议、变更端口、轮换密码/UUID/订阅令牌或重新申请证书；任何核心配置校验失败都会恢复原文件和状态。
 
 ## 终端控制面板
 
@@ -157,7 +169,7 @@ bash tests/fetch-pinned-tools.sh
 bash tests/run.sh
 ```
 
-测试会验证 Shell 语法、16 个系统/架构检测组合、固定版本、随机端口无冲突、真实 sing-box/Xray/Caddy 配置、Hysteria 配置解析、6/5/6 节点数、Stash 专用字段以及订阅令牌失效逻辑。详细范围和未覆盖事项见 [TESTING.md](TESTING.md)。
+测试会验证 Shell 语法、16 个系统/架构检测组合、固定版本、随机端口无冲突、真实 sing-box/Xray/Caddy 配置、Hysteria 配置解析、6/5/6 节点数、Shadowrocket IPv4/IPv6 选择与原地升级、Stash 专用字段以及订阅令牌失效逻辑。详细范围和未覆盖事项见 [TESTING.md](TESTING.md)。
 
 ## 主要文件
 
@@ -169,6 +181,8 @@ lib/render.sh              服务端配置和三类订阅
 lib/firewall.sh            firewalld/UFW 可逆规则
 runtime/panel.sh           neko 终端面板
 runtime/renew.sh           ACME 自动续期
+update-shadowrocket.sh     旧安装原地升级与失败回滚
+diagnose-shadowrocket-*.sh Shadowrocket 临时诊断工具
 systemd/                   服务与定时器
 tests/                     可重复测试
 ```

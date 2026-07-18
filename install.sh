@@ -315,6 +315,7 @@ write_initial_state() {
   local anytls_password vision_uuid xhttp_uuid vision_pair xhttp_pair
   local vision_private vision_public xhttp_private xhttp_public
   local vision_sid xhttp_sid xhttp_path sub_token installed_at listen_address
+  local shadowrocket_server
   local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT VISION_PORT XHTTP_PORT
 
   initialize_port_reservations
@@ -341,6 +342,8 @@ write_initial_state() {
   xhttp_sid="$(random_hex 8)"
   xhttp_path="/$(random_urlsafe 12)"
   sub_token="$(random_urlsafe 24)"
+  shadowrocket_server="$(preferred_direct_address "$DOMAIN")" \
+    || die "无法为 Shadowrocket 选择域名 ${DOMAIN} 的直连 A/AAAA 地址。"
   installed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   if [[ -s /proc/net/if_inet6 ]]; then
     listen_address="::"
@@ -368,6 +371,7 @@ write_initial_state() {
     --arg vision_sid "$vision_sid" --arg xhttp_private "$xhttp_private" \
     --arg xhttp_public "$xhttp_public" --arg xhttp_sid "$xhttp_sid" \
     --arg xhttp_path "$xhttp_path" --arg sub_token "$sub_token" \
+    --arg shadowrocket_server "$shadowrocket_server" \
     '{
       schema: 1,
       release: $release,
@@ -412,7 +416,10 @@ write_initial_state() {
         xhttp_short_id: $xhttp_sid,
         xhttp_path: $xhttp_path
       },
-      subscription: {token: $sub_token},
+      subscription: {
+        token: $sub_token,
+        shadowrocket_server: $shadowrocket_server
+      },
       firewall: {manager: "none", zone: ""},
       bbr: {managed: false, previous_qdisc: "", previous_congestion_control: ""}
     }' > "$NEKO_STATE"

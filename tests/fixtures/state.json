@@ -32,7 +32,8 @@
     "xhttp_path": "/test-xhttp"
   },
   "subscription": {
-    "token": "test-subscription-token"
+    "token": "test-subscription-token",
+    "shadowrocket_server": "192.0.2.10"
   },
   "firewall": {
     "manager": "none",

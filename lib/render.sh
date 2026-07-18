@@ -439,13 +439,14 @@ EOF
 
 render_shadowrocket() {
   # Shadowrocket 2.2.87+ explicitly supports structured Clash port-range and
-  # XHTTP options.  A dedicated YAML feed avoids lossy per-URI imports for
-  # modern protocols while keeping all six requested nodes in one URL.
+  # XHTTP options.  Its node DNS path can differ from its HTTPS subscription
+  # downloader, so nodes use a pinned direct IP while TLS SNI, REALITY
+  # serverName and XHTTP Host remain bound to the mandatory domain.
   write_atomic "${NEKO_SUB_DIR}/shadowrocket.txt" <<EOF
 proxies:
   - name: "HY2"
     type: hysteria2
-    server: "${DOMAIN}"
+    server: "${SHADOWROCKET_SERVER}"
     port: ${HY2_START}
     ports: "${HY2_START}-${HY2_END}"
     port-range: "${HY2_START}-${HY2_END}"
@@ -459,7 +460,7 @@ proxies:
   - name: "TUIC-v5"
     type: tuic
     version: 5
-    server: "${DOMAIN}"
+    server: "${SHADOWROCKET_SERVER}"
     port: ${TUIC_PORT}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
@@ -470,14 +471,14 @@ proxies:
     skip-cert-verify: false
   - name: "SS2022"
     type: ss
-    server: "${DOMAIN}"
+    server: "${SHADOWROCKET_SERVER}"
     port: ${SS_PORT}
     cipher: "2022-blake3-aes-128-gcm"
     password: "${SS_PASSWORD}"
     udp: true
   - name: "AnyTLS"
     type: anytls
-    server: "${DOMAIN}"
+    server: "${SHADOWROCKET_SERVER}"
     port: ${ANYTLS_PORT}
     password: "${ANYTLS_PASSWORD}"
     sni: "${DOMAIN}"
@@ -486,7 +487,7 @@ proxies:
     skip-cert-verify: false
   - name: "VLESS-Reality-Vision"
     type: vless
-    server: "${DOMAIN}"
+    server: "${SHADOWROCKET_SERVER}"
     port: ${VISION_PORT}
     uuid: "${VISION_UUID}"
     encryption: ""
@@ -502,7 +503,7 @@ proxies:
     skip-cert-verify: false
   - name: "VLESS-Reality-XHTTP"
     type: vless
-    server: "${DOMAIN}"
+    server: "${SHADOWROCKET_SERVER}"
     port: ${XHTTP_PORT}
     uuid: "${XHTTP_UUID}"
     encryption: ""

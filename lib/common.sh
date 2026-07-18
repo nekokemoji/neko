@@ -140,6 +140,39 @@ resolved_addresses() {
   { getent ahosts "$1" 2>/dev/null || true; } | awk '{print $1}' | sort -u
 }
 
+first_resolved_ipv4() {
+  { getent ahostsv4 "$1" 2>/dev/null || true; } \
+    | awk '$1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && !found { value=$1; found=1 } END { if (found) print value }'
+}
+
+first_resolved_ipv6() {
+  { getent ahostsv6 "$1" 2>/dev/null || true; } \
+    | awk '$1 ~ /:/ && $1 ~ /^[0-9A-Fa-f:]+$/ && !found { value=$1; found=1 } END { if (found) print value }'
+}
+
+is_safe_ip_literal() {
+  local value="$1" octet
+  if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    IFS='.' read -r -a _ip_octets <<< "$value"
+    for octet in "${_ip_octets[@]}"; do
+      (( 10#$octet <= 255 )) || return 1
+    done
+    return 0
+  fi
+  [[ "$value" == *:* && "$value" =~ ^[0-9A-Fa-f:]+$ ]]
+}
+
+preferred_direct_address() {
+  local domain="$1" address
+  address="$(first_resolved_ipv4 "$domain")"
+  if [[ -z "$address" ]]; then
+    address="$(first_resolved_ipv6 "$domain")"
+  fi
+  [[ -n "$address" ]] || return 1
+  is_safe_ip_literal "$address" || return 1
+  printf '%s\n' "$address"
+}
+
 check_domain_resolution() {
   local domain="$1" addresses
   addresses="$(resolved_addresses "$domain")"
@@ -319,6 +352,13 @@ load_state() {
   XHTTP_SHORT_ID="$(state_value '.reality.xhttp_short_id')"
   XHTTP_PATH="$(state_value '.reality.xhttp_path')"
   SUB_TOKEN="$(state_value '.subscription.token')"
+  SHADOWROCKET_SERVER="$(jq -r '.subscription.shadowrocket_server // empty' "$NEKO_STATE")"
+  if [[ -z "$SHADOWROCKET_SERVER" ]]; then
+    SHADOWROCKET_SERVER="$(preferred_direct_address "$DOMAIN")" \
+      || die "无法为 Shadowrocket 选择域名 ${DOMAIN} 的直连 A/AAAA 地址。"
+  fi
+  is_safe_ip_literal "$SHADOWROCKET_SERVER" \
+    || die "state.json 中的 Shadowrocket 直连地址格式无效。"
   LISTEN_ADDRESS="$(jq -r '.network.listen_address // "::"' "$NEKO_STATE")"
   CERT_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.crt"
   KEY_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.key"

@@ -46,6 +46,19 @@ bash -c '
   OS_FAMILY=rhel install_dependencies >/dev/null
   [[ "$calls" == 1 ]]
 ' _ "$ROOT/lib/common.sh"
+bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  first_resolved_ipv4() { printf "192.0.2.44\n"; }
+  first_resolved_ipv6() { printf "2001:db8::44\n"; }
+  [[ "$(preferred_direct_address example.com)" == "192.0.2.44" ]]
+  first_resolved_ipv4() { :; }
+  [[ "$(preferred_direct_address example.com)" == "2001:db8::44" ]]
+  is_safe_ip_literal 203.0.113.9
+  is_safe_ip_literal 2001:db8::9
+  ! is_safe_ip_literal 999.0.0.1
+  ! is_safe_ip_literal "example.com"
+' _ "$ROOT/lib/common.sh"
 
 printf '[3/7] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$XRAY" version)" == *"$XRAY_VERSION"* ]]
@@ -143,6 +156,12 @@ shadow_proxies = shadow["proxies"]
 assert [p["type"] for p in shadow_proxies] == [
     "hysteria2", "tuic", "ss", "anytls", "vless", "vless"
 ]
+assert all(
+    p["server"] == state["subscription"]["shadowrocket_server"]
+    for p in shadow_proxies
+)
+assert all(p["server"] == "example.com" for p in mihomo["proxies"])
+assert all(p["server"] == "example.com" for p in stash["proxies"])
 shadow_hy2, shadow_tuic, _, _, shadow_vision, shadow_xhttp = shadow_proxies
 assert shadow_hy2["port-range"] == "21000-21127"
 assert shadow_hy2["ports"] == "21000-21127"
@@ -194,7 +213,7 @@ grep -Fq '#E-Legacy-FullB64-Domain' "$WORK/shadowrocket-diagnostic.raw"
 # Exercise the real handoff: the all-protocol diagnostic must recover the
 # structured source even while the SS2022 Base64 diagnostic is still active.
 NEKO_ETC="$WORK/etc" NEKO_STATE="$WORK/etc/state.json" \
-  NEKO_DIAG_ENDPOINT_OVERRIDE=192.0.2.10 NEKO_DIAG_NO_CAPTURE=1 NEKO_DIAG_TEST_MODE=1 \
+  NEKO_DIAG_ENDPOINT_OVERRIDE=198.51.100.20 NEKO_DIAG_NO_CAPTURE=1 NEKO_DIAG_TEST_MODE=1 \
   bash "$ROOT/diagnose-shadowrocket-all.sh" >/dev/null
 python3 - "$WORK/etc/subscriptions/shadowrocket.txt" <<'PY'
 import pathlib
@@ -204,7 +223,7 @@ import yaml
 subscription = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
 proxies = subscription["proxies"]
 assert len(proxies) == 6
-assert all(proxy["server"] == "192.0.2.10" for proxy in proxies)
+assert all(proxy["server"] == "198.51.100.20" for proxy in proxies)
 assert all(
     proxy.get("sni", proxy.get("servername", "example.com")) == "example.com"
     for proxy in proxies
@@ -218,6 +237,79 @@ NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" \
   NEKO_TMP_DIR="$WORK" NEKO_DIAG_TEST_MODE=1 \
   bash "$ROOT/diagnose-shadowrocket-ss2022.sh" --restore >/dev/null
 cmp -s "$WORK/shadowrocket.before-diagnostic" "$WORK/etc/subscriptions/shadowrocket.txt"
+
+# Old state files without shadowrocket_server remain renderable and prefer
+# IPv6 only when no IPv4 address is available.
+jq 'del(.subscription.shadowrocket_server)' "$WORK/etc/state.json" > "$WORK/etc/state-old.json"
+NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state-old.json" NEKO_USER=root \
+  bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    source "$2"
+    first_resolved_ipv4() { :; }
+    first_resolved_ipv6() { printf "2001:db8::55\n"; }
+    render_all
+    [[ "$SHADOWROCKET_SERVER" == "2001:db8::55" ]]
+  ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
+grep -Fq 'server: "2001:db8::55"' "$WORK/etc/subscriptions/shadowrocket.txt"
+
+# Exercise the in-place updater in an isolated installation tree.
+UPGRADE="$WORK/upgrade"
+mkdir -p "$UPGRADE/etc/config" "$UPGRADE/etc/subscriptions" \
+  "$UPGRADE/var/lego/certificates" "$UPGRADE/var/acme" \
+  "$UPGRADE/libexec/lib" "$UPGRADE/mockbin"
+cp "$ROOT/tests/fixtures/state.json" "$UPGRADE/etc/state.json"
+cp "$ROOT/lib/common.sh" "$UPGRADE/libexec/lib/common.sh"
+cp "$ROOT/lib/render.sh" "$UPGRADE/libexec/lib/render.sh"
+cp "$ROOT/versions.env" "$UPGRADE/libexec/versions.env"
+install -m 0755 "$XRAY" "$UPGRADE/libexec/xray"
+install -m 0755 "$SING_BOX" "$UPGRADE/libexec/sing-box"
+install -m 0755 "$CADDY" "$UPGRADE/libexec/caddy"
+cp "$WORK/var/lego/certificates/example.com.crt" "$UPGRADE/var/lego/certificates/example.com.crt"
+cp "$WORK/var/lego/certificates/example.com.key" "$UPGRADE/var/lego/certificates/example.com.key"
+NEKO_ETC="$UPGRADE/etc" NEKO_VAR="$UPGRADE/var" NEKO_STATE="$UPGRADE/etc/state.json" \
+  NEKO_LIBEXEC="$UPGRADE/libexec" NEKO_USER=root \
+  bash -c 'source "$1"; source "$2"; render_all' \
+  _ "$UPGRADE/libexec/lib/common.sh" "$UPGRADE/libexec/lib/render.sh"
+install -m 0600 /dev/null "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-ss2022-diagnostic"
+install -m 0600 /dev/null "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-all-protocol-diagnostic"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$UPGRADE/mockbin/systemctl"
+chmod 0755 "$UPGRADE/mockbin/systemctl"
+PATH="$UPGRADE/mockbin:$PATH" \
+  NEKO_ETC="$UPGRADE/etc" NEKO_VAR="$UPGRADE/var" NEKO_STATE="$UPGRADE/etc/state.json" \
+  NEKO_LIBEXEC="$UPGRADE/libexec" NEKO_USER=root \
+  NEKO_UPDATE_TMP_DIR="$UPGRADE" NEKO_UPDATE_LOCK_FILE="$UPGRADE/update.lock" \
+  NEKO_UPDATE_ENDPOINT_OVERRIDE=198.51.100.40 NEKO_UPDATE_TEST_MODE=1 \
+  bash "$ROOT/update-shadowrocket.sh" >/dev/null
+[[ "$(jq -r '.subscription.shadowrocket_server' "$UPGRADE/etc/state.json")" == "198.51.100.40" ]]
+[[ "$(jq -r '.release' "$UPGRADE/etc/state.json")" == "$NEKO_RELEASE" ]]
+[[ "$(grep -Fc 'server: "198.51.100.40"' "$UPGRADE/etc/subscriptions/shadowrocket.txt")" == 6 ]]
+[[ ! -e "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-ss2022-diagnostic" ]]
+[[ ! -e "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-all-protocol-diagnostic" ]]
+
+cp "$UPGRADE/etc/state.json" "$UPGRADE/state.before-failed-update"
+cp "$UPGRADE/etc/subscriptions/shadowrocket.txt" "$UPGRADE/shadowrocket.before-failed-update"
+cat > "$UPGRADE/mockbin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == restart && ! -e "${NEKO_TEST_FAIL_MARKER:?}" ]]; then
+  : > "$NEKO_TEST_FAIL_MARKER"
+  exit 1
+fi
+exit 0
+EOF
+chmod 0755 "$UPGRADE/mockbin/systemctl"
+set +e
+PATH="$UPGRADE/mockbin:$PATH" NEKO_TEST_FAIL_MARKER="$UPGRADE/systemctl-failed-once" \
+  NEKO_ETC="$UPGRADE/etc" NEKO_VAR="$UPGRADE/var" NEKO_STATE="$UPGRADE/etc/state.json" \
+  NEKO_LIBEXEC="$UPGRADE/libexec" NEKO_USER=root \
+  NEKO_UPDATE_TMP_DIR="$UPGRADE" NEKO_UPDATE_LOCK_FILE="$UPGRADE/update.lock" \
+  NEKO_UPDATE_ENDPOINT_OVERRIDE=203.0.113.40 NEKO_UPDATE_TEST_MODE=1 \
+  bash "$ROOT/update-shadowrocket.sh" >/dev/null 2>&1
+failed_update_rc=$?
+set -e
+(( failed_update_rc != 0 ))
+cmp -s "$UPGRADE/state.before-failed-update" "$UPGRADE/etc/state.json"
+cmp -s "$UPGRADE/shadowrocket.before-failed-update" "$UPGRADE/etc/subscriptions/shadowrocket.txt"
 
 printf '[7/7] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
 jq '.subscription.token = "replacement-token"' "$WORK/etc/state.json" > "$WORK/etc/state.new"
