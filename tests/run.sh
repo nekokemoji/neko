@@ -181,6 +181,20 @@ links="$(
 )"
 [[ "$links" == *'https://example.com/test-subscription-token/mihomo.yaml'* ]]
 
+cp "$WORK/etc/subscriptions/shadowrocket.txt" "$WORK/shadowrocket.before-diagnostic"
+NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" \
+  NEKO_TMP_DIR="$WORK" NEKO_DIAG_NO_CAPTURE=1 NEKO_DIAG_TEST_MODE=1 \
+  bash "$ROOT/diagnose-shadowrocket-ss2022.sh" >/dev/null
+base64 -d < "$WORK/etc/subscriptions/shadowrocket.txt" > "$WORK/shadowrocket-diagnostic.raw"
+diagnostic_count="$(wc -l < "$WORK/shadowrocket-diagnostic.raw" | tr -d ' ')"
+[[ "$diagnostic_count" == 5 || "$diagnostic_count" == 10 ]]
+grep -Fq '#A-SIP002-Plain-Domain' "$WORK/shadowrocket-diagnostic.raw"
+grep -Fq '#E-Legacy-FullB64-Domain' "$WORK/shadowrocket-diagnostic.raw"
+NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" \
+  NEKO_TMP_DIR="$WORK" NEKO_DIAG_TEST_MODE=1 \
+  bash "$ROOT/diagnose-shadowrocket-ss2022.sh" --restore >/dev/null
+cmp -s "$WORK/shadowrocket.before-diagnostic" "$WORK/etc/subscriptions/shadowrocket.txt"
+
 printf '[7/7] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
 jq '.subscription.token = "replacement-token"' "$WORK/etc/state.json" > "$WORK/etc/state.new"
 mv "$WORK/etc/state.new" "$WORK/etc/state.json"
