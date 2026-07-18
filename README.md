@@ -97,6 +97,8 @@ Mihomo 格式依据其 [Hysteria2](https://wiki.metacubex.one/en/config/proxies/
 
 订阅令牌等同于密码，不要公开。终端面板的重置功能会生成新令牌、重写 Caddy 路由并重启服务，旧 URL 随即返回 404。
 
+从 Neko 1.0.2 原地升级 Shadowrocket 订阅格式时，解压新版源码后以 root 运行 `bash update-shadowrocket.sh`。它只替换已安装的订阅渲染器、重新生成配置并重启 Caddy；任何校验失败都会恢复旧渲染器，不会重装协议、轮换凭据或重新申请证书。
+
 ## 终端控制面板
 
 安装后输入：
