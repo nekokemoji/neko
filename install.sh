@@ -221,9 +221,12 @@ download_release_binaries() {
   install -m 0755 "$WORKDIR/unpack/caddy/caddy" "$WORKDIR/bin/caddy"
   install -m 0755 "$WORKDIR/unpack/lego/lego" "$WORKDIR/bin/lego"
 
-  "$WORKDIR/bin/xray" version | head -n 1
-  "$WORKDIR/bin/sing-box" version | head -n 1
-  "$WORKDIR/bin/hysteria" version | head -n 1
+  # awk consumes the complete stream.  Using `head -n 1` here can close the
+  # pipe early and make a healthy Go binary exit with SIGPIPE under pipefail
+  # (observed on AlmaLinux 9).
+  "$WORKDIR/bin/xray" version 2>&1 | awk 'NR == 1 { print }'
+  "$WORKDIR/bin/sing-box" version 2>&1 | awk 'NR == 1 { print }'
+  "$WORKDIR/bin/hysteria" version 2>&1 | awk 'NR == 1 { print }'
   "$WORKDIR/bin/caddy" version
   "$WORKDIR/bin/lego" --version
 }

@@ -61,6 +61,10 @@ fi
 grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
+if grep -Eq '\|[[:space:]]*head([[:space:]]|$)' "$ROOT/install.sh"; then
+  printf '安装器包含可能在 pipefail 下触发 SIGPIPE 的 head 管道。\n' >&2
+  exit 1
+fi
 
 printf '[4/7] 渲染服务端配置与客户端订阅……\n'
 WORK="$(mktemp -d "$ROOT/tests/run.XXXXXX")"
