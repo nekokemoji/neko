@@ -10,7 +10,9 @@ CONFIG_DIR="${NEKO_CONFIG_DIR:-/etc/neko/config}"
 pids=()
 
 # Invoked indirectly by the EXIT trap below.
-# shellcheck disable=SC2329
+# ShellCheck 0.9 reports trap-only functions as SC2317; newer releases use
+# SC2329. Both warnings are false positives because the traps call this code.
+# shellcheck disable=SC2317,SC2329
 stop_children() {
   local pid
   trap - EXIT INT TERM
@@ -23,7 +25,7 @@ stop_children() {
 }
 
 # Invoked indirectly by the signal traps below.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 stop_service() {
   stop_children
   exit 0
