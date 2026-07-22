@@ -157,11 +157,12 @@ collect_identity() {
   ACME_EMAIL="$EMAIL_INPUT"
   export DOMAIN ACME_EMAIL
 
-  check_domain_resolution "$DOMAIN"
+  check_strict_dual_stack_dns "$DOMAIN"
   if (( ASSUME_YES == 0 )); then
-    printf '\n域名：%s\n邮箱：%s\n' "$DOMAIN" "$ACME_EMAIL"
-    printf '安装会用 Let\x27s Encrypt HTTP-01 验证，并占用 TCP 80/443。\n'
-    read -r -p "确认域名已直连本机且接受 ACME 服务条款？[y/N] " answer
+    printf '\n基础域名：%s\nIPv4 订阅域名：%s\nIPv6 订阅域名：%s\n邮箱：%s\n' \
+      "$DOMAIN" "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_DOMAIN_IPV6" "$ACME_EMAIL"
+    printf '安装会用 Let\x27s Encrypt HTTP-01 验证三个域名，并占用 TCP 80/443。\n'
+    read -r -p "确认三个域名均为 DNS only、直连本机并接受 ACME 服务条款？[y/N] " answer
     [[ "$answer" =~ ^[Yy]$ ]] || die "用户取消。"
   fi
 }
@@ -232,13 +233,15 @@ download_release_binaries() {
 }
 
 issue_initial_certificate() {
-  info "使用 HTTP-01 申请 ${DOMAIN} 的证书；失败时安装会停止并回滚。"
+  info "使用 HTTP-01 申请基础域名和严格 IPv4/IPv6 订阅域名的 SAN 证书；失败时安装会停止并回滚。"
   ROLLBACK_NEEDED=1
   install -d -m 0700 "$NEKO_VAR" "$NEKO_VAR/lego"
   "$WORKDIR/bin/lego" run \
     --path "$NEKO_VAR/lego" \
     --email "$ACME_EMAIL" \
     --domains "$DOMAIN" \
+    --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
+    --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
     --accept-tos \
     --key-type EC256 \
     --http
@@ -248,7 +251,13 @@ issue_initial_certificate() {
   [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]] || die "ACME 返回成功但证书文件不存在。"
   openssl x509 -in "$CERT_FILE" -noout -checkend 2592000 >/dev/null \
     || die "取得的证书有效期不足 30 天。"
-  ok "域名验证与证书申请成功。"
+  local certificate_domain
+  for certificate_domain in \
+    "$DOMAIN" "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_DOMAIN_IPV6"; do
+    openssl x509 -in "$CERT_FILE" -noout -checkhost "$certificate_domain" >/dev/null \
+      || die "取得的证书不包含 ${certificate_domain}。"
+  done
+  ok "三个域名验证与证书申请成功。"
 }
 
 create_service_user_and_dirs() {
@@ -315,7 +324,6 @@ write_initial_state() {
   local anytls_password vision_uuid xhttp_uuid vision_pair xhttp_pair
   local vision_private vision_public xhttp_private xhttp_public
   local vision_sid xhttp_sid xhttp_path sub_token installed_at listen_address
-  local shadowrocket_server
   local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT VISION_PORT XHTTP_PORT
 
   initialize_port_reservations
@@ -342,14 +350,8 @@ write_initial_state() {
   xhttp_sid="$(random_hex 8)"
   xhttp_path="/$(random_urlsafe 12)"
   sub_token="$(random_urlsafe 24)"
-  shadowrocket_server="$(preferred_direct_address "$DOMAIN")" \
-    || die "无法为 Shadowrocket 选择域名 ${DOMAIN} 的直连 A/AAAA 地址。"
   installed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  if [[ -s /proc/net/if_inet6 ]]; then
-    listen_address="::"
-  else
-    listen_address="0.0.0.0"
-  fi
+  listen_address="::"
 
   jq -n \
     --arg release "$NEKO_RELEASE" \
@@ -371,9 +373,12 @@ write_initial_state() {
     --arg vision_sid "$vision_sid" --arg xhttp_private "$xhttp_private" \
     --arg xhttp_public "$xhttp_public" --arg xhttp_sid "$xhttp_sid" \
     --arg xhttp_path "$xhttp_path" --arg sub_token "$sub_token" \
-    --arg shadowrocket_server "$shadowrocket_server" \
+    --arg subscription_domain_ipv4 "$SUBSCRIPTION_DOMAIN_IPV4" \
+    --arg subscription_domain_ipv6 "$SUBSCRIPTION_DOMAIN_IPV6" \
+    --arg subscription_address_ipv4 "$SUBSCRIPTION_IPV4_ADDRESS" \
+    --arg subscription_address_ipv6 "$SUBSCRIPTION_IPV6_ADDRESS" \
     '{
-      schema: 1,
+      schema: 2,
       release: $release,
       installed_at: $installed_at,
       platform: {id: $os_id, version: $os_version, arch: $arch},
@@ -418,9 +423,12 @@ write_initial_state() {
       },
       subscription: {
         token: $sub_token,
-        shadowrocket_server: $shadowrocket_server
+        ipv4_domain: $subscription_domain_ipv4,
+        ipv6_domain: $subscription_domain_ipv6,
+        ipv4_address: $subscription_address_ipv4,
+        ipv6_address: $subscription_address_ipv6
       },
-      firewall: {manager: "none", zone: ""},
+      firewall: {manager: "none", zone: "", zones: []},
       bbr: {managed: false, previous_qdisc: "", previous_congestion_control: ""}
     }' > "$NEKO_STATE"
   chmod 0600 "$NEKO_STATE"
@@ -459,7 +467,7 @@ main() {
   detect_platform
   require_systemd
 
-  require_commands getent
+  require_commands getent awk sort grep
   collect_identity
   # Keep the domain gate ahead of package installation and all Neko file
   # creation.  Recheck the target after taking the lock to close the race
@@ -471,6 +479,7 @@ main() {
   exec 9>/run/lock/neko-install.lock
   flock -n 9 || die "另一个 Neko 安装进程正在运行。"
   assert_clean_target
+  assert_dual_stack_kernel
   assert_public_ports_free
   assert_work_space
 

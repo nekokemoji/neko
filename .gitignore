@@ -1,0 +1,4 @@
+tests/.tools/
+tests/fetch.*/
+tests/platform.*/
+tests/run.*/

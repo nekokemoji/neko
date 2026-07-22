@@ -13,9 +13,9 @@ export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 source /usr/local/libexec/neko/lib/common.sh
 
 require_root
-require_commands flock sha256sum systemctl
+require_commands flock sha256sum systemctl getent openssl find chown
 
-exec 9>/run/lock/neko-renew.lock
+exec 9>/run/lock/neko-maintenance.lock
 flock -n 9 || exit 0
 
 load_state
@@ -27,11 +27,20 @@ before_hash="$(sha256sum "$CERT_FILE" "$KEY_FILE" | sha256sum | awk '{print $1}'
   --path "$NEKO_VAR/lego" \
   --email "$ACME_EMAIL" \
   --domains "$DOMAIN" \
+  --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
+  --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
   --accept-tos \
   --key-type EC256 \
   --http \
   --http.webroot "$NEKO_VAR/acme" \
+  --force-cert-domains \
   --no-random-sleep
+
+for certificate_domain in \
+  "$DOMAIN" "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_DOMAIN_IPV6"; do
+  openssl x509 -in "$CERT_FILE" -noout -checkhost "$certificate_domain" >/dev/null \
+    || die "续期后的证书不包含 ${certificate_domain}。"
+done
 
 chown -R root:root "$NEKO_VAR/lego"
 find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +

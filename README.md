@@ -1,210 +1,186 @@
 # Neko 多协议部署脚本
 
-这是一个面向新手、但尽量保持可审计性的 Linux 服务端部署项目。它强制要求域名，只有 DNS 能解析且 Let’s Encrypt HTTP-01 证书签发成功后才会继续；安装完成后用 `neko` 进入纯终端控制面板，没有网页后台。
+Neko 是面向独立双栈 VPS 的终端部署工具。它安装 Hysteria2、TUIC v5、Shadowsocks 2022、AnyTLS、VLESS REALITY Vision 和 VLESS REALITY XHTTP，并为 Mihomo、Stash、Shadowrocket 各生成严格 IPv4 与严格 IPv6 两份订阅。
 
-请只在你有权管理的服务器和网络中使用，并遵守所在地法律、服务商条款与组织政策。
+本项目没有网页面板。安装后使用 `neko` 打开终端菜单。请只在你有权管理的服务器和网络中使用，并遵守所在地法律、服务商条款与组织政策。
 
-## 新手一行安装
+## 先说清楚：为什么是 6 条订阅
 
-先把域名的 A 和/或 AAAA 记录直接解析到 VPS，并关闭 CDN/代理。然后登录 VPS，在终端只复制下面这一行：
+每个客户端都有两条链接，共 6 条：
 
-```bash
-TMP="$(mktemp)" && curl -fsSL --retry 4 https://raw.githubusercontent.com/nekokemoji/neko/main/bootstrap.sh -o "$TMP" && bash "$TMP"
-```
+| 客户端 | 严格 IPv4 | 严格 IPv6 | 节点数 |
+|---|---|---|---:|
+| Mihomo | `https://v4.<域名>/<令牌>/mihomo.yaml` | `https://v6.<域名>/<令牌>/mihomo.yaml` | 6 / 6 |
+| Stash | `https://v4.<域名>/<令牌>/stash.yaml` | `https://v6.<域名>/<令牌>/stash.yaml` | 5 / 5 |
+| Shadowrocket | `https://v4.<域名>/<令牌>/shadowrocket.txt` | `https://v6.<域名>/<令牌>/shadowrocket.txt` | 6 / 6 |
 
-引导脚本会下载固定的 Neko 1.0.4 源码，然后依次询问域名、ACME 邮箱和确认信息。它不会下载“最新”的 Xray、sing-box 等核心；核心版本和 SHA-256 仍由本项目的 `versions.env` 冻结。如果当前用户不是 root，引导脚本会在系统存在 `sudo` 时自动提权。
+这里没有“自动版”，也没有 IPv4 优先后回退 IPv6：
 
-一行安装入口本身可在执行前查看：[bootstrap.sh](bootstrap.sh)。不建议使用 `curl ... | bash`，因为管道会占用标准输入，导致域名和邮箱的交互询问无法正常读取键盘输入。
+- IPv4 下载域名只有 A，没有 AAAA；IPv6 下载域名只有 AAAA，没有 A。
+- 六份配置中的节点 `server` 都是对应族的 IP 字面量，客户端不再对节点域名做双栈选择。
+- Mihomo 另外写入 `ip-version: ipv4` 或 `ip-version: ipv6`。
+- TLS SNI、证书主机名、REALITY `serverName` 和 XHTTP Host 始终保留基础域名。
+- 对应地址族不可用时应直接失败，不会由生成配置回退到另一族。
+
+脚本能约束 DNS 记录和生成的客户端配置，但不能控制客户端之外的网络。运营商 DNS64/NAT64、系统级 VPN、透明代理或客户端自身改写仍可能改变实际链路；任何服务端脚本都无法绕过这一边界。
+
+## 必须先配置的 Cloudflare DNS
+
+假设基础域名是 `node.example.com`，VPS 地址为 `VPS_IPv4` 与 `VPS_IPv6`：
+
+| 类型 | 名称 | 内容 | Cloudflare 状态 |
+|---|---|---|---|
+| A | `node` | `VPS_IPv4` | DNS only（灰云） |
+| AAAA | `node` | `VPS_IPv6` | DNS only（灰云） |
+| A | `v4.node` | `VPS_IPv4` | DNS only（灰云） |
+| AAAA | `v6.node` | `VPS_IPv6` | DNS only（灰云） |
+
+不要给 `v4.node` 添加 AAAA，也不要给 `v6.node` 添加 A。每个名称只允许表中这一条对应记录；三个名称必须指向同一台 VPS。Cloudflare 说明了代理记录返回的是 Cloudflare Anycast 地址而不是源站地址，因此这里必须使用 [DNS-only](https://developers.cloudflare.com/dns/proxy-status/)。
+
+安装器会硬性检查：
+
+- `v4.node.example.com` 恰好 1 条 A、0 条 AAAA；
+- `v6.node.example.com` 恰好 1 条 AAAA、0 条 A；
+- 基础域名的 A/AAAA 与两个专用域名完全一致；
+- 内核启用 IPv6、存在 IPv6 默认路由，且 `net.ipv6.bindv6only=0`；
+- TCP 80、443、8443 未被其他程序占用；
+- Let’s Encrypt 为基础、v4、v6 三个名称成功签发同一张 SAN 证书。
+
+Let’s Encrypt HTTP-01 必须从公网访问 TCP 80，官方说明见 [Challenge Types](https://letsencrypt.org/docs/challenge-types/) 和 [Integration Guide](https://letsencrypt.org/docs/integration-guide/)。
 
 ## 支持范围
 
-| 系统 | 版本 | 架构 | 网络 |
+| 系统 | 版本 | 架构 | 网络要求 |
 |---|---|---|---|
-| Debian | 12、13 | amd64、arm64 | IPv4、IPv6、双栈 |
-| Ubuntu | 24.04、26.04 | amd64、arm64 | IPv4、IPv6、双栈 |
-| Rocky Linux | 9.x、10.x | amd64、arm64 | IPv4、IPv6、双栈 |
-| AlmaLinux | 9.x、10.x | amd64、arm64 | IPv4、IPv6、双栈 |
+| Debian | 12、13 | amd64、arm64 | 公网双栈 |
+| Ubuntu | 24.04、26.04 | amd64、arm64 | 公网双栈 |
+| Rocky Linux | 9.x、10.x | amd64、arm64 | 公网双栈 |
+| AlmaLinux | 9.x、10.x | amd64、arm64 | 公网双栈 |
 
-必须是以 systemd 作为 PID 1 的完整系统。普通 Docker 容器不是安装目标。
-
-## 协议与核心
-
-| 协议 | 服务端核心 | 传输 | 证书处理 |
-|---|---|---|---|
-| Hysteria2 | Hysteria 官方核心 | UDP，128 个连续随机端口跳跃 | 直接读取自动签发证书 |
-| TUIC v5 | sing-box | UDP | 直接读取自动签发证书 |
-| Shadowsocks 2022 | sing-box | TCP + UDP | 协议本身不使用 TLS 证书 |
-| AnyTLS | sing-box | TCP | 直接读取自动签发证书 |
-| VLESS + REALITY + Vision | Xray | TCP/RAW | REALITY 借用本机 TLS 目标的同一张证书 |
-| VLESS + REALITY + XHTTP | Xray | TCP/XHTTP | REALITY 借用本机 TLS 目标的同一张证书 |
-
-REALITY 本身没有 PEM 证书字段。这里让它的 `target` 指向 `127.0.0.1:8443`：该端口只监听回环地址，由 Caddy 加载本域名的自动签发证书。因此它确实“借用自己的证书”，而不是把证书路径硬塞进不支持该字段的 Xray 配置。具体机制见 [Xray REALITY 文档](https://xtls.github.io/en/config/transports/reality.html) 和 [XHTTP 文档](https://xtls.github.io/en/config/transports/xhttp.html)。
-
-## 冻结版本
-
-版本集在 2026-07-18 核对，安装器只下载精确 tag，并对 amd64/arm64 分别校验固定 SHA-256；不会解析 `latest`。
-
-| 组件 | 冻结版本 | 用途 |
-|---|---:|---|
-| [Xray-core](https://github.com/XTLS/Xray-core/releases/tag/v26.3.27) | 26.3.27 | 两个 VLESS + REALITY 入站 |
-| [sing-box](https://github.com/SagerNet/sing-box/releases/tag/v1.13.14) | 1.13.14 | TUIC、SS2022、AnyTLS |
-| [Hysteria](https://github.com/apernet/hysteria/releases/tag/app%2Fv2.10.0) | 2.10.0 | Hysteria2 与端口跳跃 |
-| [Caddy](https://github.com/caddyserver/caddy/releases/tag/v2.11.4) | 2.11.4 | HTTPS 订阅和本机 REALITY TLS 目标 |
-| [lego](https://github.com/go-acme/lego/releases/tag/v5.2.2) | 5.2.2 | ACME 首次签发与续期 |
-
-完整哈希在 `versions.env`。升级时应同时更新版本、两个架构的哈希并重新跑测试，不要只改版本号。
-
-## 安装前准备
-
-1. 使用一台干净的、具有公网连通性的 VPS，并取得 root 权限。
-2. 准备一个域名，例如 `node.example.com`，将 A 和/或 AAAA 记录直接解析到这台服务器。
-3. 关闭该记录的 CDN、橙云或反向代理。随机协议端口不能穿过普通 HTTP CDN。
-4. 在云厂商安全组中先放行 TCP 80 和 443；HTTP-01 只能通过 80 端口完成，见 [Let’s Encrypt 挑战类型说明](https://letsencrypt.org/docs/challenge-types/)。
-5. 确保 TCP 80、443、8443 未被已有服务占用。安装器发现占用会拒绝覆盖。
-6. 确保 `/var/tmp` 所在文件系统至少有 768 MiB 可用空间。安装器会在这里下载并解压冻结核心，完成或失败后都会清理；这可避开部分 VPS 只有几百 MiB 的 `/tmp` 内存盘。
-
-域名解析只是第一道检查。真正的硬门槛是 Let’s Encrypt 从公网完成 HTTP-01 验证并签发证书；失败后安装会停止并回滚本项目已创建的文件。
+必须是以 systemd 作为 PID 1 的完整系统。普通 Docker 容器不是安装目标。单栈 VPS 会被明确拒绝，因为它无法满足严格 IPv4/IPv6 两套订阅的要求。
 
 ## 安装
 
-解压项目后运行：
+准备好上述 DNS 和云安全组后，在 VPS 执行：
 
 ```bash
-cd neko
-sudo bash install.sh --domain node.example.com --email admin@example.com
+TMP="$(mktemp)" && \
+curl -fsSL --retry 4 https://raw.githubusercontent.com/nekokemoji/neko/main/bootstrap.sh -o "$TMP" && \
+bash "$TMP"
 ```
 
-非交互方式：
+也可以下载仓库后运行：
 
 ```bash
 sudo bash install.sh \
   --domain node.example.com \
-  --email admin@example.com \
-  --yes
+  --email admin@example.com
 ```
 
-`--yes` 只跳过人工确认，不会跳过系统、域名、端口、校验和或证书检查。
+非交互安装增加 `--yes`。它只跳过人工确认，不会跳过 DNS、双栈内核、端口、SHA-256、配置或证书检查。
 
-安装时会为六个协议统一分配 10000–60000 范围内互不冲突的随机端口。Hysteria2 获得一个随机的 128 端口连续区间，第一个端口就是主端口；官方核心在 Linux 上用 nftables/iptables 把其余端口重定向到主端口，并在退出时清理规则。原理见 [Hysteria2 端口跳跃文档](https://v2.hysteria.network/docs/advanced/Port-Hopping/)。
+安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前冻结版本见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2；Mihomo 1.19.29 只用于测试生成配置。
 
-安装结束后，查看实际端口：
+## 云安全组与本机防火墙
 
-```bash
-sudo jq '.ports' /etc/neko/state.json
-```
+安装完成时脚本会输出实际端口。必须同时为 VPS 的 IPv4 与 IPv6 入站放行：
 
-如果系统正在启用 firewalld 或 UFW，脚本会建立一个独立、可逆的 Neko 规则；其他防火墙不会被擅自改写。云安全组无法由脚本代管，仍须手动放行输出中的随机 TCP/UDP 端口和完整 Hysteria2 UDP 区间。回环端口 8443 不应对公网开放。
+- TCP：80、443、SS2022、AnyTLS、Vision、XHTTP；
+- UDP：Hysteria2 的完整 128 端口区间、TUIC、SS2022；
+- TCP 8443 只监听 `127.0.0.1`，不要对公网放行。
 
-## HTTPS 订阅
+如果 firewalld 正在运行，脚本将规则添加到 IPv4/IPv6 默认路由网卡实际所属的 zone，并在 reload 后查询确认；如果 UFW 正在运行，则创建独立的 `NekoProxy` 应用规则。卸载只移除 Neko 自己的规则。云厂商安全组仍需手动配置。
 
-三条订阅都是带随机令牌的 HTTPS URL：
+Caddy 的公网订阅只启用 HTTP/1.1 与 HTTP/2，因此 443 只需要 TCP，不会出现“配置支持 HTTP/3 但 UDP 443 未放行”的不一致。
 
-| 客户端 | 节点数 | 内容 |
-|---|---:|---|
-| Mihomo 内核应用 | 6 | 全部协议 |
-| Stash | 5 | 除 VLESS + REALITY + XHTTP 外的全部协议 |
-| Shadowrocket 2.2.90 | 6 | 全部协议，结构化 YAML；节点直连 IP，SNI/证书仍绑定域名 |
+## 协议与安全默认值
 
-Mihomo 格式依据其 [Hysteria2](https://wiki.metacubex.one/en/config/proxies/hysteria2/)、[TUIC](https://wiki.metacubex.one/en/config/proxies/tuic/)、[AnyTLS](https://wiki.metacubex.one/en/config/proxies/anytls/)、[VLESS](https://wiki.metacubex.one/en/config/proxies/vless/) 与 [XHTTP 传输](https://wiki.metacubex.one/en/config/proxies/transport/) 文档生成。Stash 使用单独的字段映射，其中 Hysteria2 使用 `auth`、TUIC 明确使用 v5，并根据 [Stash 协议文档](https://stash.wiki/en/proxy-protocols/proxy-types) 排除尚未支持的 XHTTP。Shadowrocket 使用单独的结构化 Clash/YAML 订阅，显式提供 `port-range`、TUIC v5、REALITY 与 `xhttp-opts`；对应能力以 [Apple App Store 版本记录](https://apps.apple.com/us/app/shadowrocket/id932747118) 为准。
+| 协议 | 服务端核心 | 传输 |
+|---|---|---|
+| Hysteria2 | Hysteria | UDP，128 个随机连续端口 |
+| TUIC v5 | sing-box | UDP |
+| Shadowsocks 2022 | sing-box | TCP + UDP |
+| AnyTLS | sing-box | TCP + TLS |
+| VLESS REALITY Vision | Xray | TCP/RAW |
+| VLESS REALITY XHTTP | Xray | TCP/XHTTP |
 
-Shadowrocket 的 HTTPS 订阅下载与节点连接可能走不同的 DNS 路径。为避免“订阅能下载、六个域名节点却全部超时”，安装器会为 Shadowrocket 固定域名当前的直连地址：双栈优先 A，只有 IPv6 时使用 AAAA。订阅 URL 仍是绑定域名的 HTTPS；Hysteria2、TUIC、AnyTLS 的 SNI、两种 REALITY 的 `serverName`、XHTTP Host 和证书校验也仍使用该域名。Mihomo 与 Stash 节点继续使用域名。选择结果保存在仅 root 可读的 `state.json` 中：
+REALITY 的本地目标是 `127.0.0.1:8443`，由 Caddy 加载同一张受信 SAN 证书；该端口不对公网监听。
 
-```bash
-sudo jq -r '.subscription.shadowrocket_server' /etc/neko/state.json
-```
-
-订阅令牌等同于密码，不要公开。终端面板的重置功能会生成新令牌、重写 Caddy 路由并重启服务，旧 URL 随即返回 404。
-
-从 Neko 1.0.2 或 1.0.3 原地升级到 1.0.4 时，解压新版源码后以 root 运行：
-
-```bash
-sudo bash update-shadowrocket.sh
-```
-
-更新器只替换公共辅助库和订阅渲染器、记录 Shadowrocket 直连地址、重新生成配置并重启 Caddy。它不会重装协议、变更端口、轮换密码/UUID/订阅令牌或重新申请证书；任何核心配置校验失败都会恢复原文件和状态。
+三套服务端核心默认拒绝客户端访问私有、回环、链路本地/云元数据等非公网地址，并拒绝 TCP 25，降低被导入订阅的设备利用去扫描 VPS 内网或滥发 SMTP 的风险。Hysteria 使用官方 [ACL](https://v2.hysteria.network/docs/advanced/ACL/)，sing-box 使用官方 [route reject action](https://sing-box.sagernet.org/configuration/route/rule_action/)，Xray 使用 [routing](https://xtls.github.io/en/config/routing.html) 与 [blackhole](https://xtls.github.io/en/config/outbounds/blackhole.html)。需要访问内网或 SMTP 的用户必须自行审计并修改渲染器。
 
 ## 终端控制面板
 
-安装后输入：
-
 ```bash
-neko
+sudo neko
 ```
 
-菜单严格为：
+菜单提供：
 
 ```text
 0. 退出
-1. 查看三个订阅链接
+1. 查看六个严格订阅链接
 2. 开启 BBRv1
-3. 重置订阅链接（旧链接失效）
-4. 卸载全部协议
+3. 重置订阅 URL（不会撤销已导入节点）
+4. 刷新严格 IPv4/IPv6 端点
+5. 卸载全部协议
 ```
 
-“开启 BBRv1”加载发行版内核提供的 `tcp_bbr`，写入 `/etc/sysctl.d/99-neko-bbr.conf`，卸载时删除该文件并尽力恢复启用前的实时值。脚本不会安装自定义内核，因此精确的 BBR 实现仍由发行版内核决定。
+订阅令牌相当于密码。重置令牌只会使旧下载 URL 返回 404；已经导入客户端的端口、密码和 UUID 不会因此失效。若怀疑节点凭据泄露，应卸载后重新安装或手动轮换全部协议凭据。
 
-卸载需要输入大写 `UNINSTALL` 二次确认。它只删除本项目的 systemd 单元、固定目录、专用用户、专用防火墙规则、证书和 BBR 配置，不会删除用户的其他防火墙规则。
+## 从 1.0.x 升级
+
+先创建 `v4.<基础域名>` 和 `v6.<基础域名>` 记录，再在新版源码目录运行：
+
+```bash
+sudo bash upgrade.sh
+```
+
+升级器保留协议端口、密码、UUID 与订阅令牌；扩展证书到三个域名，生成六份订阅并重启服务。状态、配置、程序文件与证书会先备份；任何校验、证书或服务启动失败都会自动回滚。旧的单域名订阅 URL 升级后停用，需要在客户端重新导入对应的严格链接。
 
 ## 证书续期
 
-`neko-renew.timer` 每天检查一次，并增加最长 12 小时随机延迟。lego 使用 Caddy 提供的 HTTP-01 webroot；证书实际变化后，会重启 Caddy、sing-box、Hysteria 和 Xray，让所有需要证书的协议读取新文件。
+`neko-renew.timer` 每天检查一次并带随机延迟。续期使用 Caddy 的 HTTP-01 webroot，并强制确认证书域名集合仍为基础、v4、v6 三个名称。证书实际变化后才重启读取证书的服务。
 
-因此续期期间也必须满足：
-
-- 域名继续直连这台服务器；
-- TCP 80 保持公网可达；
-- Caddy 服务正常运行。
-
-检查状态：
+续期期间三个 DNS 名称必须继续直连该 VPS，TCP 80 必须公网可达：
 
 ```bash
 systemctl status neko-renew.timer
 journalctl -u neko-renew.service --since '7 days ago'
 ```
 
-## 运维与排错
-
-```bash
-systemctl status neko-caddy neko-sing-box neko-xray neko-hysteria
-journalctl -u neko-hysteria -n 100 --no-pager
-journalctl -u neko-xray -n 100 --no-pager
-```
-
-重要限制：Xray 26.3.27 在校验时会明确警告 REALITY 监听非 443 端口可能增加被封锁风险。本项目按需求让每个协议使用独立随机端口，并把 443 留给 HTTPS 订阅，因此保留这个取舍。随机端口也不是认证或安全边界，真正的保护来自强随机凭据、TLS/REALITY 和订阅令牌。
-
-## 测试
-
-快速复现项目测试：
+## 测试与已知边界
 
 ```bash
 bash tests/fetch-pinned-tools.sh
 bash tests/run.sh
 ```
 
-测试会验证 Shell 语法、16 个系统/架构检测组合、固定版本、随机端口无冲突、真实 sing-box/Xray/Caddy 配置、Hysteria 配置解析、6/5/6 节点数、Shadowrocket IPv4/IPv6 选择与原地升级、Stash 专用字段以及订阅令牌失效逻辑。详细范围和未覆盖事项见 [TESTING.md](TESTING.md)。
+测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego 和 Mihomo，覆盖六份订阅、严格 DNS 拒绝规则、服务端出口阻断、升级成功/回滚、令牌轮换和配置解析。GitHub Actions 还在 8 个发行版镜像的 amd64/arm64 用户空间中执行语法与平台检测，共 16 个组合。
+
+容器用户空间不等同于完整 systemd VM。真实 ACME、公网 IPv4/IPv6、云安全组、重启/卸载循环以及 Stash/Shadowrocket 真机导入仍必须在你自己的可重装 VPS 上做最终验收。详细范围见 [TESTING.md](TESTING.md)。
 
 ## 主要文件
 
 ```text
-bootstrap.sh               新手一行安装入口与固定源码下载
-install.sh                 安装、硬门槛、失败回滚
-versions.env               固定版本和双架构 SHA-256
-lib/common.sh              系统检测、随机端口、状态读取
-lib/render.sh              服务端配置和三类订阅
-lib/firewall.sh            firewalld/UFW 可逆规则
-runtime/panel.sh           neko 终端面板
-runtime/renew.sh           ACME 自动续期
-update-shadowrocket.sh     旧安装原地升级与失败回滚
-diagnose-shadowrocket-*.sh Shadowrocket 临时诊断工具
-systemd/                   服务与定时器
-tests/                     可重复测试
+bootstrap.sh             固定源码提交的一行安装入口
+install.sh               安装、硬门槛与失败回滚
+upgrade.sh               1.0.x 到严格双栈布局的可回滚升级
+versions.env             固定版本与双架构 SHA-256
+lib/common.sh            系统、DNS、端口与状态逻辑
+lib/render.sh            服务端配置与六份客户端订阅
+lib/firewall.sh          firewalld/UFW 可逆规则
+runtime/panel.sh         neko 终端面板
+runtime/renew.sh         三域名 SAN 证书续期
+systemd/                 服务与定时器
+tests/                   本地与 CI 测试
 ```
 
 ## 上游官方资料
 
 - [sing-box TUIC 入站](https://sing-box.sagernet.org/configuration/inbound/tuic/)、[Shadowsocks 入站](https://sing-box.sagernet.org/configuration/inbound/shadowsocks/)、[AnyTLS 入站](https://sing-box.sagernet.org/configuration/inbound/anytls/)
-- [Hysteria2 服务端配置](https://v2.hysteria.network/docs/getting-started/Server/)、[URI 规范](https://v2.hysteria.network/docs/developers/URI-Scheme/)
-- [AnyTLS URI 规范](https://github.com/anytls/anytls-go/blob/main/docs/uri_scheme.md)
-- [TUIC v5 规范与实现列表](https://github.com/tuic-protocol/tuic)
+- [Hysteria2 服务端配置](https://v2.hysteria.network/docs/getting-started/Server/) 与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
+- [Xray REALITY](https://xtls.github.io/en/config/transports/reality.html) 与 [XHTTP](https://xtls.github.io/en/config/transports/xhttp.html)
+- [Mihomo 代理配置](https://wiki.metacubex.one/en/config/proxies/)
+- [Stash 代理协议](https://stash.wiki/en/proxy-protocols/proxy-types)
 - [Caddy 自定义 TLS 证书](https://caddyserver.com/docs/caddyfile/directives/tls)
-- [Let’s Encrypt 证书说明](https://letsencrypt.org/docs/faq/)
+- [lego CLI](https://go-acme.github.io/lego/usage/cli/)

@@ -1,0 +1,108 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-validation:
+    name: Core and subscription validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck python3-yaml
+      - name: Fetch pinned core binaries
+        run: bash tests/fetch-pinned-tools.sh
+      - name: Run test suite
+        run: bash tests/run.sh
+
+  distro-userland:
+    name: ${{ matrix.distro.name }} (amd64 + arm64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - name: Debian 12
+            image: debian:12-slim
+            id: debian
+            version: "12"
+            family: debian
+          - name: Debian 13
+            image: debian:13-slim
+            id: debian
+            version: "13"
+            family: debian
+          - name: Ubuntu 24.04
+            image: ubuntu:24.04
+            id: ubuntu
+            version: "24.04"
+            family: debian
+          - name: Ubuntu 26.04
+            image: ubuntu:26.04
+            id: ubuntu
+            version: "26.04"
+            family: debian
+          - name: Rocky Linux 9
+            image: rockylinux/rockylinux:9-minimal
+            id: rocky
+            version: "9"
+            family: rhel
+          - name: Rocky Linux 10
+            image: rockylinux/rockylinux:10-minimal
+            id: rocky
+            version: "10"
+            family: rhel
+          - name: AlmaLinux 9
+            image: almalinux:9-minimal
+            id: almalinux
+            version: "9"
+            family: rhel
+          - name: AlmaLinux 10
+            image: almalinux:10-minimal
+            id: almalinux
+            version: "10"
+            family: rhel
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Enable arm64 user-mode execution
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+        with:
+          platforms: arm64
+      - name: Test amd64 userland
+        run: >-
+          docker run --rm --platform linux/amd64
+          -v "$PWD:/src:ro" -w /src
+          "${{ matrix.distro.image }}"
+          bash tests/container-smoke.sh
+          "${{ matrix.distro.id }}"
+          "${{ matrix.distro.version }}"
+          "${{ matrix.distro.family }}"
+          amd64
+      - name: Test arm64 userland
+        run: >-
+          docker run --rm --platform linux/arm64
+          -v "$PWD:/src:ro" -w /src
+          "${{ matrix.distro.image }}"
+          bash tests/container-smoke.sh
+          "${{ matrix.distro.id }}"
+          "${{ matrix.distro.version }}"
+          "${{ matrix.distro.family }}"
+          arm64

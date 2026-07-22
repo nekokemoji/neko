@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+if [[ -n "${NEKO_TEST_SYSTEMCTL_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$NEKO_TEST_SYSTEMCTL_LOG"
+fi
+
+if [[ -n "${NEKO_TEST_SYSTEMCTL_FAIL_PATTERN:-}" \
+  && "$*" == *"$NEKO_TEST_SYSTEMCTL_FAIL_PATTERN"* ]]; then
+  if [[ -z "${NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE:-}" \
+    || ! -e "$NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE" ]]; then
+    if [[ -n "${NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE:-}" ]]; then
+      touch "$NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE"
+    fi
+    exit 1
+  fi
+fi
+
+exit 0
