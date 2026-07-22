@@ -1,72 +1,74 @@
-# 测试报告
+# Neko 1.1.0 测试范围
 
-测试日期：2026-07-18（Asia/Tokyo）
+最近核对日期：2026-07-23（Asia/Tokyo）。
 
-## 已完成的检查
+这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
-### 1. 发行版根文件系统矩阵
+## 本地核心测试
 
-使用各发行版公开容器镜像导出根文件系统。amd64 通过原生 `chroot` 运行该发行版自带的 Bash；arm64 通过静态 QEMU user-mode 运行该发行版自带的 arm64 Bash。两种架构都执行了项目所有 Shell 文件的语法解析和 `detect_platform`。
+执行方式：
 
-| 系统镜像实际版本 | amd64 Bash | arm64 Bash/QEMU | 结果 |
-|---|---:|---:|---|
-| Debian 12 | 5.2.15 | 5.2.15 | 通过 |
-| Debian 13 | 5.2.37 | 5.2.37 | 通过 |
-| Ubuntu 24.04 | 5.2.21 | 5.2.21 | 通过 |
-| Ubuntu 26.04 | 5.3.9 | 5.3.9 | 通过 |
-| Rocky Linux 9.8 | 5.1.8 | 5.1.8 | 通过 |
-| Rocky Linux 10.2 | 5.2.26 | 5.2.26 | 通过 |
-| AlmaLinux 9.8 | 5.1.8 | 5.1.8 | 通过 |
-| AlmaLinux 10.2 | 5.2.26 | 5.2.26 | 通过 |
+```bash
+bash tests/fetch-pinned-tools.sh
+bash tests/run.sh
+```
 
-此外，`tests/platform-matrix.sh` 对 8 个系统版本分别模拟 amd64/arm64，共 16 个允许组合，并验证 Ubuntu 22.04 等非目标版本会被拒绝。
+`tests/fetch-pinned-tools.sh` 从上游精确 release tag 下载测试二进制并校验 `versions.env` 中固定的 SHA-256。`tests/run.sh` 当前覆盖：
 
-### 2. 冻结资产与双架构核心
+- 所有 Shell 文件通过 `bash -n` 与 ShellCheck；缺少 ShellCheck 或 PyYAML 时测试失败而不是跳过。
+- `detect_platform` 模拟 Debian 12/13、Ubuntu 24.04/26.04、Rocky 9/10、AlmaLinux 9/10 的 amd64/arm64，共 16 个允许组合，并验证不支持版本会被拒绝。
+- Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证。
+- 严格 DNS 正例通过；`v4` 名称带 AAAA、`v6` 名称带 A 等错误配置会失败。
+- firewalld 根据 IPv4/IPv6 默认路由网卡寻找实际 zone，而不是盲目使用 default zone。
+- Bootstrap 离线解压固定源码包、核对 1.1.0 标记并清理临时目录。
+- Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2 和 Mihomo 1.19.29 的版本身份与 CLI 参数。
+- 真实 `sing-box check`、`xray run -test`、`caddy validate`。
+- Hysteria 读取配置并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。
+- 真实 Mihomo 分别解析严格 IPv4 与严格 IPv6 配置。
+- 订阅目录恰好生成 6 个文件：Mihomo、Stash、Shadowrocket 各 v4/v6 两份。
+- Mihomo 6 个节点全部使用对应 IP 字面量和 `ip-version`；Stash 5 个节点全部使用对应 IP；Shadowrocket 6 个节点全部使用对应 IP。
+- TLS SNI、证书主机名、REALITY `serverName` 与 XHTTP Host 保持基础域名，不被 IP 字面量替换。
+- Caddy 只在 v4 主机发布 v4 文件、只在 v6 主机发布 v6 文件，并禁用公网 HTTP/3。
+- 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 由配置加载路径与结构化断言校验。
+- 随机端口连续运行 50 轮：Hysteria2 的 128 端口区间与其余五个单端口无冲突。
+- 订阅令牌轮换后旧路径从 Caddy 配置消失。
+- 从 schema 1 / Neko 1.0.x 模拟升级到 schema 2 成功，旧订阅文件被替换为 6 个新文件。
+- 模拟升级中 Caddy 重启失败，确认状态与配置哈希恢复、临时备份清理。
+- systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
-下载并验证了 `versions.env` 中全部 10 个服务端资产哈希（5 个组件 × 2 个架构）。
+本次修改在当前 Ubuntu 24.04 用户空间中完成；这里 PID 1 不是 systemd，也没有分配可用于 ACME 的公网双栈域名。真实核心配置校验能够运行，但不能据此声称完成了一次真实 VPS 安装。
 
-| 检查 | amd64 原生 | arm64 QEMU |
+## GitHub Actions 发行版用户空间矩阵
+
+`.github/workflows/ci.yml` 运行两个层次：
+
+1. Ubuntu 24.04 runner 下载真实冻结核心并执行完整 `tests/run.sh`。
+2. 8 个发行版镜像分别在 amd64 与 QEMU arm64 用户空间运行全部 Shell 语法解析和真实 `/etc/os-release` 平台检测，共 16 个组合。
+
+矩阵目标：
+
+| 发行版镜像 | amd64 | arm64/QEMU |
 |---|---:|---:|
-| Xray 26.3.27 版本及 `run -test` | 通过 | 通过 |
-| sing-box 1.13.14 版本及 `check` | 通过 | 通过 |
-| Caddy 2.11.4 版本及 `validate` | 通过 | 通过 |
-| Hysteria 2.10.0 版本及配置解析 | 通过 | 通过 |
-| lego 5.2.2 版本及 v5 `run` CLI 参数 | 通过 | 通过 |
+| Debian 12 | 检查 | 检查 |
+| Debian 13 | 检查 | 检查 |
+| Ubuntu 24.04 | 检查 | 检查 |
+| Ubuntu 26.04 | 检查 | 检查 |
+| Rocky Linux 9 | 检查 | 检查 |
+| Rocky Linux 10 | 检查 | 检查 |
+| AlmaLinux 9 | 检查 | 检查 |
+| AlmaLinux 10 | 检查 | 检查 |
 
-Hysteria 没有独立的“只校验”命令。测试将 `PATH` 指向空目录后启动生成配置，确认 YAML 已被读取并运行到端口跳跃帮助程序的查找阶段；随后按预期停止，从而避免修改测试宿主的防火墙。证书、认证和混淆字段另由结构化 YAML 断言检查。
+Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态以对应提交/PR 的 GitHub Checks 为准；工作流文件存在不等于某次提交已经通过。
 
-### 3. 配置和订阅
+## 仍未由隔离环境完成
 
-- ShellCheck 0.11.0：通过（排除动态 source、跨文件全局变量和 jq 单引号表达式等有意用法）。
-- Bash `-n`：全部脚本通过。
-- Bootstrap：离线打包并解压固定 1.0.4 源码，校验必需文件、版本标记和临时目录清理；交互安装仍由同一 `install.sh` 执行。
-- 随机端口分配：连续运行 50 轮；128 个 Hysteria2 端口与其余五个端口均无冲突。
-- Mihomo 1.19.28：实际执行 `mihomo -t`，6 节点配置通过。
-- Stash：按官方字段生成 5 节点配置；确认 Hysteria2 使用 `auth`、TUIC 使用 `version: 5`，且不存在 XHTTP。
-- Shadowrocket：结构化 YAML 严格为 6 个节点；连接地址使用状态中固定的 IP，TLS SNI、REALITY serverName 与 XHTTP Host 保留绑定域名。测试覆盖 IPv4 优先、纯 IPv6 回退、SS2022 编码/DNS 对照诊断、六协议直连诊断和原地升级清理。
-- REALITY：两个入站都指向 `127.0.0.1:8443`，`serverNames` 为绑定域名。
-- 证书：TUIC、AnyTLS、Hysteria2、Caddy 都引用同一 lego 证书；REALITY 的回环目标也加载该证书。
-- 令牌轮换：重新渲染后 Caddyfile 只包含新令牌，旧路径不存在。
-- systemd：6 个单元通过 systemd 255 的 `systemd-analyze verify`；同时检查 Hysteria CAP_NET_ADMIN、sing-box AF_NETLINK 与续期写路径。
+以下项目需要真实、可重装的公网 VPS 与真机客户端：
 
-### 4. 当前 Ubuntu 24.04 环境
+- 8 个发行版各自作为完整 systemd VM 的安装、重启、升级、失败回滚和卸载循环；
+- 三个 DNS 名称的真实 Let’s Encrypt 生产证书签发及后续自动续期；
+- 云厂商安全组、firewalld/UFW 与 Hysteria 端口跳跃在真实内核上的联动；
+- 公网 IPv4/IPv6 路由、运营商 DNS64/NAT64、透明代理和地区性封锁行为；
+- Stash 与 Shadowrocket 真机导入，以及六种协议的延迟、吞吐、漫游和断线重连；
+- 非 443 REALITY 在具体网络中的可用性与封锁概率。
 
-开发环境的用户空间是 Ubuntu 24.04，Xray 配置曾直接启动并保持运行到测试超时。该环境限制了 netlink、PID 1 不是 systemd，且不提供完整公网域名，因此没有把它描述成一次真实 VPS 安装。
-
-### 5. 公网 VPS 与真机客户端复测
-
-在一台 AlmaLinux 9 amd64 公网 VPS 上完成真实证书签发和服务启动。Mihomo 内核应用的六个节点均可导入并使用。Shadowrocket 2.2.90 的对照测试显示：相同 SS2022 参数使用域名时请求未到达服务器，改用域名解析出的直连 IPv4 后立即正常；随后保持全部 SNI/证书/REALITY 域名字段不变，仅把六个节点的连接地址改为该 IPv4，Hysteria2、TUIC v5、SS2022、AnyTLS、VLESS REALITY Vision 和 VLESS REALITY XHTTP 均测出延迟并可使用。
-
-这次实测支持 1.0.4 的 Shadowrocket 专用直连地址策略，但它只代表该 VPS、客户端版本和当时网络，不能替代所有地区、运营商与双栈组合的长期测试。
-
-## 没有声称完成的测试
-
-以下项目必须在用户自己的公网 VPS、域名和客户端上完成，当前隔离环境无法诚实替代：
-
-- 真实 Let’s Encrypt 生产证书签发与数月后的自动续期；
-- 8 个发行版各自作为完整 systemd 虚拟机的开机、重启和卸载循环；
-- 云厂商安全组、NAT、IPv6 路由与地区性网络封锁行为；
-- Stash 真机导入，以及各客户端六种协议的长期吞吐、漫游和断线重连测试；
-- 非 443 REALITY 在特定网络环境中的封锁概率。
-
-容器根文件系统和 QEMU 测试能发现架构、Bash、系统识别及核心配置问题，但不能冒充完整 VM 或真机网络测试。建议首次在一台可随时重装的 VPS 上部署，逐个客户端验证后再用于长期节点。
+容器和 QEMU user-mode 很适合发现 Bash、架构、系统识别和配置格式问题，但不能代替 systemd、内核网络、防火墙、ACME 与移动客户端真机测试。首次部署应使用可随时重装的测试 VPS，导入六条订阅逐项验收后再长期使用。

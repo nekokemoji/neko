@@ -33,18 +33,22 @@ download_verified "Caddy ${CADDY_VERSION}" \
 download_verified "lego ${LEGO_VERSION}" \
   "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz" \
   "$(sha_for_arch LEGO)" "$WORK/lego.tar.gz"
+download_verified "Mihomo ${MIHOMO_VERSION}" \
+  "https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/mihomo-linux-${ARCH}-v${MIHOMO_VERSION}.gz" \
+  "$(sha_for_arch MIHOMO)" "$WORK/mihomo.gz"
 
 unzip -q "$WORK/xray.zip" -d "$WORK/unpack/xray"
 tar --no-same-owner -xzf "$WORK/sing-box.tar.gz" -C "$WORK/unpack"
 mkdir -p "$WORK/unpack/caddy" "$WORK/unpack/lego"
 tar --no-same-owner -xzf "$WORK/caddy.tar.gz" -C "$WORK/unpack/caddy"
 tar --no-same-owner -xzf "$WORK/lego.tar.gz" -C "$WORK/unpack/lego"
+gzip -dc "$WORK/mihomo.gz" > "$WORK/unpack/mihomo"
 
 install -m 0755 "$WORK/unpack/xray/xray" "$DEST/xray"
 install -m 0755 "$WORK/unpack/sing-box-${SING_BOX_VERSION}-linux-${ARCH}/sing-box" "$DEST/sing-box"
 install -m 0755 "$WORK/hysteria" "$DEST/hysteria"
 install -m 0755 "$WORK/unpack/caddy/caddy" "$DEST/caddy"
 install -m 0755 "$WORK/unpack/lego/lego" "$DEST/lego"
+install -m 0755 "$WORK/unpack/mihomo" "$DEST/mihomo"
 
 printf '冻结测试工具已放到：%s\n' "$DEST"
-

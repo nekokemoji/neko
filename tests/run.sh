@@ -11,7 +11,7 @@ CADDY="$TOOLS/caddy"
 LEGO="$TOOLS/lego"
 MIHOMO="${MIHOMO_BIN:-$TOOLS/mihomo}"
 
-for binary in "$XRAY" "$SING_BOX" "$HYSTERIA" "$CADDY" "$LEGO"; do
+for binary in "$XRAY" "$SING_BOX" "$HYSTERIA" "$CADDY" "$LEGO" "$MIHOMO"; do
   [[ -x "$binary" ]] || {
     printf '缺少测试工具 %s；先运行 tests/fetch-pinned-tools.sh。\n' "$binary" >&2
     exit 1
@@ -20,15 +20,17 @@ done
 
 source "$ROOT/versions.env"
 
-printf '[1/7] Bash 语法与可选 ShellCheck……\n'
+printf '[1/8] Bash 语法、ShellCheck 与 Python YAML……\n'
 mapfile -t shell_files <<< "$(find "$ROOT" -type f -name '*.sh' -print | sort)"
 bash -n "${shell_files[@]}"
-if command -v shellcheck >/dev/null 2>&1; then
-  # Dynamic library sourcing and cross-file globals are intentional.
-  shellcheck -x -e SC1090,SC1091,SC2016,SC2034 "${shell_files[@]}"
-fi
+command -v shellcheck >/dev/null 2>&1 \
+  || { printf '缺少必需测试工具 shellcheck。\n' >&2; exit 1; }
+python3 -c 'import yaml' >/dev/null 2>&1 \
+  || { printf '缺少必需 Python 模块 PyYAML。\n' >&2; exit 1; }
+# Dynamic library sourcing and cross-file globals are intentional.
+shellcheck -x -e SC1090,SC1091,SC2016,SC2034 "${shell_files[@]}"
 
-printf '[2/7] 发行版与架构检测矩阵……\n'
+printf '[2/8] 发行版、架构、DNS 与防火墙区域逻辑……\n'
 bash "$ROOT/tests/platform-matrix.sh"
 bash -c '
   set -Eeuo pipefail
@@ -49,23 +51,89 @@ bash -c '
 bash -c '
   set -Eeuo pipefail
   source "$1"
-  first_resolved_ipv4() { printf "192.0.2.44\n"; }
-  first_resolved_ipv6() { printf "2001:db8::44\n"; }
-  [[ "$(preferred_direct_address example.com)" == "192.0.2.44" ]]
-  first_resolved_ipv4() { :; }
-  [[ "$(preferred_direct_address example.com)" == "2001:db8::44" ]]
+  resolved_ipv4_addresses() {
+    case "$1" in
+      example.com|v4.example.com) printf "192.0.2.44\n" ;;
+    esac
+  }
+  resolved_ipv6_addresses() {
+    case "$1" in
+      example.com|v6.example.com) printf "2001:db8::44\n" ;;
+    esac
+  }
+  check_strict_dual_stack_dns example.com >/dev/null 2>&1
+  [[ "$SUBSCRIPTION_DOMAIN_IPV4" == "v4.example.com" ]]
+  [[ "$SUBSCRIPTION_DOMAIN_IPV6" == "v6.example.com" ]]
+  [[ "$SUBSCRIPTION_IPV4_ADDRESS" == "192.0.2.44" ]]
+  [[ "$SUBSCRIPTION_IPV6_ADDRESS" == "2001:db8::44" ]]
   is_safe_ip_literal 203.0.113.9
   is_safe_ip_literal 2001:db8::9
   ! is_safe_ip_literal 999.0.0.1
   ! is_safe_ip_literal "example.com"
 ' _ "$ROOT/lib/common.sh"
+if bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  resolved_ipv4_addresses() {
+    case "$1" in example.com|v4.example.com) printf "192.0.2.44\n" ;; esac
+  }
+  resolved_ipv6_addresses() {
+    case "$1" in
+      example.com|v6.example.com) printf "2001:db8::44\n" ;;
+      v4.example.com) printf "2001:db8::99\n" ;;
+    esac
+  }
+  check_strict_dual_stack_dns example.com
+' _ "$ROOT/lib/common.sh" >/dev/null 2>&1; then
+  printf '严格 IPv4 域名带 AAAA 时没有被拒绝。\n' >&2
+  exit 1
+fi
+if bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  resolved_ipv4_addresses() {
+    case "$1" in
+      example.com|v4.example.com) printf "192.0.2.44\n" ;;
+      v6.example.com) printf "192.0.2.99\n" ;;
+    esac
+  }
+  resolved_ipv6_addresses() {
+    case "$1" in example.com|v6.example.com) printf "2001:db8::44\n" ;; esac
+  }
+  check_strict_dual_stack_dns example.com
+' _ "$ROOT/lib/common.sh" >/dev/null 2>&1; then
+  printf '严格 IPv6 域名带 A 时没有被拒绝。\n' >&2
+  exit 1
+fi
+bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  source "$2"
+  firewall-cmd() {
+    case "$1" in
+      --get-default-zone) printf "public\n" ;;
+      --get-zone-of-interface=eth0) printf "public\n" ;;
+      --get-zone-of-interface=eth1) printf "public6\n" ;;
+      *) return 1 ;;
+    esac
+  }
+  ip() {
+    case "$1:$2:$3:$4" in
+      -4:route:show:default) printf "default via 192.0.2.1 dev eth0\n" ;;
+      -6:route:show:default) printf "default via 2001:db8::1 dev eth1\n" ;;
+    esac
+  }
+  zones="$(firewalld_target_zones)"
+  [[ "$zones" == $'"'"'public\npublic6'"'"' ]]
+' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"
 
-printf '[3/7] 冻结版本身份与 lego v5 CLI……\n'
+printf '[3/8] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$XRAY" version)" == *"$XRAY_VERSION"* ]]
 [[ "$("$SING_BOX" version)" == *"$SING_BOX_VERSION"* ]]
 [[ "$("$HYSTERIA" version 2>&1)" == *"v${HYSTERIA_VERSION}"* ]]
 [[ "$("$CADDY" version)" == *"v${CADDY_VERSION}"* ]]
 [[ "$("$LEGO" --version)" == *"$LEGO_VERSION"* ]]
+[[ "$("$MIHOMO" -v)" == *"${MIHOMO_VERSION}"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--http.webroot"* ]]
 if grep -R "releases/latest\|/latest/download" "$ROOT/install.sh" "$ROOT/tests/fetch-pinned-tools.sh"; then
   printf '发现未冻结的 latest 下载地址。\n' >&2
@@ -75,18 +143,21 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.0.4"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.1.0"' "$ROOT/versions.env"
+grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
+grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
 if grep -Eq '\|[[:space:]]*head([[:space:]]|$)' "$ROOT/install.sh"; then
   printf '安装器包含可能在 pipefail 下触发 SIGPIPE 的 head 管道。\n' >&2
   exit 1
 fi
 
-printf '[4/7] 渲染服务端配置与客户端订阅……\n'
+printf '[4/8] 渲染服务端配置与客户端订阅……\n'
 WORK="$(mktemp -d "$ROOT/tests/run.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 mkdir -p "$WORK/etc" "$WORK/var/lego/certificates" "$WORK/var/acme"
 cp "$ROOT/tests/fixtures/state.json" "$WORK/etc/state.json"
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=example.com \
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=example.com \
+  -addext 'subjectAltName=DNS:example.com,DNS:v4.example.com,DNS:v6.example.com' \
   -keyout "$WORK/var/lego/certificates/example.com.key" \
   -out "$WORK/var/lego/certificates/example.com.crt" >/dev/null 2>&1
 
@@ -106,13 +177,13 @@ NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO
   bash -c 'source "$1"; source "$2"; render_all' \
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
 
-printf '[5/7] 用真实冻结核心校验配置……\n'
+printf '[5/8] 用真实冻结核心校验配置……\n'
 "$SING_BOX" check -c "$WORK/etc/config/sing-box.json"
 "$XRAY" run -test -c "$WORK/etc/config/xray.json"
 "$CADDY" validate --config "$WORK/etc/config/Caddyfile" --adapter caddyfile >/dev/null
-if [[ -x "$MIHOMO" ]]; then
-  "$MIHOMO" -t -f "$WORK/etc/subscriptions/mihomo.yaml"
-fi
+mkdir -p "$WORK/mihomo-v4" "$WORK/mihomo-v6"
+"$MIHOMO" -d "$WORK/mihomo-v4" -t -f "$WORK/etc/subscriptions/mihomo-v4.yaml"
+"$MIHOMO" -d "$WORK/mihomo-v6" -t -f "$WORK/etc/subscriptions/mihomo-v6.yaml"
 set +e
 PATH=/nonexistent "$HYSTERIA" server --disable-update-check \
   --config "$WORK/etc/config/hysteria.yaml" >"$WORK/hysteria-check.log" 2>&1
@@ -121,7 +192,7 @@ set -e
 (( hysteria_rc != 0 ))
 grep -Fq 'executable file not found' "$WORK/hysteria-check.log"
 
-printf '[6/7] 校验订阅节点、端口和 REALITY 自有证书目标……\n'
+printf '[6/8] 校验严格订阅、出口策略、端口和 REALITY 目标……\n'
 bash -c '
   set -Eeuo pipefail
   source "$1"
@@ -150,42 +221,53 @@ import yaml
 
 root = pathlib.Path(sys.argv[1])
 state = json.loads((root / "etc/state.json").read_text())
-mihomo = yaml.safe_load((root / "etc/subscriptions/mihomo.yaml").read_text())
-stash = yaml.safe_load((root / "etc/subscriptions/stash.yaml").read_text())
 xray = json.loads((root / "etc/config/xray.json").read_text())
 sing = json.loads((root / "etc/config/sing-box.json").read_text())
 hysteria = yaml.safe_load((root / "etc/config/hysteria.yaml").read_text())
 caddy = (root / "etc/config/Caddyfile").read_text()
-shadow = yaml.safe_load((root / "etc/subscriptions/shadowrocket.txt").read_text())
 
-assert len(mihomo["proxies"]) == 6
-assert len(stash["proxies"]) == 5
-assert all(p["network"] != "xhttp" for p in stash["proxies"] if p["type"] == "vless")
-stash_hy2 = next(p for p in stash["proxies"] if p["type"] == "hysteria2")
-stash_tuic = next(p for p in stash["proxies"] if p["type"] == "tuic")
-stash_vision = next(p for p in stash["proxies"] if p["type"] == "vless")
-assert stash_hy2["auth"] == "test-hy2-password" and "password" not in stash_hy2
-assert stash_tuic["version"] == 5
-assert stash_vision["sni"] == "example.com" and "servername" not in stash_vision
-shadow_proxies = shadow["proxies"]
-assert [p["type"] for p in shadow_proxies] == [
-    "hysteria2", "tuic", "ss", "anytls", "vless", "vless"
-]
-assert all(
-    p["server"] == state["subscription"]["shadowrocket_server"]
-    for p in shadow_proxies
-)
-assert all(p["server"] == "example.com" for p in mihomo["proxies"])
-assert all(p["server"] == "example.com" for p in stash["proxies"])
-shadow_hy2, shadow_tuic, _, _, shadow_vision, shadow_xhttp = shadow_proxies
-assert shadow_hy2["port-range"] == "21000-21127"
-assert shadow_hy2["ports"] == "21000-21127"
-assert shadow_tuic["version"] == 5
-assert shadow_vision["network"] == "tcp"
-assert shadow_vision["reality-opts"]["public-key"] == state["reality"]["vision_public_key"]
-assert shadow_xhttp["network"] == "xhttp"
-assert shadow_xhttp["xhttp-opts"]["mode"] == "stream-one"
-assert shadow_xhttp["xhttp-opts"]["path"] == state["reality"]["xhttp_path"]
+expected_subscription_files = {
+    "mihomo-v4.yaml", "mihomo-v6.yaml",
+    "stash-v4.yaml", "stash-v6.yaml",
+    "shadowrocket-v4.txt", "shadowrocket-v6.txt",
+}
+assert {p.name for p in (root / "etc/subscriptions").iterdir()} == expected_subscription_files
+
+for family, address, ip_version in (
+    ("v4", state["subscription"]["ipv4_address"], "ipv4"),
+    ("v6", state["subscription"]["ipv6_address"], "ipv6"),
+):
+    mihomo = yaml.safe_load((root / f"etc/subscriptions/mihomo-{family}.yaml").read_text())
+    stash = yaml.safe_load((root / f"etc/subscriptions/stash-{family}.yaml").read_text())
+    shadow = yaml.safe_load((root / f"etc/subscriptions/shadowrocket-{family}.txt").read_text())
+
+    assert len(mihomo["proxies"]) == 6
+    assert all(p["server"] == address for p in mihomo["proxies"])
+    assert all(p["ip-version"] == ip_version for p in mihomo["proxies"])
+    assert len(stash["proxies"]) == 5
+    assert all(p["server"] == address for p in stash["proxies"])
+    assert all(p["network"] != "xhttp" for p in stash["proxies"] if p["type"] == "vless")
+    stash_hy2 = next(p for p in stash["proxies"] if p["type"] == "hysteria2")
+    stash_tuic = next(p for p in stash["proxies"] if p["type"] == "tuic")
+    stash_vision = next(p for p in stash["proxies"] if p["type"] == "vless")
+    assert stash_hy2["auth"] == "test-hy2-password" and "password" not in stash_hy2
+    assert stash_tuic["version"] == 5
+    assert stash_vision["sni"] == "example.com" and "servername" not in stash_vision
+
+    shadow_proxies = shadow["proxies"]
+    assert [p["type"] for p in shadow_proxies] == [
+        "hysteria2", "tuic", "ss", "anytls", "vless", "vless"
+    ]
+    assert all(p["server"] == address for p in shadow_proxies)
+    shadow_hy2, shadow_tuic, _, _, shadow_vision, shadow_xhttp = shadow_proxies
+    assert shadow_hy2["port-range"] == "21000-21127"
+    assert shadow_hy2["ports"] == "21000-21127"
+    assert shadow_tuic["version"] == 5
+    assert shadow_vision["network"] == "tcp"
+    assert shadow_vision["reality-opts"]["public-key"] == state["reality"]["vision_public_key"]
+    assert shadow_xhttp["network"] == "xhttp"
+    assert shadow_xhttp["xhttp-opts"]["mode"] == "stream-one"
+    assert shadow_xhttp["xhttp-opts"]["path"] == state["reality"]["xhttp_path"]
 
 ports = state["ports"]
 singles = [ports[k] for k in ("tuic", "ss2022", "anytls", "vless_reality_vision", "vless_reality_xhttp")]
@@ -205,7 +287,26 @@ assert all(i["tls"]["key_path"] == key_path for i in tls_inbounds)
 assert hysteria["tls"] == {"cert": cert_path, "key": key_path}
 assert hysteria["auth"]["password"] == "test-hy2-password"
 assert hysteria["obfs"]["salamander"]["password"] == "test-hy2-obfs-password"
-assert caddy.count(f"tls {cert_path} {key_path}") == 2
+assert sing["route"]["rules"][0] == {"ip_is_private": True, "action": "reject"}
+assert sing["route"]["rules"][1] == {"network": "tcp", "port": 25, "action": "reject"}
+assert {o["tag"]: o["protocol"] for o in xray["outbounds"]} == {
+    "direct": "freedom", "blocked": "blackhole"
+}
+assert xray["routing"]["domainStrategy"] == "IPIfNonMatch"
+assert xray["routing"]["rules"][0]["outboundTag"] == "blocked"
+assert "169.254.0.0/16" in xray["routing"]["rules"][0]["ip"]
+assert "fc00::/7" in xray["routing"]["rules"][0]["ip"]
+assert xray["routing"]["rules"][1] == {
+    "type": "field", "network": "tcp", "port": 25, "outboundTag": "blocked"
+}
+assert "reject(169.254.0.0/16)" in hysteria["acl"]["inline"]
+assert "reject(fc00::/7)" in hysteria["acl"]["inline"]
+assert "reject(all, tcp/25)" in hysteria["acl"]["inline"]
+assert hysteria["acl"]["inline"][-1] == "direct(all)"
+assert caddy.count(f"tls {cert_path} {key_path}") == 4
+assert "protocols h1 h2" in caddy
+assert "mihomo-v4.yaml" in caddy and "mihomo-v6.yaml" in caddy
+assert "https://v4.example.com" in caddy and "https://v6.example.com" in caddy
 assert 'header Content-Type "text/yaml; charset=utf-8"' in caddy
 PY
 
@@ -213,120 +314,11 @@ links="$(
   NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO_USER=root \
     bash -c 'source "$1"; show_subscription_links' _ "$ROOT/lib/common.sh"
 )"
-[[ "$links" == *'https://example.com/test-subscription-token/mihomo.yaml'* ]]
+[[ "$links" == *'https://v4.example.com/test-subscription-token/mihomo.yaml'* ]]
+[[ "$links" == *'https://v6.example.com/test-subscription-token/mihomo.yaml'* ]]
+[[ "$(grep -c '（严格）' <<< "$links")" == 6 ]]
 
-cp "$WORK/etc/subscriptions/shadowrocket.txt" "$WORK/shadowrocket.before-diagnostic"
-NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" \
-  NEKO_TMP_DIR="$WORK" NEKO_DIAG_NO_CAPTURE=1 NEKO_DIAG_TEST_MODE=1 \
-  bash "$ROOT/diagnose-shadowrocket-ss2022.sh" >/dev/null
-base64 -d < "$WORK/etc/subscriptions/shadowrocket.txt" > "$WORK/shadowrocket-diagnostic.raw"
-diagnostic_count="$(wc -l < "$WORK/shadowrocket-diagnostic.raw" | tr -d ' ')"
-[[ "$diagnostic_count" == 5 || "$diagnostic_count" == 10 ]]
-grep -Fq '#A-SIP002-Plain-Domain' "$WORK/shadowrocket-diagnostic.raw"
-grep -Fq '#E-Legacy-FullB64-Domain' "$WORK/shadowrocket-diagnostic.raw"
-
-# Exercise the real handoff: the all-protocol diagnostic must recover the
-# structured source even while the SS2022 Base64 diagnostic is still active.
-NEKO_ETC="$WORK/etc" NEKO_STATE="$WORK/etc/state.json" \
-  NEKO_DIAG_ENDPOINT_OVERRIDE=198.51.100.20 NEKO_DIAG_NO_CAPTURE=1 NEKO_DIAG_TEST_MODE=1 \
-  bash "$ROOT/diagnose-shadowrocket-all.sh" >/dev/null
-python3 - "$WORK/etc/subscriptions/shadowrocket.txt" <<'PY'
-import pathlib
-import sys
-import yaml
-
-subscription = yaml.safe_load(pathlib.Path(sys.argv[1]).read_text())
-proxies = subscription["proxies"]
-assert len(proxies) == 6
-assert all(proxy["server"] == "198.51.100.20" for proxy in proxies)
-assert all(
-    proxy.get("sni", proxy.get("servername", "example.com")) == "example.com"
-    for proxy in proxies
-    if proxy["type"] in {"hysteria2", "tuic", "anytls", "vless"}
-)
-PY
-NEKO_ETC="$WORK/etc" NEKO_STATE="$WORK/etc/state.json" NEKO_DIAG_TEST_MODE=1 \
-  bash "$ROOT/diagnose-shadowrocket-all.sh" --restore >/dev/null
-cmp -s "$WORK/shadowrocket.before-diagnostic" "$WORK/etc/subscriptions/shadowrocket.txt"
-NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" \
-  NEKO_TMP_DIR="$WORK" NEKO_DIAG_TEST_MODE=1 \
-  bash "$ROOT/diagnose-shadowrocket-ss2022.sh" --restore >/dev/null
-cmp -s "$WORK/shadowrocket.before-diagnostic" "$WORK/etc/subscriptions/shadowrocket.txt"
-
-# Old state files without shadowrocket_server remain renderable and prefer
-# IPv6 only when no IPv4 address is available.
-jq 'del(.subscription.shadowrocket_server)' "$WORK/etc/state.json" > "$WORK/etc/state-old.json"
-NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state-old.json" NEKO_USER=root \
-  bash -c '
-    set -Eeuo pipefail
-    source "$1"
-    source "$2"
-    first_resolved_ipv4() { :; }
-    first_resolved_ipv6() { printf "2001:db8::55\n"; }
-    render_all
-    [[ "$SHADOWROCKET_SERVER" == "2001:db8::55" ]]
-  ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
-grep -Fq 'server: "2001:db8::55"' "$WORK/etc/subscriptions/shadowrocket.txt"
-
-# Exercise the in-place updater in an isolated installation tree.
-UPGRADE="$WORK/upgrade"
-mkdir -p "$UPGRADE/etc/config" "$UPGRADE/etc/subscriptions" \
-  "$UPGRADE/var/lego/certificates" "$UPGRADE/var/acme" \
-  "$UPGRADE/libexec/lib" "$UPGRADE/mockbin"
-cp "$ROOT/tests/fixtures/state.json" "$UPGRADE/etc/state.json"
-cp "$ROOT/lib/common.sh" "$UPGRADE/libexec/lib/common.sh"
-cp "$ROOT/lib/render.sh" "$UPGRADE/libexec/lib/render.sh"
-cp "$ROOT/versions.env" "$UPGRADE/libexec/versions.env"
-install -m 0755 "$XRAY" "$UPGRADE/libexec/xray"
-install -m 0755 "$SING_BOX" "$UPGRADE/libexec/sing-box"
-install -m 0755 "$CADDY" "$UPGRADE/libexec/caddy"
-cp "$WORK/var/lego/certificates/example.com.crt" "$UPGRADE/var/lego/certificates/example.com.crt"
-cp "$WORK/var/lego/certificates/example.com.key" "$UPGRADE/var/lego/certificates/example.com.key"
-NEKO_ETC="$UPGRADE/etc" NEKO_VAR="$UPGRADE/var" NEKO_STATE="$UPGRADE/etc/state.json" \
-  NEKO_LIBEXEC="$UPGRADE/libexec" NEKO_USER=root \
-  bash -c 'source "$1"; source "$2"; render_all' \
-  _ "$UPGRADE/libexec/lib/common.sh" "$UPGRADE/libexec/lib/render.sh"
-install -m 0600 /dev/null "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-ss2022-diagnostic"
-install -m 0600 /dev/null "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-all-protocol-diagnostic"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$UPGRADE/mockbin/systemctl"
-chmod 0755 "$UPGRADE/mockbin/systemctl"
-PATH="$UPGRADE/mockbin:$PATH" \
-  NEKO_ETC="$UPGRADE/etc" NEKO_VAR="$UPGRADE/var" NEKO_STATE="$UPGRADE/etc/state.json" \
-  NEKO_LIBEXEC="$UPGRADE/libexec" NEKO_USER=root \
-  NEKO_UPDATE_TMP_DIR="$UPGRADE" NEKO_UPDATE_LOCK_FILE="$UPGRADE/update.lock" \
-  NEKO_UPDATE_ENDPOINT_OVERRIDE=198.51.100.40 NEKO_UPDATE_TEST_MODE=1 \
-  bash "$ROOT/update-shadowrocket.sh" >/dev/null
-[[ "$(jq -r '.subscription.shadowrocket_server' "$UPGRADE/etc/state.json")" == "198.51.100.40" ]]
-[[ "$(jq -r '.release' "$UPGRADE/etc/state.json")" == "$NEKO_RELEASE" ]]
-[[ "$(grep -Fc 'server: "198.51.100.40"' "$UPGRADE/etc/subscriptions/shadowrocket.txt")" == 6 ]]
-[[ ! -e "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-ss2022-diagnostic" ]]
-[[ ! -e "$UPGRADE/etc/subscriptions/shadowrocket.txt.before-all-protocol-diagnostic" ]]
-
-cp "$UPGRADE/etc/state.json" "$UPGRADE/state.before-failed-update"
-cp "$UPGRADE/etc/subscriptions/shadowrocket.txt" "$UPGRADE/shadowrocket.before-failed-update"
-cat > "$UPGRADE/mockbin/systemctl" <<'EOF'
-#!/usr/bin/env bash
-if [[ "${1:-}" == restart && ! -e "${NEKO_TEST_FAIL_MARKER:?}" ]]; then
-  : > "$NEKO_TEST_FAIL_MARKER"
-  exit 1
-fi
-exit 0
-EOF
-chmod 0755 "$UPGRADE/mockbin/systemctl"
-set +e
-PATH="$UPGRADE/mockbin:$PATH" NEKO_TEST_FAIL_MARKER="$UPGRADE/systemctl-failed-once" \
-  NEKO_ETC="$UPGRADE/etc" NEKO_VAR="$UPGRADE/var" NEKO_STATE="$UPGRADE/etc/state.json" \
-  NEKO_LIBEXEC="$UPGRADE/libexec" NEKO_USER=root \
-  NEKO_UPDATE_TMP_DIR="$UPGRADE" NEKO_UPDATE_LOCK_FILE="$UPGRADE/update.lock" \
-  NEKO_UPDATE_ENDPOINT_OVERRIDE=203.0.113.40 NEKO_UPDATE_TEST_MODE=1 \
-  bash "$ROOT/update-shadowrocket.sh" >/dev/null 2>&1
-failed_update_rc=$?
-set -e
-(( failed_update_rc != 0 ))
-cmp -s "$UPGRADE/state.before-failed-update" "$UPGRADE/etc/state.json"
-cmp -s "$UPGRADE/shadowrocket.before-failed-update" "$UPGRADE/etc/subscriptions/shadowrocket.txt"
-
-printf '[7/7] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
+printf '[7/8] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
 jq '.subscription.token = "replacement-token"' "$WORK/etc/state.json" > "$WORK/etc/state.new"
 mv "$WORK/etc/state.new" "$WORK/etc/state.json"
 NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO_USER=root \
@@ -346,5 +338,86 @@ domain_gate_line="$(grep -n 'collect_identity' "$ROOT/install.sh" | tail -n 1 | 
 dependency_line="$(grep -n 'install_dependencies' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 lock_line="$(grep -n 'exec 9>/run/lock/neko-install.lock' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 (( domain_gate_line < dependency_line && dependency_line < lock_line ))
+
+printf '[8/8] 模拟 1.0.x 原地升级成功与失败回滚……\n'
+prepare_upgrade_install() {
+  local target="$1"
+  mkdir -p \
+    "$target/etc/config" "$target/etc/subscriptions" \
+    "$target/var/acme" "$target/libexec/lib" "$target/tmp"
+  cp -a -- "$WORK/etc/config/." "$target/etc/config/"
+  cp -a -- "$WORK/etc/subscriptions/mihomo-v4.yaml" \
+    "$target/etc/subscriptions/mihomo.yaml"
+  cp -a -- "$WORK/etc/subscriptions/stash-v4.yaml" \
+    "$target/etc/subscriptions/stash.yaml"
+  cp -a -- "$WORK/etc/subscriptions/shadowrocket-v4.txt" \
+    "$target/etc/subscriptions/shadowrocket.txt"
+  jq '
+    .schema = 1
+    | .release = "1.0.4-test"
+    | del(.network)
+    | .subscription = {
+        token: .subscription.token,
+        shadowrocket_server: .subscription.ipv4_address
+      }
+    | .firewall = {manager: "none", zone: ""}
+  ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
+  cp -a -- "$WORK/var/lego" "$target/var/lego"
+  cp -a -- "$ROOT/lib/." "$target/libexec/lib/"
+  cp -a -- "$ROOT/versions.env" "$target/libexec/versions.env"
+  cp -a -- "$ROOT/runtime/panel.sh" "$ROOT/runtime/renew.sh" "$target/libexec/"
+  ln -s "$SING_BOX" "$target/libexec/sing-box"
+  ln -s "$XRAY" "$target/libexec/xray"
+  ln -s "$CADDY" "$target/libexec/caddy"
+  ln -s "$LEGO" "$target/libexec/lego"
+}
+
+run_upgrade() {
+  local target="$1"
+  shift
+  env PATH="$ROOT/tests/helpers:$PATH" \
+    NEKO_ETC="$target/etc" NEKO_VAR="$target/var" \
+    NEKO_LIBEXEC="$target/libexec" NEKO_STATE="$target/etc/state.json" \
+    NEKO_USER=root NEKO_UPDATE_TMP_DIR="$target/tmp" \
+    NEKO_UPDATE_LOCK_FILE="$target/upgrade.lock" \
+    NEKO_UPDATE_TEST_MODE=1 NEKO_UPDATE_SKIP_ACME=1 \
+    NEKO_UPDATE_IPV4_OVERRIDE=192.0.2.10 \
+    NEKO_UPDATE_IPV6_OVERRIDE=2001:db8::10 \
+    "$@" bash "$ROOT/upgrade.sh"
+}
+
+UPGRADE_OK="$WORK/upgrade-ok"
+prepare_upgrade_install "$UPGRADE_OK"
+run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
+[[ "$(jq -r '.schema' "$UPGRADE_OK/etc/state.json")" == 2 ]]
+[[ "$(jq -r '.release' "$UPGRADE_OK/etc/state.json")" == "$NEKO_RELEASE" ]]
+[[ "$(jq -r '.subscription.ipv4_domain' "$UPGRADE_OK/etc/state.json")" == v4.example.com ]]
+[[ "$(jq -r '.subscription.ipv6_domain' "$UPGRADE_OK/etc/state.json")" == v6.example.com ]]
+[[ "$(jq -r '.subscription.shadowrocket_server // empty' "$UPGRADE_OK/etc/state.json")" == "" ]]
+[[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
+if find "$UPGRADE_OK/tmp" -maxdepth 1 -name 'neko-upgrade-backup.*' | grep -q .; then
+  printf '升级成功后没有清理备份目录。\n' >&2
+  exit 1
+fi
+
+UPGRADE_FAIL="$WORK/upgrade-fail"
+prepare_upgrade_install "$UPGRADE_FAIL"
+state_before="$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')"
+config_before="$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')"
+set +e
+run_upgrade "$UPGRADE_FAIL" \
+  NEKO_TEST_SYSTEMCTL_FAIL_PATTERN='restart neko-caddy.service' \
+  NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE="$UPGRADE_FAIL/systemctl-failed-once" \
+  > "$UPGRADE_FAIL/upgrade.log" 2>&1
+upgrade_rc=$?
+set -e
+(( upgrade_rc != 0 ))
+[[ "$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')" == "$state_before" ]]
+[[ "$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')" == "$config_before" ]]
+grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
+if find "$UPGRADE_FAIL/tmp" -maxdepth 1 -name 'neko-upgrade-backup.*' | grep -q .; then
+  printf '升级回滚后没有清理备份目录。\n' >&2
+  exit 1
+fi
 
 printf '全部测试通过。\n'

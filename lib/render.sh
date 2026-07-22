@@ -79,7 +79,13 @@ render_sing_box() {
         }
       ],
       outbounds: [{type: "direct", tag: "direct"}],
-      route: {final: "direct"}
+      route: {
+        rules: [
+          {ip_is_private: true, action: "reject"},
+          {network: "tcp", port: 25, action: "reject"}
+        ],
+        final: "direct"
+      }
     }' | write_atomic "${NEKO_CONFIG_DIR}/sing-box.json"
 }
 
@@ -150,7 +156,32 @@ render_xray() {
           sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
         }
       ],
-      outbounds: [{protocol: "freedom", tag: "direct"}]
+      outbounds: [
+        {protocol: "freedom", tag: "direct"},
+        {protocol: "blackhole", tag: "blocked"}
+      ],
+      routing: {
+        domainStrategy: "IPIfNonMatch",
+        rules: [
+          {
+            type: "field",
+            ip: [
+              "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10",
+              "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+              "192.0.0.0/24", "192.168.0.0/16", "198.18.0.0/15",
+              "224.0.0.0/4", "240.0.0.0/4",
+              "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8"
+            ],
+            outboundTag: "blocked"
+          },
+          {
+            type: "field",
+            network: "tcp",
+            port: 25,
+            outboundTag: "blocked"
+          }
+        ]
+      }
     }' | write_atomic "${NEKO_CONFIG_DIR}/xray.json"
 }
 
@@ -176,6 +207,27 @@ masquerade:
   proxy:
     url: https://${DOMAIN}/
     rewriteHost: true
+
+acl:
+  inline:
+    - reject(0.0.0.0/8)
+    - reject(10.0.0.0/8)
+    - reject(100.64.0.0/10)
+    - reject(127.0.0.0/8)
+    - reject(169.254.0.0/16)
+    - reject(172.16.0.0/12)
+    - reject(192.0.0.0/24)
+    - reject(192.168.0.0/16)
+    - reject(198.18.0.0/15)
+    - reject(224.0.0.0/4)
+    - reject(240.0.0.0/4)
+    - reject(::/128)
+    - reject(::1/128)
+    - reject(fc00::/7)
+    - reject(fe80::/10)
+    - reject(ff00::/8)
+    - reject(all, tcp/25)
+    - direct(all)
 EOF
 }
 
@@ -185,16 +237,19 @@ render_caddy() {
 	admin off
 	auto_https off
 	persist_config off
+	servers {
+		protocols h1 h2
+	}
 }
 
-http://${DOMAIN} {
+http://${DOMAIN}, http://${SUBSCRIPTION_DOMAIN_IPV4}, http://${SUBSCRIPTION_DOMAIN_IPV6} {
 	@acme path /.well-known/acme-challenge/*
 	handle @acme {
 		root * ${NEKO_VAR}/acme
 		file_server
 	}
 	handle {
-		redir https://${DOMAIN}{uri} 308
+		redir https://{host}{uri} 308
 	}
 }
 
@@ -206,27 +261,69 @@ https://${DOMAIN} {
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
 	}
+	handle {
+		respond "Welcome" 200
+	}
+}
+
+https://${SUBSCRIPTION_DOMAIN_IPV4} {
+	tls ${CERT_FILE} ${KEY_FILE}
+	header {
+		Cache-Control "no-store"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
 
 	handle /${SUB_TOKEN}/mihomo.yaml {
-		rewrite * /mihomo.yaml
+		rewrite * /mihomo-v4.yaml
 		root * ${NEKO_SUB_DIR}
 		header Content-Type "text/yaml; charset=utf-8"
 		file_server
 	}
 	handle /${SUB_TOKEN}/stash.yaml {
-		rewrite * /stash.yaml
+		rewrite * /stash-v4.yaml
 		root * ${NEKO_SUB_DIR}
 		header Content-Type "text/yaml; charset=utf-8"
 		file_server
 	}
 	handle /${SUB_TOKEN}/shadowrocket.txt {
-		rewrite * /shadowrocket.txt
+		rewrite * /shadowrocket-v4.txt
 		root * ${NEKO_SUB_DIR}
 		header Content-Type "text/yaml; charset=utf-8"
 		file_server
 	}
-	handle / {
-		respond "Welcome" 200
+	handle {
+		respond "Not Found" 404
+	}
+}
+
+https://${SUBSCRIPTION_DOMAIN_IPV6} {
+	tls ${CERT_FILE} ${KEY_FILE}
+	header {
+		Cache-Control "no-store"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	handle /${SUB_TOKEN}/mihomo.yaml {
+		rewrite * /mihomo-v6.yaml
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle /${SUB_TOKEN}/stash.yaml {
+		rewrite * /stash-v6.yaml
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle /${SUB_TOKEN}/shadowrocket.txt {
+		rewrite * /shadowrocket-v6.txt
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
 	}
 	handle {
 		respond "Not Found" 404
@@ -246,10 +343,12 @@ EOF
 }
 
 render_proxy_nodes() {
+  local server="$1" ip_version="$2"
   cat <<EOF
   - name: "HY2"
     type: hysteria2
-    server: "${DOMAIN}"
+    server: "${server}"
+    ip-version: ${ip_version}
     port: ${HY2_START}
     ports: "${HY2_START}-${HY2_END}"
     hop-interval: 30
@@ -261,7 +360,8 @@ render_proxy_nodes() {
     skip-cert-verify: false
   - name: "TUIC-v5"
     type: tuic
-    server: "${DOMAIN}"
+    server: "${server}"
+    ip-version: ${ip_version}
     port: ${TUIC_PORT}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
@@ -273,14 +373,16 @@ render_proxy_nodes() {
     skip-cert-verify: false
   - name: "SS2022"
     type: ss
-    server: "${DOMAIN}"
+    server: "${server}"
+    ip-version: ${ip_version}
     port: ${SS_PORT}
     cipher: "2022-blake3-aes-128-gcm"
     password: "${SS_PASSWORD}"
     udp: true
   - name: "AnyTLS"
     type: anytls
-    server: "${DOMAIN}"
+    server: "${server}"
+    ip-version: ${ip_version}
     port: ${ANYTLS_PORT}
     password: "${ANYTLS_PASSWORD}"
     sni: "${DOMAIN}"
@@ -290,7 +392,8 @@ render_proxy_nodes() {
     skip-cert-verify: false
   - name: "VLESS-Reality-Vision"
     type: vless
-    server: "${DOMAIN}"
+    server: "${server}"
+    ip-version: ${ip_version}
     port: ${VISION_PORT}
     uuid: "${VISION_UUID}"
     encryption: ""
@@ -308,10 +411,12 @@ EOF
 }
 
 render_xhttp_node() {
+  local server="$1" ip_version="$2"
   cat <<EOF
   - name: "VLESS-Reality-XHTTP"
     type: vless
-    server: "${DOMAIN}"
+    server: "${server}"
+    ip-version: ${ip_version}
     port: ${XHTTP_PORT}
     uuid: "${XHTTP_UUID}"
     encryption: ""
@@ -333,7 +438,8 @@ EOF
 }
 
 render_stash_yaml() {
-  write_atomic "${NEKO_SUB_DIR}/stash.yaml" <<EOF
+  local target="$1" server="$2"
+  write_atomic "$target" <<EOF
 mixed-port: 7890
 allow-lan: false
 mode: rule
@@ -343,7 +449,7 @@ ipv6: true
 proxies:
   - name: "HY2"
     type: hysteria2
-    server: "${DOMAIN}"
+    server: "${server}"
     port: ${HY2_START}
     ports: "${HY2_START}-${HY2_END}"
     hop-interval: 30
@@ -356,7 +462,7 @@ proxies:
   - name: "TUIC-v5"
     type: tuic
     version: 5
-    server: "${DOMAIN}"
+    server: "${server}"
     port: ${TUIC_PORT}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
@@ -365,14 +471,14 @@ proxies:
     skip-cert-verify: false
   - name: "SS2022"
     type: ss
-    server: "${DOMAIN}"
+    server: "${server}"
     port: ${SS_PORT}
     cipher: "2022-blake3-aes-128-gcm"
     password: "${SS_PASSWORD}"
     udp: true
   - name: "AnyTLS"
     type: anytls
-    server: "${DOMAIN}"
+    server: "${server}"
     port: ${ANYTLS_PORT}
     password: "${ANYTLS_PASSWORD}"
     sni: "${DOMAIN}"
@@ -380,7 +486,7 @@ proxies:
     skip-cert-verify: false
   - name: "VLESS-Reality-Vision"
     type: vless
-    server: "${DOMAIN}"
+    server: "${server}"
     port: ${VISION_PORT}
     uuid: "${VISION_UUID}"
     network: tcp
@@ -405,7 +511,7 @@ EOF
 }
 
 render_client_yaml() {
-  local target="$1" include_xhttp="$2" names
+  local target="$1" include_xhttp="$2" server="$3" ip_version="$4" names
   if [[ "$include_xhttp" == "yes" ]]; then
     names='[HY2, TUIC-v5, SS2022, AnyTLS, VLESS-Reality-Vision, VLESS-Reality-XHTTP]'
   else
@@ -422,8 +528,8 @@ ipv6: true
 
 proxies:
 EOF
-    render_proxy_nodes
-    [[ "$include_xhttp" == "yes" ]] && render_xhttp_node
+    render_proxy_nodes "$server" "$ip_version"
+    [[ "$include_xhttp" == "yes" ]] && render_xhttp_node "$server" "$ip_version"
     cat <<EOF
 
 proxy-groups:
@@ -438,15 +544,15 @@ EOF
 }
 
 render_shadowrocket() {
-  # Shadowrocket 2.2.87+ explicitly supports structured Clash port-range and
-  # XHTTP options.  Its node DNS path can differ from its HTTPS subscription
-  # downloader, so nodes use a pinned direct IP while TLS SNI, REALITY
-  # serverName and XHTTP Host remain bound to the mandatory domain.
-  write_atomic "${NEKO_SUB_DIR}/shadowrocket.txt" <<EOF
+  local target="$1" server="$2"
+  # The strict variants use an IP literal so Shadowrocket cannot resolve or
+  # fall back to the other address family. TLS SNI, REALITY serverName and
+  # XHTTP Host remain bound to the certificate domain.
+  write_atomic "$target" <<EOF
 proxies:
   - name: "HY2"
     type: hysteria2
-    server: "${SHADOWROCKET_SERVER}"
+    server: "${server}"
     port: ${HY2_START}
     ports: "${HY2_START}-${HY2_END}"
     port-range: "${HY2_START}-${HY2_END}"
@@ -460,7 +566,7 @@ proxies:
   - name: "TUIC-v5"
     type: tuic
     version: 5
-    server: "${SHADOWROCKET_SERVER}"
+    server: "${server}"
     port: ${TUIC_PORT}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
@@ -471,14 +577,14 @@ proxies:
     skip-cert-verify: false
   - name: "SS2022"
     type: ss
-    server: "${SHADOWROCKET_SERVER}"
+    server: "${server}"
     port: ${SS_PORT}
     cipher: "2022-blake3-aes-128-gcm"
     password: "${SS_PASSWORD}"
     udp: true
   - name: "AnyTLS"
     type: anytls
-    server: "${SHADOWROCKET_SERVER}"
+    server: "${server}"
     port: ${ANYTLS_PORT}
     password: "${ANYTLS_PASSWORD}"
     sni: "${DOMAIN}"
@@ -487,7 +593,7 @@ proxies:
     skip-cert-verify: false
   - name: "VLESS-Reality-Vision"
     type: vless
-    server: "${SHADOWROCKET_SERVER}"
+    server: "${server}"
     port: ${VISION_PORT}
     uuid: "${VISION_UUID}"
     encryption: ""
@@ -503,7 +609,7 @@ proxies:
     skip-cert-verify: false
   - name: "VLESS-Reality-XHTTP"
     type: vless
-    server: "${SHADOWROCKET_SERVER}"
+    server: "${server}"
     port: ${XHTTP_PORT}
     uuid: "${XHTTP_UUID}"
     encryption: ""
@@ -526,10 +632,15 @@ EOF
 
 render_subscriptions() {
   mkdir -p "$NEKO_SUB_DIR"
-  render_client_yaml "${NEKO_SUB_DIR}/mihomo.yaml" yes
-  # Stash does not implement XHTTP; its subscription intentionally has five nodes.
-  render_stash_yaml
-  render_shadowrocket
+  render_client_yaml "${NEKO_SUB_DIR}/mihomo-v4.yaml" yes \
+    "$SUBSCRIPTION_IPV4_ADDRESS" ipv4
+  render_client_yaml "${NEKO_SUB_DIR}/mihomo-v6.yaml" yes \
+    "$SUBSCRIPTION_IPV6_ADDRESS" ipv6
+  # Stash does not implement XHTTP; each strict subscription has five nodes.
+  render_stash_yaml "${NEKO_SUB_DIR}/stash-v4.yaml" "$SUBSCRIPTION_IPV4_ADDRESS"
+  render_stash_yaml "${NEKO_SUB_DIR}/stash-v6.yaml" "$SUBSCRIPTION_IPV6_ADDRESS"
+  render_shadowrocket "${NEKO_SUB_DIR}/shadowrocket-v4.txt" "$SUBSCRIPTION_IPV4_ADDRESS"
+  render_shadowrocket "${NEKO_SUB_DIR}/shadowrocket-v6.txt" "$SUBSCRIPTION_IPV6_ADDRESS"
 }
 
 render_all() {

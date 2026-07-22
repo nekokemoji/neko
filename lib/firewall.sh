@@ -17,27 +17,65 @@ firewalld_is_active() {
 }
 
 ufw_is_active() {
+  local status
   command -v ufw >/dev/null 2>&1 || return 1
   if [[ -r /etc/ufw/ufw.conf ]]; then
     grep -Eq '^[[:space:]]*ENABLED[[:space:]]*=[[:space:]]*yes[[:space:]]*$' /etc/ufw/ufw.conf
   else
-    ufw status 2>/dev/null | grep -qi '^Status: active'
+    status="$(ufw status 2>/dev/null || true)"
+    grep -qi '^Status: active' <<< "$status"
   fi
 }
 
 set_firewall_manager() {
-  local manager="$1" zone="${2:-}"
+  local manager="$1" primary_zone="" zones_json
+  shift
+  if (( $# > 0 )); then
+    primary_zone="$1"
+    zones_json="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+  else
+    zones_json='[]'
+  fi
   atomic_json_update \
-    '.firewall.manager = $manager | .firewall.zone = $zone' \
-    --arg manager "$manager" --arg zone "$zone"
+    '.firewall.manager = $manager
+     | .firewall.zone = $zone
+     | .firewall.zones = $zones' \
+    --arg manager "$manager" --arg zone "$primary_zone" --argjson zones "$zones_json"
+}
+
+firewalld_target_zones() {
+  local interfaces interface zone default_zone
+  default_zone="$(firewall-cmd --get-default-zone)"
+  [[ -n "$default_zone" ]] || die "无法确定 firewalld 默认区域。"
+
+  interfaces="$({
+    ip -4 route show default 2>/dev/null || true
+    ip -6 route show default 2>/dev/null || true
+  } | awk '{for (i = 1; i <= NF; i++) if ($i == "dev" && (i + 1) <= NF) print $(i + 1)}' \
+    | sort -u)"
+
+  if [[ -z "$interfaces" ]]; then
+    printf '%s\n' "$default_zone"
+    return 0
+  fi
+
+  while IFS= read -r interface; do
+    [[ -n "$interface" ]] || continue
+    zone="$(firewall-cmd "--get-zone-of-interface=${interface}" 2>/dev/null || true)"
+    if [[ -z "$zone" || "$zone" == "no zone" ]]; then
+      zone="$default_zone"
+    fi
+    printf '%s\n' "$zone"
+  done <<< "$interfaces" | sort -u
 }
 
 configure_firewalld() {
   local zone
-  zone="$(firewall-cmd --get-default-zone)"
-  [[ -n "$zone" ]] || die "无法确定 firewalld 默认区域。"
+  local -a zones=()
+  mapfile -t zones < <(firewalld_target_zones)
+  (( ${#zones[@]} > 0 )) || die "无法确定公网默认路由使用的 firewalld 区域。"
   [[ ! -e "$FIREWALLD_SERVICE_FILE" ]] || die "防火墙服务文件已存在：${FIREWALLD_SERVICE_FILE}"
-  set_firewall_manager firewalld "$zone"
+  set_firewall_manager firewalld "${zones[@]}"
   mkdir -p "$(dirname -- "$FIREWALLD_SERVICE_FILE")"
   local tmp
   tmp="$(mktemp "${FIREWALLD_SERVICE_FILE}.tmp.XXXXXX")"
@@ -61,12 +99,23 @@ EOF
   mv -f "$tmp" "$FIREWALLD_SERVICE_FILE"
 
   firewall-cmd --reload >/dev/null
-  firewall-cmd --permanent --zone="$zone" --add-service=neko-proxy >/dev/null
+  for zone in "${zones[@]}"; do
+    firewall-cmd --permanent --zone="$zone" --add-service=neko-proxy >/dev/null
+  done
   firewall-cmd --reload >/dev/null
-  ok "已添加 firewalld 的 Neko Proxy 专用服务规则。"
+  for zone in "${zones[@]}"; do
+    firewall-cmd --zone="$zone" --query-service=neko-proxy >/dev/null \
+      || die "firewalld 区域 ${zone} 的 Neko 规则未生效。"
+  done
+  ok "已在默认 IPv4/IPv6 路由对应的 firewalld 区域添加 Neko Proxy 专用规则：${zones[*]}。"
 }
 
 configure_ufw() {
+  local ufw_status
+  if [[ -r /etc/default/ufw ]] \
+    && grep -Eq '^[[:space:]]*IPV6[[:space:]]*=[[:space:]]*no[[:space:]]*$' /etc/default/ufw; then
+    die "UFW 已禁用 IPv6 规则管理；严格 IPv6 服务无法安全放行。请先设置 IPV6=yes 并重载 UFW。"
+  fi
   [[ ! -e "$UFW_PROFILE_FILE" ]] || die "UFW 应用配置已存在：${UFW_PROFILE_FILE}"
   set_firewall_manager ufw
   mkdir -p "$(dirname -- "$UFW_PROFILE_FILE")"
@@ -83,6 +132,8 @@ EOF
 
   ufw app update NekoProxy >/dev/null
   ufw allow NekoProxy >/dev/null
+  ufw_status="$(ufw status 2>/dev/null || true)"
+  grep -Fq NekoProxy <<< "$ufw_status" || die "UFW 的 NekoProxy 规则未生效。"
   ok "已添加 UFW 的 NekoProxy 专用应用规则。"
 }
 
@@ -100,16 +151,24 @@ configure_firewall() {
 
 remove_firewall() {
   local manager="none" zone=""
+  local -a zones=()
   if [[ -r "$NEKO_STATE" ]]; then
     manager="$(jq -r '.firewall.manager // "none"' "$NEKO_STATE" 2>/dev/null || printf 'none')"
     zone="$(jq -r '.firewall.zone // empty' "$NEKO_STATE" 2>/dev/null || true)"
+    mapfile -t zones < <(jq -r '.firewall.zones[]? // empty' "$NEKO_STATE" 2>/dev/null || true)
+    if (( ${#zones[@]} == 0 )) && [[ -n "$zone" ]]; then
+      zones=("$zone")
+    fi
   fi
 
   case "$manager" in
     firewalld)
       if command -v firewall-cmd >/dev/null 2>&1; then
-        if [[ -n "$zone" ]]; then
-          firewall-cmd --permanent --zone="$zone" --remove-service=neko-proxy >/dev/null 2>&1 || true
+        if (( ${#zones[@]} > 0 )); then
+          for zone in "${zones[@]}"; do
+            firewall-cmd --permanent --zone="$zone" --remove-service=neko-proxy \
+              >/dev/null 2>&1 || true
+          done
         else
           firewall-cmd --permanent --remove-service=neko-proxy >/dev/null 2>&1 || true
         fi

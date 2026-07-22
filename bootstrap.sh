@@ -53,7 +53,7 @@ if [[ -n "$NEKO_BOOTSTRAP_ARCHIVE" ]]; then
     || die_bootstrap "测试安装包不可读：${NEKO_BOOTSTRAP_ARCHIVE}"
   cp -- "$NEKO_BOOTSTRAP_ARCHIVE" "$WORKDIR/neko.tar.gz"
 else
-  printf '[信息] 正在从 GitHub 下载固定版本 Neko 1.0.4……\n'
+  printf '[信息] 正在从 GitHub 下载固定版本 Neko 1.1.0……\n'
   curl --fail --location --silent --show-error \
     --retry 4 --connect-timeout 15 --proto '=https' --tlsv1.2 \
     "https://github.com/${NEKO_REPOSITORY}/archive/${NEKO_SOURCE_COMMIT}.tar.gz" \
@@ -64,12 +64,17 @@ tar --no-same-owner -xzf "$WORKDIR/neko.tar.gz" \
   --strip-components=1 -C "$WORKDIR/source"
 
 for required_file in \
-  install.sh versions.env lib/common.sh lib/render.sh lib/firewall.sh; do
+  install.sh versions.env \
+  lib/common.sh lib/render.sh lib/firewall.sh \
+  runtime/panel.sh runtime/renew.sh \
+  systemd/neko-caddy.service systemd/neko-sing-box.service \
+  systemd/neko-xray.service systemd/neko-hysteria.service \
+  systemd/neko-renew.service systemd/neko-renew.timer; do
   [[ -s "$WORKDIR/source/$required_file" ]] \
     || die_bootstrap "下载的项目不完整，缺少 ${required_file}。"
 done
-grep -Fq 'NEKO_RELEASE="1.0.4"' "$WORKDIR/source/versions.env" \
-  || die_bootstrap "下载的项目版本不是预期的 Neko 1.0.4。"
+grep -Fq 'NEKO_RELEASE="1.1.0"' "$WORKDIR/source/versions.env" \
+  || die_bootstrap "下载的项目版本不是预期的 Neko 1.1.0。"
 
 if [[ "${NEKO_BOOTSTRAP_TEST_MODE:-0}" == 1 ]]; then
   bash -n "$WORKDIR/source/install.sh" \

@@ -140,37 +140,49 @@ resolved_addresses() {
   { getent ahosts "$1" 2>/dev/null || true; } | awk '{print $1}' | sort -u
 }
 
-first_resolved_ipv4() {
+resolved_ipv4_addresses() {
   { getent ahostsv4 "$1" 2>/dev/null || true; } \
-    | awk '$1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ && !found { value=$1; found=1 } END { if (found) print value }'
+    | awk '$1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print $1}' \
+    | sort -u
+}
+
+resolved_ipv6_addresses() {
+  { getent ahostsv6 "$1" 2>/dev/null || true; } \
+    | awk '$1 ~ /:/ && $1 ~ /^[0-9A-Fa-f:]+$/ {print tolower($1)}' \
+    | sort -u
+}
+
+first_resolved_ipv4() {
+  # Consume the complete stream.  Exiting awk early can make sort receive
+  # SIGPIPE and turn a successful lookup into a failure under pipefail.
+  resolved_ipv4_addresses "$1" \
+    | awk 'NR == 1 {value=$0} END {if (NR > 0) print value}'
 }
 
 first_resolved_ipv6() {
-  { getent ahostsv6 "$1" 2>/dev/null || true; } \
-    | awk '$1 ~ /:/ && $1 ~ /^[0-9A-Fa-f:]+$/ && !found { value=$1; found=1 } END { if (found) print value }'
+  resolved_ipv6_addresses "$1" \
+    | awk 'NR == 1 {value=$0} END {if (NR > 0) print value}'
+}
+
+is_ipv4_literal() {
+  local value="$1" octet
+  [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.' read -r -a _ip_octets <<< "$value"
+  for octet in "${_ip_octets[@]}"; do
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+
+is_ipv6_literal() {
+  local parsed
+  [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+  parsed="$({ getent ahostsv6 "$1" 2>/dev/null || true; } \
+    | awk '$1 ~ /:/ && !found {value=$1; found=1} END {if (found) print value}')"
+  [[ -n "$parsed" ]]
 }
 
 is_safe_ip_literal() {
-  local value="$1" octet
-  if [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    IFS='.' read -r -a _ip_octets <<< "$value"
-    for octet in "${_ip_octets[@]}"; do
-      (( 10#$octet <= 255 )) || return 1
-    done
-    return 0
-  fi
-  [[ "$value" == *:* && "$value" =~ ^[0-9A-Fa-f:]+$ ]]
-}
-
-preferred_direct_address() {
-  local domain="$1" address
-  address="$(first_resolved_ipv4 "$domain")"
-  if [[ -z "$address" ]]; then
-    address="$(first_resolved_ipv6 "$domain")"
-  fi
-  [[ -n "$address" ]] || return 1
-  is_safe_ip_literal "$address" || return 1
-  printf '%s\n' "$address"
+  is_ipv4_literal "$1" || is_ipv6_literal "$1"
 }
 
 check_domain_resolution() {
@@ -182,6 +194,65 @@ check_domain_resolution() {
     printf '  - %s\n' "$address"
   done <<< "$addresses"
   warn "请确认这些是本机直连地址，未开启 CDN/代理；最终还会用 ACME HTTP-01 验证域名控制权。"
+}
+
+derive_subscription_domains() {
+  local domain="$1"
+  SUBSCRIPTION_DOMAIN_IPV4="v4.${domain}"
+  SUBSCRIPTION_DOMAIN_IPV6="v6.${domain}"
+  validate_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
+    || die "派生的 IPv4 订阅域名无效：${SUBSCRIPTION_DOMAIN_IPV4}"
+  validate_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
+    || die "派生的 IPv6 订阅域名无效：${SUBSCRIPTION_DOMAIN_IPV6}"
+}
+
+check_strict_dual_stack_dns() {
+  local domain="$1" base_v4 base_v6 v4_addresses v6_addresses v4_wrong v6_wrong
+  local v4_count v6_count
+  derive_subscription_domains "$domain"
+
+  v4_addresses="$(resolved_ipv4_addresses "$SUBSCRIPTION_DOMAIN_IPV4")"
+  v6_addresses="$(resolved_ipv6_addresses "$SUBSCRIPTION_DOMAIN_IPV6")"
+  v4_count="$(awk 'NF {count++} END {print count + 0}' <<< "$v4_addresses")"
+  v6_count="$(awk 'NF {count++} END {print count + 0}' <<< "$v6_addresses")"
+  SUBSCRIPTION_IPV4_ADDRESS="$(awk 'NF {value=$0} END {if (value != "") print value}' <<< "$v4_addresses")"
+  SUBSCRIPTION_IPV6_ADDRESS="$(awk 'NF {value=$0} END {if (value != "") print value}' <<< "$v6_addresses")"
+  v4_wrong="$(first_resolved_ipv6 "$SUBSCRIPTION_DOMAIN_IPV4")"
+  v6_wrong="$(first_resolved_ipv4 "$SUBSCRIPTION_DOMAIN_IPV6")"
+
+  (( v4_count == 1 )) || die \
+    "${SUBSCRIPTION_DOMAIN_IPV4} 必须且只能配置 1 条直连 VPS 的 A 记录；当前检测到 ${v4_count} 条。"
+  [[ -z "$v4_wrong" ]] || die \
+    "${SUBSCRIPTION_DOMAIN_IPV4} 检测到 AAAA（${v4_wrong}）；严格 IPv4 域名不能有 AAAA，请关闭 Cloudflare 橙云并删除该记录。"
+  (( v6_count == 1 )) || die \
+    "${SUBSCRIPTION_DOMAIN_IPV6} 必须且只能配置 1 条直连 VPS 的 AAAA 记录；当前检测到 ${v6_count} 条。"
+  [[ -z "$v6_wrong" ]] || die \
+    "${SUBSCRIPTION_DOMAIN_IPV6} 检测到 A（${v6_wrong}）；严格 IPv6 域名不能有 A，请关闭 Cloudflare 橙云并删除该记录。"
+
+  base_v4="$(resolved_ipv4_addresses "$domain")"
+  base_v6="$(resolved_ipv6_addresses "$domain")"
+  [[ "$base_v4" == "$v4_addresses" ]] || die \
+    "基础域名 ${domain} 必须且只能使用与 ${SUBSCRIPTION_DOMAIN_IPV4} 相同的 A 记录。"
+  [[ "${base_v6,,}" == "${v6_addresses,,}" ]] || die \
+    "基础域名 ${domain} 必须且只能使用与 ${SUBSCRIPTION_DOMAIN_IPV6} 相同的 AAAA 记录。"
+
+  info "严格双栈 DNS 检查通过："
+  printf '  - IPv4：%s -> %s\n' "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_IPV4_ADDRESS"
+  printf '  - IPv6：%s -> %s\n' "$SUBSCRIPTION_DOMAIN_IPV6" "$SUBSCRIPTION_IPV6_ADDRESS"
+  warn "三个域名都必须保持 Cloudflare DNS only（灰云）；最终仍会用 ACME HTTP-01 验证公网可达性。"
+}
+
+assert_dual_stack_kernel() {
+  local disable_ipv6 bindv6only ipv4_default_routes ipv6_default_routes
+  disable_ipv6="$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || printf 1)"
+  bindv6only="$(cat /proc/sys/net/ipv6/bindv6only 2>/dev/null || printf 1)"
+  [[ "$disable_ipv6" == "0" ]] || die "系统内核已禁用 IPv6，无法提供严格 IPv6 订阅。"
+  [[ "$bindv6only" == "0" ]] || die \
+    "net.ipv6.bindv6only=1 会破坏单端口双栈监听；请改为 0 后重试。"
+  ipv4_default_routes="$(ip -4 route show default 2>/dev/null || true)"
+  ipv6_default_routes="$(ip -6 route show default 2>/dev/null || true)"
+  [[ -n "$ipv4_default_routes" ]] || die "系统没有 IPv4 默认路由，无法提供严格 IPv4 订阅。"
+  [[ -n "$ipv6_default_routes" ]] || die "系统没有 IPv6 默认路由，无法提供严格 IPv6 订阅。"
 }
 
 random_hex() {
@@ -280,13 +351,15 @@ reserve_random_range() {
 }
 
 assert_public_ports_free() {
-  local port
+  local port listeners
   for port in 80 443; do
-    if ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q .; then
+    listeners="$(ss -H -ltn "sport = :${port}" 2>/dev/null || true)"
+    if [[ -n "$listeners" ]]; then
       die "TCP ${port} 已被占用。为避免破坏现有网站，安装不会继续。"
     fi
   done
-  if ss -H -ltn "sport = :8443" 2>/dev/null | grep -q .; then
+  listeners="$(ss -H -ltn "sport = :8443" 2>/dev/null || true)"
+  if [[ -n "$listeners" ]]; then
     die "TCP 8443 已被占用；它被保留给本机 REALITY 证书回落站点。"
   fi
 }
@@ -325,10 +398,16 @@ state_value() {
 }
 
 load_state() {
+  local state_schema expected_ipv4_domain expected_ipv6_domain
   [[ -r "$NEKO_STATE" ]] || die "找不到安装状态：${NEKO_STATE}"
 
+  state_schema="$(state_value '.schema')"
+  [[ "$state_schema" == "2" ]] \
+    || die "安装状态 schema 为 ${state_schema}；请先运行当前版本的升级脚本。"
   DOMAIN="$(state_value '.domain')"
   ACME_EMAIL="$(state_value '.acme_email')"
+  validate_domain "$DOMAIN" || die "state.json 中的基础域名无效。"
+  validate_email "$ACME_EMAIL" || die "state.json 中的 ACME 邮箱无效。"
   HY2_START="$(state_value '.ports.hysteria2_start')"
   HY2_END="$(state_value '.ports.hysteria2_end')"
   TUIC_PORT="$(state_value '.ports.tuic')"
@@ -352,14 +431,32 @@ load_state() {
   XHTTP_SHORT_ID="$(state_value '.reality.xhttp_short_id')"
   XHTTP_PATH="$(state_value '.reality.xhttp_path')"
   SUB_TOKEN="$(state_value '.subscription.token')"
-  SHADOWROCKET_SERVER="$(jq -r '.subscription.shadowrocket_server // empty' "$NEKO_STATE")"
-  if [[ -z "$SHADOWROCKET_SERVER" ]]; then
-    SHADOWROCKET_SERVER="$(preferred_direct_address "$DOMAIN")" \
-      || die "无法为 Shadowrocket 选择域名 ${DOMAIN} 的直连 A/AAAA 地址。"
-  fi
-  is_safe_ip_literal "$SHADOWROCKET_SERVER" \
-    || die "state.json 中的 Shadowrocket 直连地址格式无效。"
+  [[ "$SUB_TOKEN" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+    || die "state.json 中的订阅令牌格式无效。"
+  SUBSCRIPTION_DOMAIN_IPV4="$(jq -r '.subscription.ipv4_domain // empty' "$NEKO_STATE")"
+  SUBSCRIPTION_DOMAIN_IPV6="$(jq -r '.subscription.ipv6_domain // empty' "$NEKO_STATE")"
+  SUBSCRIPTION_IPV4_ADDRESS="$(jq -r '.subscription.ipv4_address // empty' "$NEKO_STATE")"
+  SUBSCRIPTION_IPV6_ADDRESS="$(jq -r '.subscription.ipv6_address // empty' "$NEKO_STATE")"
+  [[ -n "$SUBSCRIPTION_DOMAIN_IPV4" && -n "$SUBSCRIPTION_DOMAIN_IPV6" \
+    && -n "$SUBSCRIPTION_IPV4_ADDRESS" && -n "$SUBSCRIPTION_IPV6_ADDRESS" ]] \
+    || die "安装状态缺少严格双栈订阅字段；请先运行当前版本的升级脚本。"
+  validate_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
+    || die "state.json 中的 IPv4 订阅域名无效。"
+  validate_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
+    || die "state.json 中的 IPv6 订阅域名无效。"
+  expected_ipv4_domain="v4.${DOMAIN}"
+  expected_ipv6_domain="v6.${DOMAIN}"
+  [[ "$SUBSCRIPTION_DOMAIN_IPV4" == "$expected_ipv4_domain" ]] \
+    || die "state.json 中的 IPv4 订阅域名不是 ${expected_ipv4_domain}。"
+  [[ "$SUBSCRIPTION_DOMAIN_IPV6" == "$expected_ipv6_domain" ]] \
+    || die "state.json 中的 IPv6 订阅域名不是 ${expected_ipv6_domain}。"
+  is_ipv4_literal "$SUBSCRIPTION_IPV4_ADDRESS" \
+    || die "state.json 中的严格 IPv4 地址无效。"
+  is_ipv6_literal "$SUBSCRIPTION_IPV6_ADDRESS" \
+    || die "state.json 中的严格 IPv6 地址无效。"
   LISTEN_ADDRESS="$(jq -r '.network.listen_address // "::"' "$NEKO_STATE")"
+  [[ "$LISTEN_ADDRESS" == "::" ]] \
+    || die "严格双栈模式要求 network.listen_address 为 ::。"
   CERT_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.crt"
   KEY_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.key"
 }
@@ -374,16 +471,25 @@ urlencode_path() {
 
 show_subscription_links() {
   load_state
-  printf '\nMihomo：\nhttps://%s/%s/mihomo.yaml\n\n' "$DOMAIN" "$SUB_TOKEN"
-  printf 'Stash：\nhttps://%s/%s/stash.yaml\n\n' "$DOMAIN" "$SUB_TOKEN"
-  printf 'Shadowrocket：\nhttps://%s/%s/shadowrocket.txt\n\n' "$DOMAIN" "$SUB_TOKEN"
+  printf '\nMihomo IPv4（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
+  printf 'Mihomo IPv6（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
+  printf 'Stash IPv4（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
+  printf 'Stash IPv6（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
+  printf 'Shadowrocket IPv4（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
+  printf 'Shadowrocket IPv6（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
 }
 
 show_required_ports() {
   load_state
-  printf '云防火墙 TCP：80, 443, %s, %s, %s, %s\n' \
+  printf 'IPv4 与 IPv6 云防火墙 TCP：80, 443, %s, %s, %s, %s\n' \
     "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
-  printf '云防火墙 UDP：%s-%s, %s, %s\n' \
+  printf 'IPv4 与 IPv6 云防火墙 UDP：%s-%s, %s, %s\n' \
     "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT"
   printf '仅回环 TCP：8443（不要对公网放行）\n'
 }
