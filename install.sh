@@ -412,6 +412,7 @@ install_payload() {
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
+  install -m 0755 "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
   ln -s "$NEKO_LIBEXEC/panel.sh" /usr/local/bin/neko
 
   local unit
@@ -572,6 +573,16 @@ start_services() {
     fi
     systemctl is-active --quiet "${service}.service" || die "${service} 未保持运行。"
   done
+  # Type=simple returns as soon as the supervisor starts. Give both Hysteria
+  # children and the other cores a short grace period to expose bind/runtime
+  # failures before declaring the transaction successful.
+  sleep 2
+  for service in neko-caddy neko-sing-box neko-hysteria neko-xray; do
+    if ! systemctl is-active --quiet "${service}.service"; then
+      journalctl -u "${service}.service" -n 60 --no-pager >&2 || true
+      die "${service} 未通过启动稳定性检查。"
+    fi
+  done
   systemctl start neko-renew.timer
   systemctl is-active --quiet neko-renew.timer || die "证书续期定时器未运行。"
 }
@@ -589,12 +600,13 @@ main() {
   # between two installers that passed the initial read-only check.
   assert_clean_target
   install_dependencies
-  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk stat env
+  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk stat env ip
 
   exec 9>/run/lock/neko-install.lock
   flock -n 9 || die "另一个 Neko 安装进程正在运行。"
   assert_clean_target
   assert_dual_stack_kernel
+  assert_strict_addresses_local
   assert_public_ports_free
   assert_work_space
 

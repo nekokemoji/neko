@@ -71,6 +71,35 @@ bash -c '
   ! is_safe_ip_literal 999.0.0.1
   ! is_safe_ip_literal "example.com"
 ' _ "$ROOT/lib/common.sh"
+bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  SUBSCRIPTION_IPV4_ADDRESS=192.0.2.44
+  SUBSCRIPTION_IPV6_ADDRESS=2001:db8::44
+  ip() {
+    case "$1:$2:$3:$4" in
+      -4:route:get:192.0.2.44) printf "local 192.0.2.44 dev lo src 192.0.2.44\n" ;;
+      -6:route:get:2001:db8::44) printf "local 2001:db8::44 dev lo src 2001:db8::44\n" ;;
+    esac
+  }
+  assert_strict_addresses_local
+' _ "$ROOT/lib/common.sh"
+if bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  SUBSCRIPTION_IPV4_ADDRESS=192.0.2.44
+  SUBSCRIPTION_IPV6_ADDRESS=2001:db8::44
+  ip() {
+    case "$1:$2:$3:$4" in
+      -4:route:get:192.0.2.44) printf "192.0.2.44 via 192.0.2.1 dev eth0 src 192.0.2.10\n" ;;
+      -6:route:get:2001:db8::44) printf "local 2001:db8::44 dev lo src 2001:db8::44\n" ;;
+    esac
+  }
+  assert_strict_addresses_local
+' _ "$ROOT/lib/common.sh" >/dev/null 2>&1; then
+  printf '严格 IPv4 地址不属于本机时没有被拒绝。\n' >&2
+  exit 1
+fi
 if bash -c '
   set -Eeuo pipefail
   source "$1"
@@ -144,7 +173,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.1.1"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.2.0"' "$ROOT/versions.env"
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
 grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
 grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
@@ -290,13 +319,16 @@ printf '[5/8] 用真实冻结核心校验配置……\n'
 mkdir -p "$WORK/mihomo-v4" "$WORK/mihomo-v6"
 "$MIHOMO" -d "$WORK/mihomo-v4" -t -f "$WORK/etc/subscriptions/mihomo-v4.yaml"
 "$MIHOMO" -d "$WORK/mihomo-v6" -t -f "$WORK/etc/subscriptions/mihomo-v6.yaml"
-set +e
-PATH=/nonexistent "$HYSTERIA" server --disable-update-check \
-  --config "$WORK/etc/config/hysteria.yaml" >"$WORK/hysteria-check.log" 2>&1
-hysteria_rc=$?
-set -e
-(( hysteria_rc != 0 ))
-grep -Fq 'executable file not found' "$WORK/hysteria-check.log"
+for family in v4 v6; do
+  set +e
+  PATH=/nonexistent "$HYSTERIA" server --disable-update-check \
+    --config "$WORK/etc/config/hysteria-${family}.yaml" \
+    >"$WORK/hysteria-${family}-check.log" 2>&1
+  hysteria_rc=$?
+  set -e
+  (( hysteria_rc != 0 ))
+  grep -Fq 'executable file not found' "$WORK/hysteria-${family}-check.log"
+done
 
 printf '[6/8] 校验严格订阅、出口策略、端口和 REALITY 目标……\n'
 bash -c '
@@ -330,7 +362,8 @@ state = json.loads((root / "etc/state.json").read_text())
 assert state["acme"]["method"] == "http-01"
 xray = json.loads((root / "etc/config/xray.json").read_text())
 sing = json.loads((root / "etc/config/sing-box.json").read_text())
-hysteria = yaml.safe_load((root / "etc/config/hysteria.yaml").read_text())
+hysteria_v4 = yaml.safe_load((root / "etc/config/hysteria-v4.yaml").read_text())
+hysteria_v6 = yaml.safe_load((root / "etc/config/hysteria-v6.yaml").read_text())
 caddy = (root / "etc/config/Caddyfile").read_text()
 
 expected_subscription_files = {
@@ -351,6 +384,9 @@ for family, address, ip_version in (
     assert len(mihomo["proxies"]) == 6
     assert all(p["server"] == address for p in mihomo["proxies"])
     assert all(p["ip-version"] == ip_version for p in mihomo["proxies"])
+    mihomo_tuic = next(p for p in mihomo["proxies"] if p["type"] == "tuic")
+    assert mihomo_tuic["sni"] == "example.com"
+    assert mihomo_tuic["disable-sni"] is False
     assert len(stash["proxies"]) == 5
     assert all(p["server"] == address for p in stash["proxies"])
     assert all(p["network"] != "xhttp" for p in stash["proxies"] if p["type"] == "vless")
@@ -382,6 +418,30 @@ assert len(set(singles)) == len(singles)
 assert all(not (ports["hysteria2_start"] <= p <= ports["hysteria2_end"]) for p in singles)
 assert ports["hysteria2_end"] - ports["hysteria2_start"] + 1 == 128
 
+v4_address = state["subscription"]["ipv4_address"]
+v6_address = state["subscription"]["ipv6_address"]
+
+assert len(sing["inbounds"]) == 6
+sing_inbounds = {inbound["tag"]: inbound for inbound in sing["inbounds"]}
+assert {tag for tag in sing_inbounds if "-v4-" in tag} == {
+    "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"
+}
+assert {tag for tag in sing_inbounds if "-v6-" in tag} == {
+    "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"
+}
+assert all(inbound["listen"] == v4_address for tag, inbound in sing_inbounds.items() if "-v4-" in tag)
+assert all(inbound["listen"] == v6_address for tag, inbound in sing_inbounds.items() if "-v6-" in tag)
+
+assert len(xray["inbounds"]) == 4
+xray_inbounds = {inbound["tag"]: inbound for inbound in xray["inbounds"]}
+assert {tag for tag in xray_inbounds if "-v4-" in tag} == {
+    "vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"
+}
+assert {tag for tag in xray_inbounds if "-v6-" in tag} == {
+    "vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"
+}
+assert all(inbound["listen"] == v4_address for tag, inbound in xray_inbounds.items() if "-v4-" in tag)
+assert all(inbound["listen"] == v6_address for tag, inbound in xray_inbounds.items() if "-v6-" in tag)
 for inbound in xray["inbounds"]:
     reality = inbound["streamSettings"]["realitySettings"]
     assert reality["target"] == "127.0.0.1:8443"
@@ -391,14 +451,66 @@ key_path = str(root / "var/lego/certificates/example.com.key")
 tls_inbounds = [i for i in sing["inbounds"] if "tls" in i]
 assert all(i["tls"]["certificate_path"] == cert_path for i in tls_inbounds)
 assert all(i["tls"]["key_path"] == key_path for i in tls_inbounds)
-assert hysteria["tls"] == {"cert": cert_path, "key": key_path}
-assert hysteria["auth"]["password"] == "test-hy2-password"
-assert hysteria["obfs"]["salamander"]["password"] == "test-hy2-obfs-password"
-assert sing["route"]["rules"][0] == {"ip_is_private": True, "action": "reject"}
-assert sing["route"]["rules"][1] == {"network": "tcp", "port": 25, "action": "reject"}
-assert {o["tag"]: o["protocol"] for o in xray["outbounds"]} == {
-    "direct": "freedom", "blocked": "blackhole"
+assert sing["route"]["rules"][0] == {"network": "tcp", "port": 25, "action": "reject"}
+assert sing["route"]["rules"][1] == {
+    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+    "action": "resolve",
+    "server": "local",
+    "strategy": "ipv4_only",
 }
+assert sing["route"]["rules"][2] == {
+    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+    "action": "resolve",
+    "server": "local",
+    "strategy": "ipv6_only",
+}
+assert sing["route"]["rules"][3] == {"ip_is_private": True, "action": "reject"}
+assert sing["route"]["rules"][4] == {
+    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+    "ip_version": 6,
+    "action": "reject",
+}
+assert sing["route"]["rules"][5] == {
+    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+    "ip_version": 4,
+    "action": "reject",
+}
+assert sing["route"]["rules"][6] == {
+    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+    "action": "route",
+    "outbound": "direct-v4",
+}
+assert sing["route"]["rules"][7] == {
+    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+    "action": "route",
+    "outbound": "direct-v6",
+}
+sing_outbounds = {outbound["tag"]: outbound for outbound in sing["outbounds"]}
+assert sing_outbounds == {
+    "direct-v4": {
+        "type": "direct",
+        "tag": "direct-v4",
+        "inet4_bind_address": v4_address,
+        "domain_resolver": {"server": "local", "strategy": "ipv4_only"},
+    },
+    "direct-v6": {
+        "type": "direct",
+        "tag": "direct-v6",
+        "inet6_bind_address": v6_address,
+        "domain_resolver": {"server": "local", "strategy": "ipv6_only"},
+    },
+}
+assert sing["dns"] == {"servers": [{"type": "local", "tag": "local"}]}
+assert {o["tag"]: o["protocol"] for o in xray["outbounds"]} == {
+    "direct-v4": "freedom", "direct-v6": "freedom", "blocked": "blackhole"
+}
+xray_outbounds = {outbound["tag"]: outbound for outbound in xray["outbounds"]}
+assert xray_outbounds["direct-v4"]["sendThrough"] == v4_address
+assert xray_outbounds["direct-v4"]["targetStrategy"] == "ForceIPv4"
+assert xray_outbounds["direct-v4"]["settings"]["domainStrategy"] == "ForceIPv4"
+assert xray_outbounds["direct-v6"]["sendThrough"] == v6_address
+assert xray_outbounds["direct-v6"]["targetStrategy"] == "ForceIPv6"
+assert xray_outbounds["direct-v6"]["settings"]["domainStrategy"] == "ForceIPv6"
 assert xray["routing"]["domainStrategy"] == "IPIfNonMatch"
 assert xray["routing"]["rules"][0]["outboundTag"] == "blocked"
 assert "169.254.0.0/16" in xray["routing"]["rules"][0]["ip"]
@@ -406,10 +518,35 @@ assert "fc00::/7" in xray["routing"]["rules"][0]["ip"]
 assert xray["routing"]["rules"][1] == {
     "type": "field", "network": "tcp", "port": 25, "outboundTag": "blocked"
 }
-assert "reject(169.254.0.0/16)" in hysteria["acl"]["inline"]
-assert "reject(fc00::/7)" in hysteria["acl"]["inline"]
-assert "reject(all, tcp/25)" in hysteria["acl"]["inline"]
-assert hysteria["acl"]["inline"][-1] == "direct(all)"
+assert xray["routing"]["rules"][2] == {
+    "type": "field",
+    "inboundTag": ["vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"],
+    "outboundTag": "direct-v4",
+}
+assert xray["routing"]["rules"][3] == {
+    "type": "field",
+    "inboundTag": ["vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"],
+    "outboundTag": "direct-v6",
+}
+
+for family, hysteria, address, mode, bind_field, listen in (
+    ("v4", hysteria_v4, v4_address, 4, "bindIPv4", f"{v4_address}:21000-21127"),
+    ("v6", hysteria_v6, v6_address, 6, "bindIPv6", f"[{v6_address}]:21000-21127"),
+):
+    assert hysteria["listen"] == listen
+    assert hysteria["tls"] == {"cert": cert_path, "key": key_path}
+    assert hysteria["auth"]["password"] == "test-hy2-password"
+    assert hysteria["obfs"]["salamander"]["password"] == "test-hy2-obfs-password"
+    assert hysteria["outbounds"] == [{
+        "name": "direct",
+        "type": "direct",
+        "direct": {"mode": mode, bind_field: address},
+    }]
+    assert "reject(169.254.0.0/16)" in hysteria["acl"]["inline"]
+    assert "reject(fc00::/7)" in hysteria["acl"]["inline"]
+    assert "reject(all, tcp/25)" in hysteria["acl"]["inline"]
+    assert hysteria["acl"]["inline"][-1] == "direct(all)"
+assert not (root / "etc/config/hysteria.yaml").exists()
 assert caddy.count(f"tls {cert_path} {key_path}") == 4
 assert "protocols h1 h2" in caddy
 assert "mihomo-v4.yaml" in caddy and "mihomo-v6.yaml" in caddy
@@ -438,20 +575,71 @@ if grep -Fq '/test-subscription-token/' "$WORK/etc/config/Caddyfile"; then
 fi
 grep -Fq 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' "$ROOT/systemd/neko-sing-box.service"
 grep -Fq 'AmbientCapabilities=CAP_NET_ADMIN' "$ROOT/systemd/neko-hysteria.service"
+grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' "$ROOT/systemd/neko-hysteria.service"
+grep -Fq 'wait -n "${pids[@]}"' "$ROOT/runtime/hysteria-dual.sh"
 grep -Fq 'ReadWritePaths=/var/lib/neko' "$ROOT/systemd/neko-renew.service"
 grep -Fq 'systemctl stop neko-renew.service' "$ROOT/runtime/panel.sh"
+grep -Fq 'restart_runtime_services' "$ROOT/runtime/panel.sh"
+
+SUPERVISOR_WORK="$WORK/hysteria-supervisor"
+mkdir -p "$SUPERVISOR_WORK/config"
+cat > "$SUPERVISOR_WORK/fake-hysteria" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+config=""
+while (( $# )); do
+  case "$1" in
+    --config)
+      config="$2"
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+case "$config" in
+  *hysteria-v4.yaml)
+    : > "$NEKO_SUPERVISOR_TEST_DIR/v4.started"
+    sleep 0.2
+    exit 0
+    ;;
+  *hysteria-v6.yaml)
+    printf '%s\n' "$$" > "$NEKO_SUPERVISOR_TEST_DIR/v6.pid"
+    : > "$NEKO_SUPERVISOR_TEST_DIR/v6.started"
+    trap ': > "$NEKO_SUPERVISOR_TEST_DIR/v6.terminated"; exit 0' TERM INT
+    while :; do sleep 0.1; done
+    ;;
+  *) exit 64 ;;
+esac
+EOF
+chmod 0755 "$SUPERVISOR_WORK/fake-hysteria"
+set +e
+NEKO_HYSTERIA_BINARY="$SUPERVISOR_WORK/fake-hysteria" \
+  NEKO_CONFIG_DIR="$SUPERVISOR_WORK/config" \
+  NEKO_SUPERVISOR_TEST_DIR="$SUPERVISOR_WORK" \
+  "$ROOT/runtime/hysteria-dual.sh"
+supervisor_rc=$?
+set -e
+(( supervisor_rc != 0 ))
+[[ -e "$SUPERVISOR_WORK/v4.started" ]]
+[[ -e "$SUPERVISOR_WORK/v6.started" ]]
+[[ -e "$SUPERVISOR_WORK/v6.terminated" ]]
+v6_pid="$(<"$SUPERVISOR_WORK/v6.pid")"
+if kill -0 "$v6_pid" 2>/dev/null; then
+  printf 'Hysteria 监管脚本留下了 IPv6 子进程。\n' >&2
+  exit 1
+fi
 
 domain_gate_line="$(grep -n 'collect_identity' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 dependency_line="$(grep -n 'install_dependencies' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 lock_line="$(grep -n 'exec 9>/run/lock/neko-install.lock' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 (( domain_gate_line < dependency_line && dependency_line < lock_line ))
 
-printf '[8/8] 模拟 1.0.x 原地升级成功与失败回滚……\n'
+printf '[8/8] 模拟 1.0.x/1.1.x 原地升级成功与失败回滚……\n'
 prepare_upgrade_install() {
-  local target="$1"
+  local target="$1" schema="${2:-1}"
   mkdir -p \
     "$target/etc/config" "$target/etc/subscriptions" \
-    "$target/var/acme" "$target/libexec/lib" "$target/tmp"
+    "$target/var/acme" "$target/libexec/lib" "$target/systemd" "$target/tmp"
   cp -a -- "$WORK/etc/config/." "$target/etc/config/"
   cp -a -- "$WORK/etc/subscriptions/mihomo-v4.yaml" \
     "$target/etc/subscriptions/mihomo.yaml"
@@ -459,23 +647,37 @@ prepare_upgrade_install() {
     "$target/etc/subscriptions/stash.yaml"
   cp -a -- "$WORK/etc/subscriptions/shadowrocket-v4.txt" \
     "$target/etc/subscriptions/shadowrocket.txt"
-  jq '
-    .schema = 1
-    | .release = "1.0.4-test"
-    | del(.acme)
-    | del(.network)
-    | .subscription = {
-        token: .subscription.token,
-        shadowrocket_server: .subscription.ipv4_address
-      }
-    | .firewall = {manager: "none", zone: ""}
-  ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
+  if [[ "$schema" == 1 ]]; then
+    jq '
+      .schema = 1
+      | .release = "1.0.4-test"
+      | del(.acme)
+      | del(.network)
+      | .subscription = {
+          token: .subscription.token,
+          shadowrocket_server: .subscription.ipv4_address
+        }
+      | .firewall = {manager: "none", zone: ""}
+    ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
+  else
+    jq '
+      .schema = 2
+      | .release = "1.1.1-test"
+      | .acme = {method: "http-01"}
+      | .network = {listen_address: "::"}
+      | .firewall = {manager: "none", zone: "", zones: []}
+    ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
+  fi
   cp -a -- "$WORK/var/lego" "$target/var/lego"
   cp -a -- "$ROOT/lib/." "$target/libexec/lib/"
   cp -a -- "$ROOT/versions.env" "$target/libexec/versions.env"
   cp -a -- "$ROOT/runtime/panel.sh" "$ROOT/runtime/renew.sh" "$target/libexec/"
+  cp -a -- \
+    "$ROOT/tests/fixtures/neko-hysteria-legacy.service" \
+    "$target/systemd/neko-hysteria.service"
   ln -s "$SING_BOX" "$target/libexec/sing-box"
   ln -s "$XRAY" "$target/libexec/xray"
+  ln -s "$HYSTERIA" "$target/libexec/hysteria"
   ln -s "$CADDY" "$target/libexec/caddy"
   ln -s "$LEGO" "$target/libexec/lego"
 }
@@ -485,7 +687,8 @@ run_upgrade() {
   shift
   env PATH="$ROOT/tests/helpers:$PATH" \
     NEKO_ETC="$target/etc" NEKO_VAR="$target/var" \
-    NEKO_LIBEXEC="$target/libexec" NEKO_STATE="$target/etc/state.json" \
+    NEKO_LIBEXEC="$target/libexec" NEKO_SYSTEMD="$target/systemd" \
+    NEKO_STATE="$target/etc/state.json" \
     NEKO_USER=root NEKO_UPDATE_TMP_DIR="$target/tmp" \
     NEKO_UPDATE_LOCK_FILE="$target/upgrade.lock" \
     NEKO_UPDATE_TEST_MODE=1 NEKO_UPDATE_SKIP_ACME=1 \
@@ -496,6 +699,8 @@ run_upgrade() {
 
 UPGRADE_OK="$WORK/upgrade-ok"
 prepare_upgrade_install "$UPGRADE_OK"
+upgrade_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+  "$UPGRADE_OK/etc/state.json")"
 run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ "$(jq -r '.schema' "$UPGRADE_OK/etc/state.json")" == 2 ]]
 [[ "$(jq -r '.release' "$UPGRADE_OK/etc/state.json")" == "$NEKO_RELEASE" ]]
@@ -503,16 +708,39 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ "$(jq -r '.subscription.ipv6_domain' "$UPGRADE_OK/etc/state.json")" == v6.example.com ]]
 [[ "$(jq -r '.subscription.shadowrocket_server // empty' "$UPGRADE_OK/etc/state.json")" == "" ]]
 [[ "$(jq -r '.acme.method' "$UPGRADE_OK/etc/state.json")" == http-01 ]]
+[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+  "$UPGRADE_OK/etc/state.json")" == "$upgrade_identity_before" ]]
 [[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
+[[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
+grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
+  "$UPGRADE_OK/systemd/neko-hysteria.service"
+[[ -s "$UPGRADE_OK/etc/config/hysteria-v4.yaml" ]]
+[[ -s "$UPGRADE_OK/etc/config/hysteria-v6.yaml" ]]
+[[ ! -e "$UPGRADE_OK/etc/config/hysteria.yaml" ]]
 if find "$UPGRADE_OK/tmp" -maxdepth 1 -name 'neko-upgrade-backup.*' | grep -q .; then
   printf '升级成功后没有清理备份目录。\n' >&2
   exit 1
 fi
 
+UPGRADE_SCHEMA2="$WORK/upgrade-schema2"
+prepare_upgrade_install "$UPGRADE_SCHEMA2" 2
+schema2_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+  "$UPGRADE_SCHEMA2/etc/state.json")"
+run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
+[[ "$(jq -r '.schema' "$UPGRADE_SCHEMA2/etc/state.json")" == 2 ]]
+[[ "$(jq -r '.release' "$UPGRADE_SCHEMA2/etc/state.json")" == "$NEKO_RELEASE" ]]
+[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+  "$UPGRADE_SCHEMA2/etc/state.json")" == "$schema2_identity_before" ]]
+[[ -x "$UPGRADE_SCHEMA2/libexec/hysteria-dual.sh" ]]
+[[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v4.yaml" ]]
+[[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
+[[ ! -e "$UPGRADE_SCHEMA2/etc/config/hysteria.yaml" ]]
+
 UPGRADE_FAIL="$WORK/upgrade-fail"
 prepare_upgrade_install "$UPGRADE_FAIL"
 state_before="$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')"
 config_before="$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')"
+unit_before="$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')"
 set +e
 run_upgrade "$UPGRADE_FAIL" \
   NEKO_TEST_SYSTEMCTL_FAIL_PATTERN='restart neko-caddy.service' \
@@ -523,6 +751,8 @@ set -e
 (( upgrade_rc != 0 ))
 [[ "$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')" == "$state_before" ]]
 [[ "$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')" == "$config_before" ]]
+[[ "$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')" == "$unit_before" ]]
+[[ ! -e "$UPGRADE_FAIL/libexec/hysteria-dual.sh" ]]
 grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
 if find "$UPGRADE_FAIL/tmp" -maxdepth 1 -name 'neko-upgrade-backup.*' | grep -q .; then
   printf '升级回滚后没有清理备份目录。\n' >&2

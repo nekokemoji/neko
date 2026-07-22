@@ -42,6 +42,16 @@ validate_runtime_configs() {
     --config "${NEKO_CONFIG_DIR}/Caddyfile" --adapter caddyfile >/dev/null
 }
 
+restart_runtime_services() {
+  local service
+  systemctl restart \
+    neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service
+  sleep 1
+  for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
+    systemctl is-active --quiet "${service}.service" || return 1
+  done
+}
+
 enable_bbr() {
   local previous_qdisc previous_cc managed available_cc
   managed="$(jq -r '.bbr.managed // false' "$NEKO_STATE")"
@@ -129,9 +139,10 @@ refresh_subscription_endpoints() {
 
   acquire_maintenance_lock
   load_state
+  check_strict_dual_stack_dns "$DOMAIN"
+  assert_strict_addresses_local
   backup="$(mktemp "${NEKO_STATE}.backup.XXXXXX")"
   cp -a -- "$NEKO_STATE" "$backup"
-  check_strict_dual_stack_dns "$DOMAIN"
 
   if atomic_json_update \
       '.subscription.ipv4_domain = $v4_domain
@@ -144,7 +155,7 @@ refresh_subscription_endpoints() {
       --arg v6_address "$SUBSCRIPTION_IPV6_ADDRESS" \
     && render_all \
     && validate_runtime_configs \
-    && systemctl restart neko-caddy.service; then
+    && restart_runtime_services; then
     rm -f -- "$backup"
     release_maintenance_lock
     ok "严格 IPv4/IPv6 端点与六份订阅已刷新。"
@@ -153,7 +164,7 @@ refresh_subscription_endpoints() {
     cp -a -- "$backup" "$NEKO_STATE"
     rm -f -- "$backup"
     render_all || true
-    systemctl restart neko-caddy.service >/dev/null 2>&1 || true
+    restart_runtime_services >/dev/null 2>&1 || true
     die "端点刷新失败，已恢复原地址和订阅。"
   fi
 }
