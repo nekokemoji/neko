@@ -8,6 +8,10 @@ NEKO_LIBEXEC="${NEKO_LIBEXEC:-/usr/local/libexec/neko}"
 NEKO_SYSTEMD="${NEKO_SYSTEMD:-/etc/systemd/system}"
 NEKO_STATE="${NEKO_STATE:-${NEKO_ETC}/state.json}"
 NEKO_USER="${NEKO_USER:-neko-proxy}"
+CLOUDFLARE_DNS_TOKEN_FILE="${NEKO_VAR}/credentials/cloudflare-dns-api-token"
+
+ACME_METHOD_HTTP="http-01"
+ACME_METHOD_CLOUDFLARE="cloudflare-dns-01"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_BLUE=$'\033[1;34m'
@@ -136,6 +140,121 @@ validate_email() {
   [[ "$1" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$ ]]
 }
 
+normalize_acme_method() {
+  case "${1,,}" in
+    http|http-01)
+      printf '%s' "$ACME_METHOD_HTTP"
+      ;;
+    cloudflare|dns|dns-01|cloudflare-dns|cloudflare-dns-01)
+      printf '%s' "$ACME_METHOD_CLOUDFLARE"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+validate_cloudflare_dns_token() {
+  local token="$1"
+  [[ ${#token} -ge 20 && ${#token} -le 256 ]] || return 1
+  [[ "$token" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
+write_cloudflare_dns_token() {
+  local token="$1" credentials_dir tmp
+  validate_cloudflare_dns_token "$token" \
+    || die "Cloudflare API Token 格式无效；应为 20 到 256 位且只包含字母、数字、下划线或连字符。"
+
+  credentials_dir="$(dirname -- "$CLOUDFLARE_DNS_TOKEN_FILE")"
+  install -d -m 0700 "$credentials_dir"
+  tmp="$(mktemp "${credentials_dir}/.cloudflare-dns-token.XXXXXX")"
+  printf '%s\n' "$token" > "$tmp"
+  chmod 0600 "$tmp"
+  if (( EUID == 0 )); then
+    chown root:root "$credentials_dir" "$tmp"
+  fi
+  mv -f -- "$tmp" "$CLOUDFLARE_DNS_TOKEN_FILE"
+}
+
+assert_cloudflare_dns_token_file() {
+  local credentials_dir token owner_uid mode dir_owner_uid dir_mode expected_uid
+  credentials_dir="$(dirname -- "$CLOUDFLARE_DNS_TOKEN_FILE")"
+  [[ -d "$credentials_dir" && ! -L "$credentials_dir" ]] \
+    || die "Cloudflare 凭据目录缺失或不安全：${credentials_dir}"
+  [[ -f "$CLOUDFLARE_DNS_TOKEN_FILE" && ! -L "$CLOUDFLARE_DNS_TOKEN_FILE" \
+    && -r "$CLOUDFLARE_DNS_TOKEN_FILE" ]] \
+    || die "Cloudflare DNS API Token 文件缺失或不安全：${CLOUDFLARE_DNS_TOKEN_FILE}"
+
+  dir_owner_uid="$(stat -c '%u' "$credentials_dir")"
+  dir_mode="$(stat -c '%a' "$credentials_dir")"
+  owner_uid="$(stat -c '%u' "$CLOUDFLARE_DNS_TOKEN_FILE")"
+  mode="$(stat -c '%a' "$CLOUDFLARE_DNS_TOKEN_FILE")"
+  if [[ "${NEKO_TEST_MODE:-0}" == "1" || "${NEKO_UPDATE_TEST_MODE:-0}" == "1" ]]; then
+    expected_uid="$(id -u)"
+  else
+    expected_uid=0
+  fi
+  [[ "$dir_owner_uid" == "$expected_uid" && "$dir_mode" == "700" ]] \
+    || die "Cloudflare 凭据目录必须由 root 持有且权限为 0700。"
+  [[ "$owner_uid" == "$expected_uid" && "$mode" == "600" ]] \
+    || die "Cloudflare DNS API Token 必须由 root 持有且权限为 0600。"
+
+  token="$(<"$CLOUDFLARE_DNS_TOKEN_FILE")"
+  validate_cloudflare_dns_token "$token" \
+    || die "Cloudflare DNS API Token 文件内容无效。"
+}
+
+run_lego_acme() {
+  local lego_binary="$1" http_mode="$2"
+  shift 2
+  [[ -x "$lego_binary" ]] || die "lego 不可执行：${lego_binary}"
+
+  case "${ACME_METHOD:-$ACME_METHOD_HTTP}" in
+    "$ACME_METHOD_HTTP")
+      case "$http_mode" in
+        standalone)
+          "$lego_binary" "$@" --http
+          ;;
+        webroot)
+          "$lego_binary" "$@" --http --http.webroot "$NEKO_VAR/acme"
+          ;;
+        *)
+          die "未知的 HTTP-01 运行模式：${http_mode}"
+          ;;
+      esac
+      ;;
+    "$ACME_METHOD_CLOUDFLARE")
+      assert_cloudflare_dns_token_file
+      env \
+        -u CF_API_EMAIL \
+        -u CF_API_KEY \
+        -u CF_DNS_API_TOKEN \
+        -u CF_ZONE_API_TOKEN \
+        -u CF_API_EMAIL_FILE \
+        -u CF_API_KEY_FILE \
+        -u CF_DNS_API_TOKEN_FILE \
+        -u CF_ZONE_API_TOKEN_FILE \
+        -u CF_BASE_URL \
+        -u CF_BASE_URL_FILE \
+        -u CLOUDFLARE_API_KEY \
+        -u CLOUDFLARE_DNS_API_TOKEN \
+        -u CLOUDFLARE_EMAIL \
+        -u CLOUDFLARE_ZONE_API_TOKEN \
+        -u CLOUDFLARE_BASE_URL \
+        -u CLOUDFLARE_API_KEY_FILE \
+        -u CLOUDFLARE_DNS_API_TOKEN_FILE \
+        -u CLOUDFLARE_EMAIL_FILE \
+        -u CLOUDFLARE_ZONE_API_TOKEN_FILE \
+        -u CLOUDFLARE_BASE_URL_FILE \
+        CF_DNS_API_TOKEN_FILE="$CLOUDFLARE_DNS_TOKEN_FILE" \
+        "$lego_binary" "$@" --dns cloudflare
+      ;;
+    *)
+      die "不支持的 ACME 验证方式：${ACME_METHOD:-empty}"
+      ;;
+  esac
+}
+
 resolved_addresses() {
   { getent ahosts "$1" 2>/dev/null || true; } | awk '{print $1}' | sort -u
 }
@@ -193,7 +312,7 @@ check_domain_resolution() {
   while IFS= read -r address; do
     printf '  - %s\n' "$address"
   done <<< "$addresses"
-  warn "请确认这些是本机直连地址，未开启 CDN/代理；最终还会用 ACME HTTP-01 验证域名控制权。"
+  warn "请确认这些是本机直连地址，未开启 CDN/代理；安装还会执行所选的 ACME 域名验证。"
 }
 
 derive_subscription_domains() {
@@ -239,7 +358,7 @@ check_strict_dual_stack_dns() {
   info "严格双栈 DNS 检查通过："
   printf '  - IPv4：%s -> %s\n' "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_IPV4_ADDRESS"
   printf '  - IPv6：%s -> %s\n' "$SUBSCRIPTION_DOMAIN_IPV6" "$SUBSCRIPTION_IPV6_ADDRESS"
-  warn "三个域名都必须保持 Cloudflare DNS only（灰云）；最终仍会用 ACME HTTP-01 验证公网可达性。"
+  warn "三个域名都必须保持 Cloudflare DNS only（灰云）；安装还会执行所选的 ACME 域名验证。"
 }
 
 assert_dual_stack_kernel() {
@@ -408,6 +527,9 @@ load_state() {
   ACME_EMAIL="$(state_value '.acme_email')"
   validate_domain "$DOMAIN" || die "state.json 中的基础域名无效。"
   validate_email "$ACME_EMAIL" || die "state.json 中的 ACME 邮箱无效。"
+  ACME_METHOD="$(jq -r '.acme.method // "http-01"' "$NEKO_STATE")"
+  ACME_METHOD="$(normalize_acme_method "$ACME_METHOD")" \
+    || die "state.json 中的 ACME 验证方式无效。"
   HY2_START="$(state_value '.ports.hysteria2_start')"
   HY2_END="$(state_value '.ports.hysteria2_end')"
   TUIC_PORT="$(state_value '.ports.tuic')"
@@ -487,8 +609,14 @@ show_subscription_links() {
 
 show_required_ports() {
   load_state
-  printf 'IPv4 与 IPv6 云防火墙 TCP：80, 443, %s, %s, %s, %s\n' \
-    "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
+  if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
+    printf 'IPv4 与 IPv6 云防火墙 TCP：80, 443, %s, %s, %s, %s\n' \
+      "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
+  else
+    printf 'IPv4 与 IPv6 云防火墙 TCP：443, %s, %s, %s, %s\n' \
+      "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
+    printf 'TCP 80：DNS-01 模式无需公网放行（Caddy 仍会在本机监听 HTTP 跳转）。\n'
+  fi
   printf 'IPv4 与 IPv6 云防火墙 UDP：%s-%s, %s, %s\n' \
     "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT"
   printf '仅回环 TCP：8443（不要对公网放行）\n'

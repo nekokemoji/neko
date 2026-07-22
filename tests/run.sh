@@ -135,6 +135,7 @@ printf '[3/8] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$LEGO" --version)" == *"$LEGO_VERSION"* ]]
 [[ "$("$MIHOMO" -v)" == *"${MIHOMO_VERSION}"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--http.webroot"* ]]
+[[ "$("$LEGO" run --help 2>&1)" == *"--dns"* ]]
 if grep -R "releases/latest\|/latest/download" "$ROOT/install.sh" "$ROOT/tests/fetch-pinned-tools.sh"; then
   printf '发现未冻结的 latest 下载地址。\n' >&2
   exit 1
@@ -143,13 +144,117 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.1.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.1.1"' "$ROOT/versions.env"
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
 grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
+grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
+grep -Fq -- '--dns cloudflare' "$ROOT/lib/common.sh"
 if grep -Eq '\|[[:space:]]*head([[:space:]]|$)' "$ROOT/install.sh"; then
   printf '安装器包含可能在 pipefail 下触发 SIGPIPE 的 head 管道。\n' >&2
   exit 1
 fi
+
+ACME_WORK="$(mktemp -d "$ROOT/tests/acme.XXXXXX")"
+mkdir -p "$ACME_WORK/bin"
+cat > "$ACME_WORK/bin/lego-fake" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ -z "${CF_API_EMAIL:-}" ]]
+[[ -z "${CF_API_KEY:-}" ]]
+[[ -z "${CF_DNS_API_TOKEN:-}" ]]
+[[ -z "${CF_ZONE_API_TOKEN:-}" ]]
+[[ -z "${CF_API_EMAIL_FILE:-}" ]]
+[[ -z "${CF_API_KEY_FILE:-}" ]]
+[[ -z "${CF_ZONE_API_TOKEN_FILE:-}" ]]
+[[ -z "${CF_BASE_URL:-}" ]]
+[[ -z "${CF_BASE_URL_FILE:-}" ]]
+[[ -z "${CLOUDFLARE_API_KEY:-}" ]]
+[[ -z "${CLOUDFLARE_DNS_API_TOKEN:-}" ]]
+[[ -z "${CLOUDFLARE_EMAIL:-}" ]]
+[[ -z "${CLOUDFLARE_ZONE_API_TOKEN:-}" ]]
+[[ -z "${CLOUDFLARE_BASE_URL:-}" ]]
+[[ -z "${CLOUDFLARE_API_KEY_FILE:-}" ]]
+[[ -z "${CLOUDFLARE_DNS_API_TOKEN_FILE:-}" ]]
+[[ -z "${CLOUDFLARE_EMAIL_FILE:-}" ]]
+[[ -z "${CLOUDFLARE_ZONE_API_TOKEN_FILE:-}" ]]
+[[ -z "${CLOUDFLARE_BASE_URL_FILE:-}" ]]
+printf '%s\n' "$@" > "$NEKO_TEST_ARGS_LOG"
+printf '%s\n' "${CF_DNS_API_TOKEN_FILE:-}" > "$NEKO_TEST_ENV_LOG"
+EOF
+chmod 0755 "$ACME_WORK/bin/lego-fake"
+printf '%s\n' 'test_Cloudflare-token_1234567890' > "$ACME_WORK/input-token"
+chmod 0600 "$ACME_WORK/input-token"
+NEKO_INSTALL_TEST_TOKEN_FILE="$ACME_WORK/input-token" bash -c '
+  set -Eeuo pipefail
+  unset CF_DNS_API_TOKEN CF_DNS_API_TOKEN_FILE \
+    CLOUDFLARE_DNS_API_TOKEN CLOUDFLARE_DNS_API_TOKEN_FILE
+  source "$1"
+  ACME_METHOD_INPUT=""
+  CLOUDFLARE_TOKEN_SOURCE_FILE="$NEKO_INSTALL_TEST_TOKEN_FILE"
+  collect_acme_settings
+  [[ "$ACME_METHOD" == cloudflare-dns-01 ]]
+  [[ "$CLOUDFLARE_DNS_TOKEN_INPUT" == test_Cloudflare-token_1234567890 ]]
+' _ "$ROOT/install.sh"
+if NEKO_INSTALL_TEST_TOKEN_FILE="$ACME_WORK/input-token" bash -c '
+  set -Eeuo pipefail
+  unset CF_DNS_API_TOKEN CF_DNS_API_TOKEN_FILE \
+    CLOUDFLARE_DNS_API_TOKEN CLOUDFLARE_DNS_API_TOKEN_FILE
+  source "$1"
+  ACME_METHOD_INPUT=http-01
+  CLOUDFLARE_TOKEN_SOURCE_FILE="$NEKO_INSTALL_TEST_TOKEN_FILE"
+  collect_acme_settings
+' _ "$ROOT/install.sh" >/dev/null 2>&1; then
+  printf 'HTTP-01 接受了不应使用的 Cloudflare Token。\n' >&2
+  exit 1
+fi
+NEKO_VAR="$ACME_WORK/var" NEKO_TEST_MODE=1 \
+  ACME_TEST_ROOT="$ACME_WORK" bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    token="test_Cloudflare-token_1234567890"
+    validate_cloudflare_dns_token "$token"
+    ! validate_cloudflare_dns_token short
+    write_cloudflare_dns_token "$token"
+    [[ "$(stat -c %a "$(dirname "$CLOUDFLARE_DNS_TOKEN_FILE")")" == 700 ]]
+    [[ "$(stat -c %a "$CLOUDFLARE_DNS_TOKEN_FILE")" == 600 ]]
+    chmod 0644 "$CLOUDFLARE_DNS_TOKEN_FILE"
+    if (assert_cloudflare_dns_token_file >/dev/null 2>&1); then
+      printf "权限过宽的 Cloudflare Token 文件未被拒绝。\n" >&2
+      exit 1
+    fi
+    chmod 0600 "$CLOUDFLARE_DNS_TOKEN_FILE"
+    assert_cloudflare_dns_token_file
+
+    export NEKO_TEST_ARGS_LOG="$ACME_TEST_ROOT/dns-args"
+    export NEKO_TEST_ENV_LOG="$ACME_TEST_ROOT/dns-env"
+    ACME_METHOD=cloudflare-dns-01
+    CF_DNS_API_TOKEN="must-not-leak"
+    CF_ZONE_API_TOKEN_FILE="/must/not/leak"
+    CLOUDFLARE_DNS_API_TOKEN_FILE="/must/not/leak-either"
+    CLOUDFLARE_BASE_URL="https://attacker.invalid/"
+    export CF_DNS_API_TOKEN CF_ZONE_API_TOKEN_FILE \
+      CLOUDFLARE_DNS_API_TOKEN_FILE CLOUDFLARE_BASE_URL
+    run_lego_acme "$ACME_TEST_ROOT/bin/lego-fake" standalone \
+      run --domains example.com
+    grep -Fxq -- "--dns" "$NEKO_TEST_ARGS_LOG"
+    grep -Fxq cloudflare "$NEKO_TEST_ARGS_LOG"
+    [[ "$(<"$NEKO_TEST_ENV_LOG")" == "$CLOUDFLARE_DNS_TOKEN_FILE" ]]
+    ! grep -Eq "must-not-leak|$token" \
+      "$NEKO_TEST_ARGS_LOG" "$NEKO_TEST_ENV_LOG"
+
+    export NEKO_TEST_ARGS_LOG="$ACME_TEST_ROOT/http-args"
+    export NEKO_TEST_ENV_LOG="$ACME_TEST_ROOT/http-env"
+    ACME_METHOD=http-01
+    unset CF_DNS_API_TOKEN CF_ZONE_API_TOKEN_FILE \
+      CLOUDFLARE_DNS_API_TOKEN_FILE CLOUDFLARE_BASE_URL
+    run_lego_acme "$ACME_TEST_ROOT/bin/lego-fake" webroot \
+      run --domains example.com
+    grep -Fxq -- "--http" "$NEKO_TEST_ARGS_LOG"
+    grep -Fxq -- "--http.webroot" "$NEKO_TEST_ARGS_LOG"
+    grep -Fxq "$NEKO_VAR/acme" "$NEKO_TEST_ARGS_LOG"
+    [[ "$(<"$NEKO_TEST_ENV_LOG")" == "" ]]
+  ' _ "$ROOT/lib/common.sh"
+rm -rf -- "$ACME_WORK"
 
 printf '[4/8] 渲染服务端配置与客户端订阅……\n'
 WORK="$(mktemp -d "$ROOT/tests/run.XXXXXX")"
@@ -161,8 +266,9 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=example.com \
   -keyout "$WORK/var/lego/certificates/example.com.key" \
   -out "$WORK/var/lego/certificates/example.com.crt" >/dev/null 2>&1
 
-tar --exclude='neko/tests/run.*' -czf "$WORK/bootstrap-source.tar.gz" \
-  -C "$ROOT/.." neko
+root_dir_name="${ROOT##*/}"
+tar --exclude="${root_dir_name}/tests/run.*" \
+  -czf "$WORK/bootstrap-source.tar.gz" -C "$ROOT/.." "$root_dir_name"
 mkdir -p "$WORK/bootstrap-work"
 NEKO_BOOTSTRAP_ARCHIVE="$WORK/bootstrap-source.tar.gz" \
   NEKO_BOOTSTRAP_WORK_BASE="$WORK/bootstrap-work" NEKO_BOOTSTRAP_TEST_MODE=1 \
@@ -221,6 +327,7 @@ import yaml
 
 root = pathlib.Path(sys.argv[1])
 state = json.loads((root / "etc/state.json").read_text())
+assert state["acme"]["method"] == "http-01"
 xray = json.loads((root / "etc/config/xray.json").read_text())
 sing = json.loads((root / "etc/config/sing-box.json").read_text())
 hysteria = yaml.safe_load((root / "etc/config/hysteria.yaml").read_text())
@@ -355,6 +462,7 @@ prepare_upgrade_install() {
   jq '
     .schema = 1
     | .release = "1.0.4-test"
+    | del(.acme)
     | del(.network)
     | .subscription = {
         token: .subscription.token,
@@ -394,6 +502,7 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ "$(jq -r '.subscription.ipv4_domain' "$UPGRADE_OK/etc/state.json")" == v4.example.com ]]
 [[ "$(jq -r '.subscription.ipv6_domain' "$UPGRADE_OK/etc/state.json")" == v6.example.com ]]
 [[ "$(jq -r '.subscription.shadowrocket_server // empty' "$UPGRADE_OK/etc/state.json")" == "" ]]
+[[ "$(jq -r '.acme.method' "$UPGRADE_OK/etc/state.json")" == http-01 ]]
 [[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
 if find "$UPGRADE_OK/tmp" -maxdepth 1 -name 'neko-upgrade-backup.*' | grep -q .; then
   printf '升级成功后没有清理备份目录。\n' >&2

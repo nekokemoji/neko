@@ -46,7 +46,26 @@ Neko 是面向独立双栈 VPS 的终端部署工具。它安装 Hysteria2、TUI
 - TCP 80、443、8443 未被其他程序占用；
 - Let’s Encrypt 为基础、v4、v6 三个名称成功签发同一张 SAN 证书。
 
-Let’s Encrypt HTTP-01 必须从公网访问 TCP 80，官方说明见 [Challenge Types](https://letsencrypt.org/docs/challenge-types/) 和 [Integration Guide](https://letsencrypt.org/docs/integration-guide/)。
+## 证书验证方式
+
+交互安装默认推荐 **Cloudflare DNS-01**。安装器通过 Cloudflare API 临时创建并清理 `_acme-challenge` TXT 记录，因此证书验证不依赖 VPS 的 IPv6 入站路由，也不要求公网放行 TCP 80。A/AAAA 仍须按上表保持 DNS only，因为它们同时用于订阅下载和严格地址校验。
+
+先在 Cloudflare 创建一个专用 API Token，只授予以下权限，并把 Zone Resources 限定为这个域名所在的单个 zone：
+
+- `Zone / Zone / Read`
+- `Zone / DNS / Edit`
+
+不要使用 Global API Key，也不要授予账户级无关权限。lego 的 [Cloudflare provider 文档](https://go-acme.github.io/lego/dns/cloudflare/)明确说明同一个 Token 可以同时承担这两项权限。Cloudflare 的[创建 Token 文档](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)说明了控制台入口、资源范围和只显示一次的密钥。
+
+安装时直接在隐藏输入提示中粘贴 Token；屏幕不会回显。Token 不会写入命令行、日志或 `state.json`，只会保存到：
+
+```text
+/var/lib/neko/credentials/cloudflare-dns-api-token
+```
+
+该目录和文件分别强制为 root 所有的 `0700`、`0600`，供自动续期使用。
+
+也可在安装菜单中选择 HTTP-01 兼容模式。HTTP-01 不需要 Token，但 Let’s Encrypt 只能通过 TCP 80 验证；基础、v4、v6 三个名称的所有公网验证视角都必须能连到本机。两种模式不会同时运行，也不会自动互相回退。官方差异见 Let’s Encrypt [Challenge Types](https://letsencrypt.org/docs/challenge-types/)。
 
 ## 支持范围
 
@@ -61,7 +80,7 @@ Let’s Encrypt HTTP-01 必须从公网访问 TCP 80，官方说明见 [Challeng
 
 ## 安装
 
-准备好上述 DNS 和云安全组后，在 VPS 执行：
+准备好上述 DNS 和 Cloudflare Token 后，在 VPS 执行：
 
 ```bash
 TMP="$(mktemp)" && \
@@ -77,7 +96,21 @@ sudo bash install.sh \
   --email admin@example.com
 ```
 
-非交互安装增加 `--yes`。它只跳过人工确认，不会跳过 DNS、双栈内核、端口、SHA-256、配置或证书检查。
+交互安装会先询问证书验证方式；直接按回车选择 Cloudflare DNS-01，再粘贴 Token。iOS SSH 客户端也可以正常使用隐藏输入：粘贴后按回车即可，看不到字符是预期行为。
+
+完全非交互的 DNS-01 安装应先把 Token 放进只有 root 可读的文件，再传文件路径；不要把 Token 本身写在命令行参数中：
+
+```bash
+sudo install -m 0600 /path/to/token-file /root/neko-cloudflare-token
+sudo bash install.sh \
+  --domain node.example.com \
+  --email admin@example.com \
+  --acme-method cloudflare-dns-01 \
+  --cloudflare-token-file /root/neko-cloudflare-token \
+  --yes
+```
+
+HTTP-01 非交互安装可改用 `--acme-method http-01`。`--yes` 只跳过最后确认，不会跳过 DNS、双栈内核、端口、SHA-256、配置或证书检查。
 
 安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前冻结版本见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2；Mihomo 1.19.29 只用于测试生成配置。
 
@@ -85,9 +118,11 @@ sudo bash install.sh \
 
 安装完成时脚本会输出实际端口。必须同时为 VPS 的 IPv4 与 IPv6 入站放行：
 
-- TCP：80、443、SS2022、AnyTLS、Vision、XHTTP；
+- TCP：443、SS2022、AnyTLS、Vision、XHTTP；
 - UDP：Hysteria2 的完整 128 端口区间、TUIC、SS2022；
 - TCP 8443 只监听 `127.0.0.1`，不要对公网放行。
+
+只有选择 HTTP-01 时还必须向公网放行 TCP 80。DNS-01 不依赖公网 TCP 80；Caddy 仍会在本机监听该端口用于普通 HTTP 跳转，本机防火墙规则可能因此保留 80。
 
 如果 firewalld 正在运行，脚本将规则添加到 IPv4/IPv6 默认路由网卡实际所属的 zone，并在 reload 后查询确认；如果 UFW 正在运行，则创建独立的 `NekoProxy` 应用规则。卸载只移除 Neko 自己的规则。云厂商安全组仍需手动配置。
 
@@ -139,14 +174,25 @@ sudo bash upgrade.sh
 
 ## 证书续期
 
-`neko-renew.timer` 每天检查一次并带随机延迟。续期使用 Caddy 的 HTTP-01 webroot，并强制确认证书域名集合仍为基础、v4、v6 三个名称。证书实际变化后才重启读取证书的服务。
+`neko-renew.timer` 每天检查一次并带随机延迟。续期严格沿用安装时选定的方式，不会自动切换：DNS-01 使用 root-only Token 文件，HTTP-01 使用 Caddy webroot。两种方式都会强制确认证书仍覆盖基础、v4、v6 三个名称；证书实际变化后才重启读取证书的服务。
 
-续期期间三个 DNS 名称必须继续直连该 VPS，TCP 80 必须公网可达：
+检查定时器和最近日志：
 
 ```bash
 systemctl status neko-renew.timer
 journalctl -u neko-renew.service --since '7 days ago'
 ```
+
+DNS-01 用户如需轮换 Token，应创建权限相同的新 Token，然后安全覆盖凭据文件并立即试跑一次续期：
+
+```bash
+install -o root -g root -m 0600 /root/new-cloudflare-token \
+  /var/lib/neko/credentials/cloudflare-dns-api-token
+systemctl start neko-renew.service
+journalctl -u neko-renew.service -n 80 --no-pager
+```
+
+确认成功后再撤销旧 Token。HTTP-01 用户则必须一直保持三个域名直连本机且公网 TCP 80 可达。
 
 ## 测试与已知边界
 
@@ -155,7 +201,7 @@ bash tests/fetch-pinned-tools.sh
 bash tests/run.sh
 ```
 
-测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego 和 Mihomo，覆盖六份订阅、严格 DNS 拒绝规则、服务端出口阻断、升级成功/回滚、令牌轮换和配置解析。GitHub Actions 还在 8 个发行版镜像的 amd64/arm64 用户空间中执行语法与平台检测，共 16 个组合。
+测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego 和 Mihomo，覆盖六份订阅、严格 DNS 拒绝规则、Cloudflare/HTTP 两种 ACME 调度、API Token 文件权限与环境隔离、服务端出口阻断、升级成功/回滚、订阅令牌轮换和配置解析。GitHub Actions 还在 8 个发行版镜像的 amd64/arm64 用户空间中执行语法与平台检测，共 16 个组合。
 
 容器用户空间不等同于完整 systemd VM。真实 ACME、公网 IPv4/IPv6、云安全组、重启/卸载循环以及 Stash/Shadowrocket 真机导入仍必须在你自己的可重装 VPS 上做最终验收。详细范围见 [TESTING.md](TESTING.md)。
 
@@ -183,4 +229,5 @@ tests/                   本地与 CI 测试
 - [Mihomo 代理配置](https://wiki.metacubex.one/en/config/proxies/)
 - [Stash 代理协议](https://stash.wiki/en/proxy-protocols/proxy-types)
 - [Caddy 自定义 TLS 证书](https://caddyserver.com/docs/caddyfile/directives/tls)
-- [lego CLI](https://go-acme.github.io/lego/usage/cli/)
+- [lego CLI](https://go-acme.github.io/lego/usage/cli/) 与 [Cloudflare DNS provider](https://go-acme.github.io/lego/dns/cloudflare/)
+- [Let’s Encrypt Challenge Types](https://letsencrypt.org/docs/challenge-types/)

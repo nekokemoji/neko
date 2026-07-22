@@ -130,7 +130,7 @@ main() {
   if (( EUID != 0 )) && [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     die "请使用 root 运行升级脚本。"
   fi
-  require_commands flock jq openssl find cp systemctl
+  require_commands flock jq openssl find cp systemctl stat env
   [[ -r "$NEKO_STATE" ]] || die "没有找到已安装的 Neko：${NEKO_STATE}"
   [[ -d "$NEKO_ETC/config" && -d "$NEKO_ETC/subscriptions" ]] \
     || die "现有 Neko 配置或订阅目录不完整。"
@@ -159,6 +159,12 @@ main() {
     || die "state.json 缺少 ACME 邮箱。"
   validate_domain "$DOMAIN" || die "state.json 中的域名无效。"
   validate_email "$ACME_EMAIL" || die "state.json 中的 ACME 邮箱无效。"
+  ACME_METHOD="$(jq -r '.acme.method // "http-01"' "$NEKO_STATE")"
+  ACME_METHOD="$(normalize_acme_method "$ACME_METHOD")" \
+    || die "state.json 中的 ACME 验证方式无效。"
+  if [[ "$ACME_METHOD" == "$ACME_METHOD_CLOUDFLARE" ]]; then
+    assert_cloudflare_dns_token_file
+  fi
   resolve_strict_endpoints
   if [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     assert_dual_stack_kernel
@@ -191,6 +197,7 @@ main() {
     --arg v6_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
     --arg v4_address "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg v6_address "$SUBSCRIPTION_IPV6_ADDRESS" \
+    --arg acme_method "$ACME_METHOD" \
     '.schema = 2
      | .release = $release
      | .network.listen_address = "::"
@@ -199,6 +206,7 @@ main() {
      | .subscription.ipv4_address = $v4_address
      | .subscription.ipv6_address = $v6_address
      | del(.subscription.shadowrocket_server)
+     | .acme = {method: $acme_method}
      | .firewall.zones = (
          if (.firewall.zones | type) == "array" then .firewall.zones
          elif (.firewall.zone // "") != "" then [.firewall.zone]
@@ -225,7 +233,7 @@ main() {
   if ! certificate_has_strict_domains; then
     [[ "${NEKO_UPDATE_SKIP_ACME:-0}" != "1" ]] \
       || die "测试证书不包含三个严格双栈域名。"
-    "$NEKO_LIBEXEC/lego" run \
+    run_lego_acme "$NEKO_LIBEXEC/lego" webroot run \
       --path "$NEKO_VAR/lego" \
       --email "$ACME_EMAIL" \
       --domains "$DOMAIN" \
@@ -233,8 +241,6 @@ main() {
       --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
       --accept-tos \
       --key-type EC256 \
-      --http \
-      --http.webroot "$NEKO_VAR/acme" \
       --force-cert-domains \
       --renew-force \
       --no-random-sleep
