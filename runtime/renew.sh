@@ -13,7 +13,7 @@ export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 source /usr/local/libexec/neko/lib/common.sh
 
 require_root
-require_commands flock sha256sum systemctl getent openssl find chown
+require_commands flock sha256sum systemctl getent openssl find chown stat env
 
 exec 9>/run/lock/neko-maintenance.lock
 flock -n 9 || exit 0
@@ -23,7 +23,7 @@ load_state
 
 before_hash="$(sha256sum "$CERT_FILE" "$KEY_FILE" | sha256sum | awk '{print $1}')"
 
-/usr/local/libexec/neko/lego run \
+run_lego_acme /usr/local/libexec/neko/lego webroot run \
   --path "$NEKO_VAR/lego" \
   --email "$ACME_EMAIL" \
   --domains "$DOMAIN" \
@@ -31,8 +31,6 @@ before_hash="$(sha256sum "$CERT_FILE" "$KEY_FILE" | sha256sum | awk '{print $1}'
   --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
   --accept-tos \
   --key-type EC256 \
-  --http \
-  --http.webroot "$NEKO_VAR/acme" \
   --force-cert-domains \
   --no-random-sleep
 

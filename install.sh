@@ -26,6 +26,9 @@ source "$SCRIPT_DIR/lib/firewall.sh"
 
 DOMAIN_INPUT=""
 EMAIL_INPUT=""
+ACME_METHOD_INPUT=""
+CLOUDFLARE_TOKEN_SOURCE_FILE=""
+CLOUDFLARE_DNS_TOKEN_INPUT=""
 ASSUME_YES=0
 WORKDIR=""
 ROLLBACK_NEEDED=0
@@ -37,6 +40,9 @@ usage() {
 
   --domain example.com     必填域名（不提供时交互询问）
   --email admin@example.com  ACME 账户邮箱
+  --acme-method METHOD     http-01 或 cloudflare-dns-01
+  --cloudflare-token-file FILE
+                           从文件读取受限 Cloudflare API Token；不要把 Token 放在命令行
   --yes                    接受确认提示（仍会执行域名与证书硬校验）
   -h, --help               显示帮助
 EOF
@@ -53,6 +59,16 @@ parse_args() {
       --email)
         (( $# >= 2 )) || die "--email 缺少值。"
         EMAIL_INPUT="$2"
+        shift 2
+        ;;
+      --acme-method)
+        (( $# >= 2 )) || die "--acme-method 缺少值。"
+        ACME_METHOD_INPUT="$2"
+        shift 2
+        ;;
+      --cloudflare-token-file)
+        (( $# >= 2 )) || die "--cloudflare-token-file 缺少值。"
+        CLOUDFLARE_TOKEN_SOURCE_FILE="$2"
         shift 2
         ;;
       --yes)
@@ -136,6 +152,82 @@ finish() {
 
 trap finish EXIT
 
+collect_acme_settings() {
+  local choice token_source_count=0
+
+  [[ -z "$CLOUDFLARE_TOKEN_SOURCE_FILE" ]] \
+    || ((token_source_count += 1))
+  [[ -z "${CF_DNS_API_TOKEN_FILE:-}" ]] \
+    || ((token_source_count += 1))
+  [[ -z "${CLOUDFLARE_DNS_API_TOKEN_FILE:-}" ]] \
+    || ((token_source_count += 1))
+  [[ -z "${CF_DNS_API_TOKEN:-}" ]] \
+    || ((token_source_count += 1))
+  [[ -z "${CLOUDFLARE_DNS_API_TOKEN:-}" ]] \
+    || ((token_source_count += 1))
+  (( token_source_count <= 1 )) \
+    || die "检测到多个 Cloudflare Token 来源；请只保留一种。"
+
+  if [[ -z "$ACME_METHOD_INPUT" ]]; then
+    if (( token_source_count == 1 )); then
+      ACME_METHOD="$ACME_METHOD_CLOUDFLARE"
+    elif [[ -t 0 ]]; then
+      printf '\n证书验证方式：\n'
+      printf '  1. Cloudflare DNS-01（推荐，不依赖 IPv6 HTTP 入站；需要受限 API Token）\n'
+      printf '  2. HTTP-01（无需 Token；要求 Let\x27s Encrypt 所有验证节点均能访问双栈 TCP 80）\n'
+      read -r -p "请选择 [1]：" choice
+      case "$choice" in
+        ""|1) ACME_METHOD="$ACME_METHOD_CLOUDFLARE" ;;
+        2) ACME_METHOD="$ACME_METHOD_HTTP" ;;
+        *) die "无效的证书验证方式选择：${choice}" ;;
+      esac
+    else
+      # Preserve compatibility for existing non-interactive automation.
+      ACME_METHOD="$ACME_METHOD_HTTP"
+    fi
+  else
+    ACME_METHOD="$(normalize_acme_method "$ACME_METHOD_INPUT")" \
+      || die "不支持的 --acme-method：${ACME_METHOD_INPUT}"
+  fi
+
+  if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
+    (( token_source_count == 0 )) \
+      || die "HTTP-01 模式不应提供 Cloudflare Token。"
+    return 0
+  fi
+
+  if [[ -n "$CLOUDFLARE_TOKEN_SOURCE_FILE" ]]; then
+    [[ -f "$CLOUDFLARE_TOKEN_SOURCE_FILE" && -r "$CLOUDFLARE_TOKEN_SOURCE_FILE" ]] \
+      || die "Cloudflare Token 文件不可读：${CLOUDFLARE_TOKEN_SOURCE_FILE}"
+    CLOUDFLARE_DNS_TOKEN_INPUT="$(<"$CLOUDFLARE_TOKEN_SOURCE_FILE")"
+  elif [[ -n "${CF_DNS_API_TOKEN_FILE:-}" ]]; then
+    [[ -f "$CF_DNS_API_TOKEN_FILE" && -r "$CF_DNS_API_TOKEN_FILE" ]] \
+      || die "CF_DNS_API_TOKEN_FILE 不可读：${CF_DNS_API_TOKEN_FILE}"
+    CLOUDFLARE_DNS_TOKEN_INPUT="$(<"$CF_DNS_API_TOKEN_FILE")"
+  elif [[ -n "${CLOUDFLARE_DNS_API_TOKEN_FILE:-}" ]]; then
+    [[ -f "$CLOUDFLARE_DNS_API_TOKEN_FILE" && -r "$CLOUDFLARE_DNS_API_TOKEN_FILE" ]] \
+      || die "CLOUDFLARE_DNS_API_TOKEN_FILE 不可读：${CLOUDFLARE_DNS_API_TOKEN_FILE}"
+    CLOUDFLARE_DNS_TOKEN_INPUT="$(<"$CLOUDFLARE_DNS_API_TOKEN_FILE")"
+  elif [[ -n "${CF_DNS_API_TOKEN:-}" ]]; then
+    CLOUDFLARE_DNS_TOKEN_INPUT="$CF_DNS_API_TOKEN"
+  elif [[ -n "${CLOUDFLARE_DNS_API_TOKEN:-}" ]]; then
+    CLOUDFLARE_DNS_TOKEN_INPUT="$CLOUDFLARE_DNS_API_TOKEN"
+  elif [[ -t 0 ]]; then
+    printf 'Token 需要 Zone/Zone/Read 与 Zone/DNS/Edit，并仅限当前域名所在的 zone。\n'
+    read -r -s -p "请粘贴 Cloudflare API Token（输入不会显示）：" \
+      CLOUDFLARE_DNS_TOKEN_INPUT
+    printf '\n'
+  else
+    die "Cloudflare DNS-01 非交互安装必须提供 --cloudflare-token-file。"
+  fi
+
+  validate_cloudflare_dns_token "$CLOUDFLARE_DNS_TOKEN_INPUT" \
+    || die "Cloudflare API Token 格式无效。"
+  unset \
+    CF_DNS_API_TOKEN CLOUDFLARE_DNS_API_TOKEN \
+    CF_DNS_API_TOKEN_FILE CLOUDFLARE_DNS_API_TOKEN_FILE
+}
+
 collect_identity() {
   local answer
   if [[ -z "$DOMAIN_INPUT" ]]; then
@@ -158,10 +250,16 @@ collect_identity() {
   export DOMAIN ACME_EMAIL
 
   check_strict_dual_stack_dns "$DOMAIN"
+  collect_acme_settings
   if (( ASSUME_YES == 0 )); then
-    printf '\n基础域名：%s\nIPv4 订阅域名：%s\nIPv6 订阅域名：%s\n邮箱：%s\n' \
-      "$DOMAIN" "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_DOMAIN_IPV6" "$ACME_EMAIL"
-    printf '安装会用 Let\x27s Encrypt HTTP-01 验证三个域名，并占用 TCP 80/443。\n'
+    printf '\n基础域名：%s\nIPv4 订阅域名：%s\nIPv6 订阅域名：%s\n邮箱：%s\n证书验证：%s\n' \
+      "$DOMAIN" "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_DOMAIN_IPV6" \
+      "$ACME_EMAIL" "$ACME_METHOD"
+    if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
+      printf '安装会用 Let\x27s Encrypt HTTP-01 验证三个域名，并占用 TCP 80/443。\n'
+    else
+      printf '安装会用 Cloudflare DNS-01 验证三个域名；受限 Token 将以 root-only 文件保存供续期。\n'
+    fi
     read -r -p "确认三个域名均为 DNS only、直连本机并接受 ACME 服务条款？[y/N] " answer
     [[ "$answer" =~ ^[Yy]$ ]] || die "用户取消。"
   fi
@@ -233,18 +331,24 @@ download_release_binaries() {
 }
 
 issue_initial_certificate() {
-  info "使用 HTTP-01 申请基础域名和严格 IPv4/IPv6 订阅域名的 SAN 证书；失败时安装会停止并回滚。"
   ROLLBACK_NEEDED=1
   install -d -m 0700 "$NEKO_VAR" "$NEKO_VAR/lego"
-  "$WORKDIR/bin/lego" run \
+  if [[ "$ACME_METHOD" == "$ACME_METHOD_CLOUDFLARE" ]]; then
+    info "使用 Cloudflare DNS-01 申请三个域名的 SAN 证书；不依赖 IPv6 HTTP 入站。"
+    write_cloudflare_dns_token "$CLOUDFLARE_DNS_TOKEN_INPUT"
+    CLOUDFLARE_DNS_TOKEN_INPUT=""
+  else
+    info "使用 HTTP-01 申请三个域名的 SAN 证书；失败时安装会停止并回滚。"
+  fi
+
+  run_lego_acme "$WORKDIR/bin/lego" standalone run \
     --path "$NEKO_VAR/lego" \
     --email "$ACME_EMAIL" \
     --domains "$DOMAIN" \
     --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
     --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
     --accept-tos \
-    --key-type EC256 \
-    --http
+    --key-type EC256
 
   CERT_FILE="$NEKO_VAR/lego/certificates/${DOMAIN}.crt"
   KEY_FILE="$NEKO_VAR/lego/certificates/${DOMAIN}.key"
@@ -276,6 +380,15 @@ create_service_user_and_dirs() {
   install -d -m 0755 -o root -g root "$NEKO_LIBEXEC" "$NEKO_LIBEXEC/lib"
   install -d -m 0750 -o "$NEKO_USER" -g "$NEKO_USER" \
     "$NEKO_VAR/caddy" "$NEKO_VAR/caddy/data" "$NEKO_VAR/caddy/config"
+
+  if [[ -d "$NEKO_VAR/credentials" ]]; then
+    chown root:root "$NEKO_VAR/credentials"
+    chmod 0700 "$NEKO_VAR/credentials"
+    if [[ -f "$CLOUDFLARE_DNS_TOKEN_FILE" ]]; then
+      chown root:root "$CLOUDFLARE_DNS_TOKEN_FILE"
+      chmod 0600 "$CLOUDFLARE_DNS_TOKEN_FILE"
+    fi
+  fi
 
   chown -R root:root "$NEKO_VAR/lego"
   find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
@@ -361,6 +474,7 @@ write_initial_state() {
     --arg hysteria_version "$HYSTERIA_VERSION" --arg caddy_version "$CADDY_VERSION" \
     --arg lego_version "$LEGO_VERSION" \
     --arg domain "$DOMAIN" --arg email "$ACME_EMAIL" --arg listen "$listen_address" \
+    --arg acme_method "$ACME_METHOD" \
     --argjson hy2_start "$HY2_START" --argjson hy2_end "$HY2_END" \
     --argjson tuic_port "$TUIC_PORT" --argjson ss_port "$SS_PORT" \
     --argjson anytls_port "$ANYTLS_PORT" --argjson vision_port "$VISION_PORT" \
@@ -391,6 +505,7 @@ write_initial_state() {
       },
       domain: $domain,
       acme_email: $email,
+      acme: {method: $acme_method},
       network: {listen_address: $listen},
       system_user_created: true,
       ports: {
@@ -474,7 +589,7 @@ main() {
   # between two installers that passed the initial read-only check.
   assert_clean_target
   install_dependencies
-  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk
+  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk stat env
 
   exec 9>/run/lock/neko-install.lock
   flock -n 9 || die "另一个 Neko 安装进程正在运行。"
@@ -502,4 +617,6 @@ main() {
   printf '以后输入 neko 打开终端控制面板。\n'
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
