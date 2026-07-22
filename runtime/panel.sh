@@ -198,7 +198,9 @@ uninstall_neko() {
 
   if [[ "$created_user" == "true" ]] && id neko-proxy >/dev/null 2>&1; then
     userdel neko-proxy >/dev/null 2>&1 || true
-    getent group neko-proxy >/dev/null 2>&1 && groupdel neko-proxy >/dev/null 2>&1 || true
+    if getent group neko-proxy >/dev/null 2>&1; then
+      groupdel neko-proxy >/dev/null 2>&1 || true
+    fi
   fi
 
   printf '\n[完成] 已卸载 Neko 创建的全部服务与数据。\n'
