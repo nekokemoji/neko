@@ -14,13 +14,14 @@ Neko 是面向独立双栈 VPS 的终端部署工具。它安装 Hysteria2、TUI
 | Stash | `https://v4.<域名>/<令牌>/stash.yaml` | `https://v6.<域名>/<令牌>/stash.yaml` | 5 / 5 |
 | Shadowrocket | `https://v4.<域名>/<令牌>/shadowrocket.txt` | `https://v6.<域名>/<令牌>/shadowrocket.txt` | 6 / 6 |
 
-这里没有“自动版”，也没有 IPv4 优先后回退 IPv6：
+这里没有“自动版”，也没有 IPv4 优先后回退 IPv6。严格约束覆盖完整链路：
 
 - IPv4 下载域名只有 A，没有 AAAA；IPv6 下载域名只有 AAAA，没有 A。
 - 六份配置中的节点 `server` 都是对应族的 IP 字面量，客户端不再对节点域名做双栈选择。
 - Mihomo 另外写入 `ip-version: ipv4` 或 `ip-version: ipv6`。
 - TLS SNI、证书主机名、REALITY `serverName` 和 XHTTP Host 始终保留基础域名。
-- 对应地址族不可用时应直接失败，不会由生成配置回退到另一族。
+- 服务端为 IPv4/IPv6 分别监听，并把来自该入口的流量路由到同族直连出口；sing-box 在路由阶段只解析同族地址、拒绝异族 IP 字面量并绑定同族源地址，Xray 使用 `ForceIPv4`/`ForceIPv6` 和源地址绑定，Hysteria 使用 `mode: 4`/`mode: 6` 双实例。
+- 对应地址族不可用时直接失败，不会由生成配置或 VPS 出站回退到另一族。例如只有 A、没有 AAAA 的目标通过严格 IPv6 订阅应访问失败。
 
 脚本能约束 DNS 记录和生成的客户端配置，但不能控制客户端之外的网络。运营商 DNS64/NAT64、系统级 VPN、透明代理或客户端自身改写仍可能改变实际链路；任何服务端脚本都无法绕过这一边界。
 
@@ -42,7 +43,8 @@ Neko 是面向独立双栈 VPS 的终端部署工具。它安装 Hysteria2、TUI
 - `v4.node.example.com` 恰好 1 条 A、0 条 AAAA；
 - `v6.node.example.com` 恰好 1 条 AAAA、0 条 A；
 - 基础域名的 A/AAAA 与两个专用域名完全一致；
-- 内核启用 IPv6、存在 IPv6 默认路由，且 `net.ipv6.bindv6only=0`；
+- A 与 AAAA 地址确实配置在本机网卡上，可分别用于服务监听和出站源地址绑定；
+- 内核启用 IPv6，同时存在 IPv4 与 IPv6 默认路由；
 - TCP 80、443、8443 未被其他程序占用；
 - Let’s Encrypt 为基础、v4、v6 三个名称成功签发同一张 SAN 证书。
 
@@ -112,7 +114,7 @@ sudo bash install.sh \
 
 HTTP-01 非交互安装可改用 `--acme-method http-01`。`--yes` 只跳过最后确认，不会跳过 DNS、双栈内核、端口、SHA-256、配置或证书检查。
 
-安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前冻结版本见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2；Mihomo 1.19.29 只用于测试生成配置。
+安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前 Neko 版本为 1.2.0，冻结核心见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2；Mihomo 1.19.29 只用于测试生成配置。
 
 ## 云安全组与本机防火墙
 
@@ -141,6 +143,8 @@ Caddy 的公网订阅只启用 HTTP/1.1 与 HTTP/2，因此 443 只需要 TCP，
 
 REALITY 的本地目标是 `127.0.0.1:8443`，由 Caddy 加载同一张受信 SAN 证书；该端口不对公网监听。
 
+Hysteria2 在同一组端口上运行 IPv4 与 IPv6 两个受 systemd 共同监管的进程。两者共用协议凭据，但分别绑定 A/AAAA 地址和 `mode: 4`/`mode: 6` 出站，因此客户端订阅不会互相冲突，目标缺少对应地址族时也不会回退。
+
 三套服务端核心默认拒绝客户端访问私有、回环、链路本地/云元数据等非公网地址，并拒绝 TCP 25，降低被导入订阅的设备利用去扫描 VPS 内网或滥发 SMTP 的风险。Hysteria 使用官方 [ACL](https://v2.hysteria.network/docs/advanced/ACL/)，sing-box 使用官方 [route reject action](https://sing-box.sagernet.org/configuration/route/rule_action/)，Xray 使用 [routing](https://xtls.github.io/en/config/routing.html) 与 [blackhole](https://xtls.github.io/en/config/outbounds/blackhole.html)。需要访问内网或 SMTP 的用户必须自行审计并修改渲染器。
 
 ## 终端控制面板
@@ -162,7 +166,7 @@ sudo neko
 
 订阅令牌相当于密码。重置令牌只会使旧下载 URL 返回 404；已经导入客户端的端口、密码和 UUID 不会因此失效。若怀疑节点凭据泄露，应卸载后重新安装或手动轮换全部协议凭据。
 
-## 从 1.0.x 升级
+## 从 1.0.x / 1.1.x 升级
 
 先创建 `v4.<基础域名>` 和 `v6.<基础域名>` 记录，再在新版源码目录运行：
 
@@ -170,7 +174,7 @@ sudo neko
 sudo bash upgrade.sh
 ```
 
-升级器保留协议端口、密码、UUID 与订阅令牌；扩展证书到三个域名，生成六份订阅并重启服务。状态、配置、程序文件与证书会先备份；任何校验、证书或服务启动失败都会自动回滚。旧的单域名订阅 URL 升级后停用，需要在客户端重新导入对应的严格链接。
+升级器保留协议端口、密码、UUID 与订阅令牌；扩展证书到三个域名，生成六份订阅，安装 Hysteria 双实例监管器，并重建真正按入口分流的同族出口。状态、配置、程序文件、systemd 单元与证书会先备份；任何校验、证书或服务启动失败都会自动回滚。旧的单域名订阅 URL 升级后停用，需要在客户端重新导入对应的严格链接。
 
 ## 证书续期
 
@@ -210,13 +214,14 @@ bash tests/run.sh
 ```text
 bootstrap.sh             固定源码提交的一行安装入口
 install.sh               安装、硬门槛与失败回滚
-upgrade.sh               1.0.x 到严格双栈布局的可回滚升级
+upgrade.sh               1.0.x / 1.1.x 到当前严格双栈布局的可回滚升级
 versions.env             固定版本与双架构 SHA-256
 lib/common.sh            系统、DNS、端口与状态逻辑
 lib/render.sh            服务端配置与六份客户端订阅
 lib/firewall.sh          firewalld/UFW 可逆规则
 runtime/panel.sh         neko 终端面板
 runtime/renew.sh         三域名 SAN 证书续期
+runtime/hysteria-dual.sh Hysteria IPv4/IPv6 双进程监管
 systemd/                 服务与定时器
 tests/                   本地与 CI 测试
 ```
@@ -224,9 +229,10 @@ tests/                   本地与 CI 测试
 ## 上游官方资料
 
 - [sing-box TUIC 入站](https://sing-box.sagernet.org/configuration/inbound/tuic/)、[Shadowsocks 入站](https://sing-box.sagernet.org/configuration/inbound/shadowsocks/)、[AnyTLS 入站](https://sing-box.sagernet.org/configuration/inbound/anytls/)
-- [Hysteria2 服务端配置](https://v2.hysteria.network/docs/getting-started/Server/) 与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
-- [Xray REALITY](https://xtls.github.io/en/config/transports/reality.html) 与 [XHTTP](https://xtls.github.io/en/config/transports/xhttp.html)
-- [Mihomo 代理配置](https://wiki.metacubex.one/en/config/proxies/)
+- [sing-box Dial Fields](https://sing-box.sagernet.org/configuration/shared/dial/) 与 [Route Rule](https://sing-box.sagernet.org/configuration/route/rule/)
+- [Hysteria2 完整服务端配置（含 direct mode 4/6）](https://v2.hysteria.network/docs/advanced/Full-Server-Config/) 与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
+- [Xray REALITY](https://xtls.github.io/en/config/transports/reality.html)、[XHTTP](https://xtls.github.io/en/config/transports/xhttp.html) 与 [Outbound targetStrategy/sendThrough](https://xtls.github.io/en/config/outbound.html)
+- [Mihomo TUIC（含 SNI）](https://wiki.metacubex.one/en/config/proxies/tuic/) 与 [通用代理字段](https://wiki.metacubex.one/en/config/proxies/)
 - [Stash 代理协议](https://stash.wiki/en/proxy-protocols/proxy-types)
 - [Caddy 自定义 TLS 证书](https://caddyserver.com/docs/caddyfile/directives/tls)
 - [lego CLI](https://go-acme.github.io/lego/usage/cli/) 与 [Cloudflare DNS provider](https://go-acme.github.io/lego/dns/cloudflare/)

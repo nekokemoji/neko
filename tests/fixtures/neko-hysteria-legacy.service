@@ -1,0 +1,6 @@
+[Unit]
+Description=Legacy Neko Hysteria2
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/neko/hysteria server --disable-update-check --config /etc/neko/config/hysteria.yaml

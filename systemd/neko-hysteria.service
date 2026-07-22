@@ -8,7 +8,7 @@ Type=simple
 User=neko-proxy
 Group=neko-proxy
 Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
-ExecStart=/usr/local/libexec/neko/hysteria server --disable-update-check --config /etc/neko/config/hysteria.yaml
+ExecStart=/usr/local/libexec/neko/hysteria-dual.sh
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=1048576

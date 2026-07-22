@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-# Upgrade an existing Neko 1.0.x installation to the strict dual-stack
-# subscription layout.  Protocol credentials, ports and subscription token are
-# preserved.  Every changed file and certificate is backed up for rollback.
+# Upgrade an existing Neko 1.0.x/1.1.x installation to the current strict
+# dual-stack layout. Protocol credentials, ports and subscription token are
+# preserved. Every changed file, unit and certificate is backed up for rollback.
 
 set -Eeuo pipefail
 umask 0077
@@ -11,13 +11,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 NEKO_ETC="${NEKO_ETC:-/etc/neko}"
 NEKO_VAR="${NEKO_VAR:-/var/lib/neko}"
 NEKO_LIBEXEC="${NEKO_LIBEXEC:-/usr/local/libexec/neko}"
+NEKO_SYSTEMD="${NEKO_SYSTEMD:-/etc/systemd/system}"
 NEKO_STATE="${NEKO_STATE:-${NEKO_ETC}/state.json}"
 NEKO_USER="${NEKO_USER:-neko-proxy}"
 NEKO_UPDATE_TMP_DIR="${NEKO_UPDATE_TMP_DIR:-/var/tmp}"
 NEKO_UPDATE_LOCK_FILE="${NEKO_UPDATE_LOCK_FILE:-/run/lock/neko-maintenance.lock}"
 BACKUP_DIR=""
 ROLLBACK_READY=0
-export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_STATE NEKO_USER
+export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
 # shellcheck source=versions.env
 source "$SCRIPT_DIR/versions.env"
@@ -38,6 +39,15 @@ restore_tree() {
   cp -a -- "$backup" "$target"
 }
 
+restore_optional_file() {
+  local backup="$1" target="$2"
+  if [[ -e "$backup" ]]; then
+    cp -a -- "$backup" "$target"
+  else
+    rm -f -- "$target"
+  fi
+}
+
 rollback_upgrade() {
   local rc="$1" rollback_ok=1
   set +e
@@ -48,6 +58,11 @@ rollback_upgrade() {
   cp -a -- "$BACKUP_DIR/versions.env" "$NEKO_LIBEXEC/versions.env" || rollback_ok=0
   cp -a -- "$BACKUP_DIR/panel.sh" "$NEKO_LIBEXEC/panel.sh" || rollback_ok=0
   cp -a -- "$BACKUP_DIR/renew.sh" "$NEKO_LIBEXEC/renew.sh" || rollback_ok=0
+  restore_optional_file \
+    "$BACKUP_DIR/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh" || rollback_ok=0
+  restore_optional_file \
+    "$BACKUP_DIR/neko-hysteria.service" \
+    "$NEKO_SYSTEMD/neko-hysteria.service" || rollback_ok=0
   systemctl daemon-reload >/dev/null 2>&1 || rollback_ok=0
   systemctl restart \
     neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service \
@@ -130,7 +145,7 @@ main() {
   if (( EUID != 0 )) && [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     die "请使用 root 运行升级脚本。"
   fi
-  require_commands flock jq openssl find cp systemctl stat env
+  require_commands flock jq openssl find cp systemctl stat env ip
   [[ -r "$NEKO_STATE" ]] || die "没有找到已安装的 Neko：${NEKO_STATE}"
   [[ -d "$NEKO_ETC/config" && -d "$NEKO_ETC/subscriptions" ]] \
     || die "现有 Neko 配置或订阅目录不完整。"
@@ -139,12 +154,16 @@ main() {
     && -r "$NEKO_LIBEXEC/lib/firewall.sh" && -r "$NEKO_LIBEXEC/versions.env" \
     && -r "$NEKO_LIBEXEC/panel.sh" && -r "$NEKO_LIBEXEC/renew.sh" ]] \
     || die "现有 Neko 程序文件不完整。"
-  for service in sing-box xray caddy lego; do
+  for service in sing-box xray hysteria caddy lego; do
     [[ -x "$NEKO_LIBEXEC/$service" ]] || die "现有核心缺失：${service}"
   done
   [[ -r "$SCRIPT_DIR/lib/common.sh" && -r "$SCRIPT_DIR/lib/render.sh" \
     && -r "$SCRIPT_DIR/lib/firewall.sh" && -r "$SCRIPT_DIR/runtime/panel.sh" \
-    && -r "$SCRIPT_DIR/runtime/renew.sh" ]] || die "升级包不完整。"
+    && -r "$SCRIPT_DIR/runtime/renew.sh" \
+    && -r "$SCRIPT_DIR/runtime/hysteria-dual.sh" \
+    && -r "$SCRIPT_DIR/systemd/neko-hysteria.service" ]] || die "升级包不完整。"
+  [[ -d "$NEKO_SYSTEMD" && -w "$NEKO_SYSTEMD" ]] \
+    || die "systemd 单元目录不可写：${NEKO_SYSTEMD}"
   [[ -d "$NEKO_UPDATE_TMP_DIR" && -w "$NEKO_UPDATE_TMP_DIR" ]] \
     || die "升级临时目录不可写：${NEKO_UPDATE_TMP_DIR}"
 
@@ -168,6 +187,7 @@ main() {
   resolve_strict_endpoints
   if [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     assert_dual_stack_kernel
+    assert_strict_addresses_local
   fi
 
   mkdir -p -- "$(dirname -- "$NEKO_UPDATE_LOCK_FILE")"
@@ -181,6 +201,11 @@ main() {
   cp -a -- "$NEKO_LIBEXEC/versions.env" "$BACKUP_DIR/versions.env"
   cp -a -- "$NEKO_LIBEXEC/panel.sh" "$BACKUP_DIR/panel.sh"
   cp -a -- "$NEKO_LIBEXEC/renew.sh" "$BACKUP_DIR/renew.sh"
+  [[ ! -e "$NEKO_LIBEXEC/hysteria-dual.sh" ]] \
+    || cp -a -- "$NEKO_LIBEXEC/hysteria-dual.sh" "$BACKUP_DIR/hysteria-dual.sh"
+  [[ ! -e "$NEKO_SYSTEMD/neko-hysteria.service" ]] \
+    || cp -a -- \
+      "$NEKO_SYSTEMD/neko-hysteria.service" "$BACKUP_DIR/neko-hysteria.service"
   ROLLBACK_READY=1
 
   install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
@@ -189,6 +214,12 @@ main() {
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
+  install -m 0755 \
+    "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
+  install -m 0644 \
+    "$SCRIPT_DIR/systemd/neko-hysteria.service" \
+    "$NEKO_SYSTEMD/neko-hysteria.service"
+  systemctl daemon-reload
 
   state_tmp="$(mktemp "${NEKO_STATE}.tmp.XXXXXX")"
   jq \
@@ -259,6 +290,9 @@ main() {
   validate_installed_configs
   systemctl restart \
     neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service
+  if [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
+    sleep 2
+  fi
   for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
     systemctl is-active --quiet "${service}.service" || die "${service} 升级后未保持运行。"
   done

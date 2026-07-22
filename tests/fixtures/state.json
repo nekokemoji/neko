@@ -38,8 +38,8 @@
     "token": "test-subscription-token",
     "ipv4_domain": "v4.example.com",
     "ipv6_domain": "v6.example.com",
-    "ipv4_address": "192.0.2.10",
-    "ipv6_address": "2001:db8::10"
+    "ipv4_address": "127.0.0.1",
+    "ipv6_address": "::1"
   },
   "firewall": {
     "manager": "none",

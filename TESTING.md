@@ -1,4 +1,4 @@
-# Neko 1.1.1 测试范围
+# Neko 1.2.0 测试范围
 
 最近核对日期：2026-07-23（Asia/Tokyo）。
 
@@ -20,22 +20,24 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证。
 - 严格 DNS 正例通过；`v4` 名称带 AAAA、`v6` 名称带 A 等错误配置会失败。
 - firewalld 根据 IPv4/IPv6 默认路由网卡寻找实际 zone，而不是盲目使用 default zone。
-- Bootstrap 离线解压固定源码包、核对 1.1.1 标记并清理临时目录。
+- Bootstrap 离线解压固定源码包、核对 1.2.0 标记并清理临时目录。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2 和 Mihomo 1.19.29 的版本身份与 CLI 参数。
 - Cloudflare DNS-01 与 HTTP-01 分别传递正确的 lego 参数；DNS-01 只暴露固定的 `_FILE` 凭据变量，清除原始 Token、旧式变量和外部文件变量。
 - Cloudflare Token 内容格式、凭据目录 `0700`、文件 `0600` 与非符号链接约束。
 - 真实 `sing-box check`、`xray run -test`、`caddy validate`。
-- Hysteria 读取配置并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。
+- Hysteria 的 IPv4/IPv6 两份配置分别读取并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。
 - 真实 Mihomo 分别解析严格 IPv4 与严格 IPv6 配置。
 - 订阅目录恰好生成 6 个文件：Mihomo、Stash、Shadowrocket 各 v4/v6 两份。
 - Mihomo 6 个节点全部使用对应 IP 字面量和 `ip-version`；Stash 5 个节点全部使用对应 IP；Shadowrocket 6 个节点全部使用对应 IP。
-- TLS SNI、证书主机名、REALITY `serverName` 与 XHTTP Host 保持基础域名，不被 IP 字面量替换。
+- Mihomo TUIC 明确包含 TLS SNI；其余证书主机名、REALITY `serverName` 与 XHTTP Host 也保持基础域名，不被 IP 字面量替换。
 - Caddy 只在 v4 主机发布 v4 文件、只在 v6 主机发布 v6 文件，并禁用公网 HTTP/3。
-- 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 由配置加载路径与结构化断言校验。
+- sing-box 的六个入站与 Xray 的四个入站按本机 IPv4/IPv6 地址分开监听；sing-box 在路由阶段按入口只解析同族地址、拒绝异族 IP 字面量，再进入同族源地址绑定出口。
+- Hysteria 两份配置分别使用 `mode: 4`/`mode: 6` 和 `bindIPv4`/`bindIPv6`；用假核心动态验证监管脚本会同时启动两族，并在任一子进程退出时终止另一进程，交由 systemd 重启。
+- 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 与同族 direct 出站由配置加载路径和结构化断言校验。
 - 随机端口连续运行 50 轮：Hysteria2 的 128 端口区间与其余五个单端口无冲突。
 - 订阅令牌轮换后旧路径从 Caddy 配置消失。
-- 从 schema 1 / Neko 1.0.x 模拟升级到 schema 2 成功，旧订阅文件被替换为 6 个新文件。
-- 模拟升级中 Caddy 重启失败，确认状态与配置哈希恢复、临时备份清理。
+- 分别从 schema 1 / Neko 1.0.x 和 schema 2 / Neko 1.1.x 模拟升级到 Neko 1.2.0，确认端口、协议凭据、REALITY 参数和订阅令牌不变，旧订阅文件被替换为 6 个新文件，并安装 Hysteria 双进程监管脚本与单元。
+- 模拟升级中 Caddy 重启失败，确认状态、配置、Hysteria systemd 单元恢复，新增监管脚本移除，临时备份清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
 本次修改在当前 Ubuntu 24.04 用户空间中完成；这里 PID 1 不是 systemd，也没有分配可用于 ACME 的公网双栈域名。真实核心配置校验能够运行，但不能据此声称完成了一次真实 VPS 安装。

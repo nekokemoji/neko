@@ -26,7 +26,8 @@ write_atomic() {
 render_sing_box() {
   jq -n \
     --arg domain "$DOMAIN" \
-    --arg listen "$LISTEN_ADDRESS" \
+    --arg listen_v4 "$SUBSCRIPTION_IPV4_ADDRESS" \
+    --arg listen_v6 "$SUBSCRIPTION_IPV6_ADDRESS" \
     --arg cert "$CERT_FILE" \
     --arg key "$KEY_FILE" \
     --argjson tuic_port "$TUIC_PORT" \
@@ -36,12 +37,10 @@ render_sing_box() {
     --arg ss_password "$SS_PASSWORD" \
     --argjson anytls_port "$ANYTLS_PORT" \
     --arg anytls_password "$ANYTLS_PASSWORD" \
-    '{
-      log: {level: "info", timestamp: true},
-      inbounds: [
+    'def family_inbounds($suffix; $listen): [
         {
           type: "tuic",
-          tag: "tuic-in",
+          tag: ("tuic-" + $suffix + "-in"),
           listen: $listen,
           listen_port: $tuic_port,
           users: [{uuid: $tuic_uuid, password: $tuic_password}],
@@ -57,7 +56,7 @@ render_sing_box() {
         },
         {
           type: "shadowsocks",
-          tag: "ss2022-in",
+          tag: ("ss2022-" + $suffix + "-in"),
           listen: $listen,
           listen_port: $ss_port,
           method: "2022-blake3-aes-128-gcm",
@@ -65,7 +64,7 @@ render_sing_box() {
         },
         {
           type: "anytls",
-          tag: "anytls-in",
+          tag: ("anytls-" + $suffix + "-in"),
           listen: $listen,
           listen_port: $anytls_port,
           users: [{password: $anytls_password}],
@@ -77,14 +76,65 @@ render_sing_box() {
             key_path: $key
           }
         }
+      ];
+    {
+      log: {level: "info", timestamp: true},
+      dns: {
+        servers: [{type: "local", tag: "local"}]
+      },
+      inbounds: (family_inbounds("v4"; $listen_v4) + family_inbounds("v6"; $listen_v6)),
+      outbounds: [
+        {
+          type: "direct",
+          tag: "direct-v4",
+          inet4_bind_address: $listen_v4,
+          domain_resolver: {server: "local", strategy: "ipv4_only"}
+        },
+        {
+          type: "direct",
+          tag: "direct-v6",
+          inet6_bind_address: $listen_v6,
+          domain_resolver: {server: "local", strategy: "ipv6_only"}
+        }
       ],
-      outbounds: [{type: "direct", tag: "direct"}],
       route: {
         rules: [
+          {network: "tcp", port: 25, action: "reject"},
+          {
+            inbound: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+            action: "resolve",
+            server: "local",
+            strategy: "ipv4_only"
+          },
+          {
+            inbound: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+            action: "resolve",
+            server: "local",
+            strategy: "ipv6_only"
+          },
           {ip_is_private: true, action: "reject"},
-          {network: "tcp", port: 25, action: "reject"}
+          {
+            inbound: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+            ip_version: 6,
+            action: "reject"
+          },
+          {
+            inbound: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+            ip_version: 4,
+            action: "reject"
+          },
+          {
+            inbound: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+            action: "route",
+            outbound: "direct-v4"
+          },
+          {
+            inbound: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+            action: "route",
+            outbound: "direct-v6"
+          }
         ],
-        final: "direct"
+        final: "direct-v4"
       }
     }' | write_atomic "${NEKO_CONFIG_DIR}/sing-box.json"
 }
@@ -92,7 +142,8 @@ render_sing_box() {
 render_xray() {
   jq -n \
     --arg domain "$DOMAIN" \
-    --arg listen "$LISTEN_ADDRESS" \
+    --arg listen_v4 "$SUBSCRIPTION_IPV4_ADDRESS" \
+    --arg listen_v6 "$SUBSCRIPTION_IPV6_ADDRESS" \
     --argjson vision_port "$VISION_PORT" \
     --arg vision_uuid "$VISION_UUID" \
     --arg vision_private "$VISION_PRIVATE_KEY" \
@@ -102,62 +153,79 @@ render_xray() {
     --arg xhttp_private "$XHTTP_PRIVATE_KEY" \
     --arg xhttp_sid "$XHTTP_SHORT_ID" \
     --arg xhttp_path "$XHTTP_PATH" \
-    '{
+    'def vision_inbound($suffix; $listen): {
+        tag: ("vless-reality-vision-" + $suffix + "-in"),
+        listen: $listen,
+        port: $vision_port,
+        protocol: "vless",
+        settings: {
+          clients: [{id: $vision_uuid, flow: "xtls-rprx-vision"}],
+          decryption: "none"
+        },
+        streamSettings: {
+          network: "raw",
+          security: "reality",
+          realitySettings: {
+            show: false,
+            target: "127.0.0.1:8443",
+            xver: 0,
+            serverNames: [$domain],
+            privateKey: $vision_private,
+            shortIds: [$vision_sid]
+          }
+        },
+        sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+      };
+    def xhttp_inbound($suffix; $listen): {
+        tag: ("vless-reality-xhttp-" + $suffix + "-in"),
+        listen: $listen,
+        port: $xhttp_port,
+        protocol: "vless",
+        settings: {
+          clients: [{id: $xhttp_uuid}],
+          decryption: "none"
+        },
+        streamSettings: {
+          network: "xhttp",
+          security: "reality",
+          realitySettings: {
+            show: false,
+            target: "127.0.0.1:8443",
+            xver: 0,
+            serverNames: [$domain],
+            privateKey: $xhttp_private,
+            shortIds: [$xhttp_sid]
+          },
+          xhttpSettings: {
+            path: $xhttp_path,
+            mode: "auto"
+          }
+        },
+        sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+      };
+    {
       log: {loglevel: "warning"},
       inbounds: [
-        {
-          tag: "vless-reality-vision-in",
-          listen: $listen,
-          port: $vision_port,
-          protocol: "vless",
-          settings: {
-            clients: [{id: $vision_uuid, flow: "xtls-rprx-vision"}],
-            decryption: "none"
-          },
-          streamSettings: {
-            network: "raw",
-            security: "reality",
-            realitySettings: {
-              show: false,
-              target: "127.0.0.1:8443",
-              xver: 0,
-              serverNames: [$domain],
-              privateKey: $vision_private,
-              shortIds: [$vision_sid]
-            }
-          },
-          sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
-        },
-        {
-          tag: "vless-reality-xhttp-in",
-          listen: $listen,
-          port: $xhttp_port,
-          protocol: "vless",
-          settings: {
-            clients: [{id: $xhttp_uuid}],
-            decryption: "none"
-          },
-          streamSettings: {
-            network: "xhttp",
-            security: "reality",
-            realitySettings: {
-              show: false,
-              target: "127.0.0.1:8443",
-              xver: 0,
-              serverNames: [$domain],
-              privateKey: $xhttp_private,
-              shortIds: [$xhttp_sid]
-            },
-            xhttpSettings: {
-              path: $xhttp_path,
-              mode: "auto"
-            }
-          },
-          sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
-        }
+        vision_inbound("v4"; $listen_v4),
+        vision_inbound("v6"; $listen_v6),
+        xhttp_inbound("v4"; $listen_v4),
+        xhttp_inbound("v6"; $listen_v6)
       ],
       outbounds: [
-        {protocol: "freedom", tag: "direct"},
+        {
+          sendThrough: $listen_v4,
+          protocol: "freedom",
+          tag: "direct-v4",
+          targetStrategy: "ForceIPv4",
+          settings: {domainStrategy: "ForceIPv4"}
+        },
+        {
+          sendThrough: $listen_v6,
+          protocol: "freedom",
+          tag: "direct-v6",
+          targetStrategy: "ForceIPv6",
+          settings: {domainStrategy: "ForceIPv6"}
+        },
         {protocol: "blackhole", tag: "blocked"}
       ],
       routing: {
@@ -179,15 +247,26 @@ render_xray() {
             network: "tcp",
             port: 25,
             outboundTag: "blocked"
+          },
+          {
+            type: "field",
+            inboundTag: ["vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"],
+            outboundTag: "direct-v4"
+          },
+          {
+            type: "field",
+            inboundTag: ["vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"],
+            outboundTag: "direct-v6"
           }
         ]
       }
     }' | write_atomic "${NEKO_CONFIG_DIR}/xray.json"
 }
 
-render_hysteria() {
-  write_atomic "${NEKO_CONFIG_DIR}/hysteria.yaml" <<EOF
-listen: :${HY2_START}-${HY2_END}
+render_hysteria_family() {
+  local target="$1" listen="$2" mode="$3" bind_field="$4" bind_address="$5"
+  write_atomic "$target" <<EOF
+listen: "${listen}"
 
 tls:
   cert: ${CERT_FILE}
@@ -207,6 +286,13 @@ masquerade:
   proxy:
     url: https://${DOMAIN}/
     rewriteHost: true
+
+outbounds:
+  - name: direct
+    type: direct
+    direct:
+      mode: ${mode}
+      ${bind_field}: ${bind_address}
 
 acl:
   inline:
@@ -229,6 +315,18 @@ acl:
     - reject(all, tcp/25)
     - direct(all)
 EOF
+}
+
+render_hysteria() {
+  render_hysteria_family \
+    "${NEKO_CONFIG_DIR}/hysteria-v4.yaml" \
+    "${SUBSCRIPTION_IPV4_ADDRESS}:${HY2_START}-${HY2_END}" \
+    4 bindIPv4 "$SUBSCRIPTION_IPV4_ADDRESS"
+  render_hysteria_family \
+    "${NEKO_CONFIG_DIR}/hysteria-v6.yaml" \
+    "[${SUBSCRIPTION_IPV6_ADDRESS}]:${HY2_START}-${HY2_END}" \
+    6 bindIPv6 "$SUBSCRIPTION_IPV6_ADDRESS"
+  rm -f -- "${NEKO_CONFIG_DIR}/hysteria.yaml"
 }
 
 render_caddy() {
@@ -365,6 +463,7 @@ render_proxy_nodes() {
     port: ${TUIC_PORT}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
+    sni: "${DOMAIN}"
     alpn: [h3]
     disable-sni: false
     reduce-rtt: false

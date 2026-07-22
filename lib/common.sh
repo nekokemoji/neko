@@ -362,16 +362,23 @@ check_strict_dual_stack_dns() {
 }
 
 assert_dual_stack_kernel() {
-  local disable_ipv6 bindv6only ipv4_default_routes ipv6_default_routes
+  local disable_ipv6 ipv4_default_routes ipv6_default_routes
   disable_ipv6="$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || printf 1)"
-  bindv6only="$(cat /proc/sys/net/ipv6/bindv6only 2>/dev/null || printf 1)"
   [[ "$disable_ipv6" == "0" ]] || die "系统内核已禁用 IPv6，无法提供严格 IPv6 订阅。"
-  [[ "$bindv6only" == "0" ]] || die \
-    "net.ipv6.bindv6only=1 会破坏单端口双栈监听；请改为 0 后重试。"
   ipv4_default_routes="$(ip -4 route show default 2>/dev/null || true)"
   ipv6_default_routes="$(ip -6 route show default 2>/dev/null || true)"
   [[ -n "$ipv4_default_routes" ]] || die "系统没有 IPv4 默认路由，无法提供严格 IPv4 订阅。"
   [[ -n "$ipv6_default_routes" ]] || die "系统没有 IPv6 默认路由，无法提供严格 IPv6 订阅。"
+}
+
+assert_strict_addresses_local() {
+  local route_v4 route_v6
+  route_v4="$(ip -4 route get "$SUBSCRIPTION_IPV4_ADDRESS" 2>/dev/null || true)"
+  route_v6="$(ip -6 route get "$SUBSCRIPTION_IPV6_ADDRESS" 2>/dev/null || true)"
+  [[ "$(awk 'NR == 1 {print $1}' <<< "$route_v4")" == "local" ]] || die \
+    "${SUBSCRIPTION_IPV4_ADDRESS} 不是本机网卡地址；无法把 IPv4 入站和出站严格绑定到它。"
+  [[ "$(awk 'NR == 1 {print $1}' <<< "$route_v6")" == "local" ]] || die \
+    "${SUBSCRIPTION_IPV6_ADDRESS} 不是本机网卡地址；无法把 IPv6 入站和出站严格绑定到它。"
 }
 
 random_hex() {
