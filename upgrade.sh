@@ -92,6 +92,14 @@ certificate_has_strict_domains() {
 }
 
 set_certificate_permissions() {
+  if [[ "${NEKO_UPDATE_TEST_MODE:-0}" == "1" ]]; then
+    find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
+    find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
+    chmod 0750 "$NEKO_VAR/lego"
+    find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} +
+    find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
+    return 0
+  fi
   chown -R root:root "$NEKO_VAR/lego"
   find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
   find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
