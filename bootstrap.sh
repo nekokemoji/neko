@@ -21,6 +21,7 @@ die_bootstrap() {
 install_bootstrap_dependencies() {
   local -a required_commands=(tar gzip mktemp mkdir grep rm cp)
   local -a missing_commands=()
+  local -a packages=(ca-certificates)
   local command_name
 
   if [[ -z "$NEKO_BOOTSTRAP_ARCHIVE" ]]; then
@@ -34,20 +35,31 @@ install_bootstrap_dependencies() {
 
   printf '[信息] 系统缺少首次安装工具，正在自动补齐：%s\n' \
     "${missing_commands[*]}"
+  for command_name in "${missing_commands[@]}"; do
+    case "$command_name" in
+      curl|tar|gzip|grep)
+        packages+=("$command_name")
+        ;;
+      mktemp|mkdir|rm|cp)
+        if [[ " ${packages[*]} " != *" coreutils "* ]]; then
+          packages+=(coreutils)
+        fi
+        ;;
+    esac
+  done
+
   if command -v apt-get >/dev/null 2>&1; then
     if ! DEBIAN_FRONTEND=noninteractive apt-get update \
       || ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl tar gzip coreutils grep mawk libc-bin; then
+        "${packages[@]}"; then
       die_bootstrap "自动安装基础工具失败；请检查系统软件源后重试。"
     fi
   elif command -v dnf >/dev/null 2>&1; then
-    if ! dnf -y install \
-      ca-certificates curl tar gzip coreutils grep gawk glibc-common; then
+    if ! dnf -y install "${packages[@]}"; then
       die_bootstrap "自动安装基础工具失败；请检查系统软件源后重试。"
     fi
   elif command -v microdnf >/dev/null 2>&1; then
-    if ! microdnf -y install \
-      ca-certificates curl tar gzip coreutils grep gawk glibc-common; then
+    if ! microdnf -y install "${packages[@]}"; then
       die_bootstrap "自动安装基础工具失败；请检查系统软件源后重试。"
     fi
   else

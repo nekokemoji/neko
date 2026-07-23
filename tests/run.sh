@@ -494,8 +494,13 @@ PATH="$WORK/bootstrap-minimal/bin" \
   NEKO_BOOTSTRAP_TEST_MODE=1 \
   /usr/bin/bash "$ROOT/bootstrap.sh" > "$WORK/bootstrap-minimal/bootstrap.log"
 grep -Fq 'tar gzip' "$WORK/bootstrap-minimal/bootstrap.log"
-grep -Fq 'tar gzip coreutils grep gawk glibc-common' \
+grep -Fxq -- '-y install ca-certificates tar gzip' \
   "$WORK/bootstrap-minimal/package-manager.log"
+if grep -Eq 'coreutils|curl|gawk|glibc-common' \
+  "$WORK/bootstrap-minimal/package-manager.log"; then
+  printf 'Bootstrap 安装了并未缺少的软件包，可能与最小系统替代包冲突。\n' >&2
+  exit 1
+fi
 grep -Fq '[测试] Bootstrap 已成功校验固定安装包。' \
   "$WORK/bootstrap-minimal/bootstrap.log"
 if find "$WORK/bootstrap-minimal/work" -mindepth 1 -maxdepth 1 -name 'neko-bootstrap.*' | grep -q .; then
