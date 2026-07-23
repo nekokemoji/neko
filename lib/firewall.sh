@@ -11,6 +11,10 @@ fi
 
 FIREWALLD_SERVICE_FILE="${FIREWALLD_SERVICE_FILE:-/etc/firewalld/services/neko-proxy.xml}"
 UFW_PROFILE_FILE="${UFW_PROFILE_FILE:-/etc/ufw/applications.d/neko-proxy}"
+TEMP_HTTP_UFW_PROFILE_FILE="${TEMP_HTTP_UFW_PROFILE_FILE:-/etc/ufw/applications.d/neko-acme-temporary}"
+TEMP_HTTP_FIREWALL_MANAGER="none"
+TEMP_HTTP_UFW_PROFILE_CREATED=0
+declare -a TEMP_HTTP_FIREWALL_ZONES=()
 
 firewalld_is_active() {
   command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1
@@ -67,6 +71,104 @@ firewalld_target_zones() {
     fi
     printf '%s\n' "$zone"
   done <<< "$interfaces" | sort -u
+}
+
+open_temporary_http_challenge_port() {
+  local zone tmp ufw_status
+  local -a zones=()
+
+  TEMP_HTTP_FIREWALL_MANAGER="none"
+  TEMP_HTTP_UFW_PROFILE_CREATED=0
+  TEMP_HTTP_FIREWALL_ZONES=()
+
+  if firewalld_is_active; then
+    mapfile -t zones < <(firewalld_target_zones)
+    (( ${#zones[@]} > 0 )) || die "无法确定 HTTP-01 应放行的 firewalld 区域。"
+    TEMP_HTTP_FIREWALL_MANAGER="firewalld"
+    for zone in "${zones[@]}"; do
+      if firewall-cmd --zone="$zone" --query-port=80/tcp >/dev/null 2>&1; then
+        continue
+      fi
+      firewall-cmd --zone="$zone" --add-port=80/tcp --timeout=10m >/dev/null \
+        || die "无法在 firewalld 区域 ${zone} 临时放行 TCP 80。"
+      TEMP_HTTP_FIREWALL_ZONES+=("$zone")
+      firewall-cmd --zone="$zone" --query-port=80/tcp >/dev/null \
+        || die "firewalld 区域 ${zone} 的临时 TCP 80 规则未生效。"
+    done
+    ok "HTTP-01 验证期间已临时放行 TCP 80；规则最长保留 10 分钟。"
+    return 0
+  fi
+
+  if ufw_is_active; then
+    if [[ -r /etc/default/ufw ]] \
+      && grep -Eq '^[[:space:]]*IPV6[[:space:]]*=[[:space:]]*no[[:space:]]*$' /etc/default/ufw; then
+      die "UFW 已禁用 IPv6 规则管理；HTTP-01 无法安全放行严格 IPv6 域名。请先设置 IPV6=yes 并重载 UFW。"
+    fi
+    [[ ! -e "$TEMP_HTTP_UFW_PROFILE_FILE" ]] \
+      || die "临时 HTTP-01 防火墙配置已存在：${TEMP_HTTP_UFW_PROFILE_FILE}"
+    TEMP_HTTP_FIREWALL_MANAGER="ufw"
+    mkdir -p "$(dirname -- "$TEMP_HTTP_UFW_PROFILE_FILE")"
+    tmp="$(mktemp "${TEMP_HTTP_UFW_PROFILE_FILE}.tmp.XXXXXX")"
+    cat > "$tmp" <<'EOF'
+[NekoACMETemporary]
+title=Neko temporary ACME HTTP-01
+description=Temporary TCP 80 access used only while obtaining the initial certificate
+ports=80/tcp
+EOF
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$TEMP_HTTP_UFW_PROFILE_FILE"
+    TEMP_HTTP_UFW_PROFILE_CREATED=1
+    ufw app update NekoACMETemporary >/dev/null
+    ufw allow NekoACMETemporary >/dev/null
+    ufw_status="$(ufw status 2>/dev/null || true)"
+    grep -Fq NekoACMETemporary <<< "$ufw_status" \
+      || die "UFW 的临时 TCP 80 规则未生效。"
+    ok "HTTP-01 验证期间已在 UFW 临时放行 TCP 80。"
+    return 0
+  fi
+
+  warn "未发现正在启用的 firewalld 或 UFW；HTTP-01 将直接尝试 TCP 80。云安全组或自定义 nftables/iptables 仍可能拦截。"
+}
+
+close_temporary_http_challenge_port() {
+  local zone cleanup_failed=0
+
+  case "$TEMP_HTTP_FIREWALL_MANAGER" in
+    firewalld)
+      if command -v firewall-cmd >/dev/null 2>&1; then
+        for zone in "${TEMP_HTTP_FIREWALL_ZONES[@]}"; do
+          firewall-cmd --zone="$zone" --remove-port=80/tcp >/dev/null 2>&1 \
+            || cleanup_failed=1
+        done
+      elif (( ${#TEMP_HTTP_FIREWALL_ZONES[@]} > 0 )); then
+        cleanup_failed=1
+      fi
+      ;;
+    ufw)
+      if (( TEMP_HTTP_UFW_PROFILE_CREATED == 1 )); then
+        if command -v ufw >/dev/null 2>&1; then
+          ufw --force delete allow NekoACMETemporary >/dev/null 2>&1 \
+            || cleanup_failed=1
+        else
+          cleanup_failed=1
+        fi
+        rm -f -- "$TEMP_HTTP_UFW_PROFILE_FILE" || cleanup_failed=1
+      fi
+      ;;
+    none)
+      ;;
+    *)
+      cleanup_failed=1
+      ;;
+  esac
+
+  TEMP_HTTP_FIREWALL_MANAGER="none"
+  TEMP_HTTP_UFW_PROFILE_CREATED=0
+  TEMP_HTTP_FIREWALL_ZONES=()
+  if (( cleanup_failed == 1 )); then
+    warn "临时 TCP 80 规则未能完全清理；请检查本机防火墙。firewalld 临时规则会在 10 分钟内自动过期。"
+  fi
+  return 0
 }
 
 configure_firewalld() {

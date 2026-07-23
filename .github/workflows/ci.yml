@@ -86,10 +86,19 @@ jobs:
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
         with:
           platforms: arm64
+      - name: Build offline bootstrap fixture
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          workspace_name="$(basename "$GITHUB_WORKSPACE")"
+          tar --exclude="${workspace_name}/.git" \
+            -czf "$RUNNER_TEMP/neko-bootstrap-source.tar.gz" \
+            -C "$workspace_parent" "$workspace_name"
       - name: Test amd64 userland
         run: >-
           docker run --rm --platform linux/amd64
           -v "$PWD:/src:ro" -w /src
+          -v "$RUNNER_TEMP/neko-bootstrap-source.tar.gz:/tmp/neko-bootstrap-source.tar.gz:ro"
+          -e NEKO_CONTAINER_BOOTSTRAP_ARCHIVE=/tmp/neko-bootstrap-source.tar.gz
           "${{ matrix.distro.image }}"
           bash tests/container-smoke.sh
           "${{ matrix.distro.id }}"
