@@ -2,25 +2,17 @@
 
 set -Eeuo pipefail
 
-NEKO_ETC=/etc/neko
-NEKO_VAR=/var/lib/neko
-NEKO_LIBEXEC=/usr/local/libexec/neko
-NEKO_SYSTEMD=/etc/systemd/system
-NEKO_STATE=/etc/neko/state.json
-NEKO_USER=neko-proxy
+NEKO_ETC="${NEKO_ETC:-/etc/neko}"
+NEKO_VAR="${NEKO_VAR:-/var/lib/neko}"
+NEKO_LIBEXEC="${NEKO_LIBEXEC:-/usr/local/libexec/neko}"
+NEKO_SYSTEMD="${NEKO_SYSTEMD:-/etc/systemd/system}"
+NEKO_STATE="${NEKO_STATE:-${NEKO_ETC}/state.json}"
+NEKO_USER="${NEKO_USER:-neko-proxy}"
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
-if (( EUID != 0 )); then
-  if command -v sudo >/dev/null 2>&1; then
-    exec sudo -- "$0" "$@"
-  fi
-  printf '[错误] neko 控制面板需要 root 权限。\n' >&2
-  exit 1
-fi
-
-source /usr/local/libexec/neko/lib/common.sh
-source /usr/local/libexec/neko/lib/render.sh
-source /usr/local/libexec/neko/lib/firewall.sh
+source "${NEKO_LIBEXEC}/lib/common.sh"
+source "${NEKO_LIBEXEC}/lib/render.sh"
+source "${NEKO_LIBEXEC}/lib/firewall.sh"
 
 SYSCTL_FILE="/etc/sysctl.d/99-neko-bbr.conf"
 
@@ -133,16 +125,31 @@ rotate_subscription() {
 }
 
 refresh_subscription_endpoints() {
-  local answer backup
+  local answer backup old_ipv4_address old_ipv6_address update_applied=0
   read -r -p "重新解析严格 IPv4/IPv6 地址并更新六份订阅？[y/N] " answer
   [[ "$answer" =~ ^[Yy]$ ]] || return 0
 
   acquire_maintenance_lock
   load_state
+  old_ipv4_address="$SUBSCRIPTION_IPV4_ADDRESS"
+  old_ipv6_address="$SUBSCRIPTION_IPV6_ADDRESS"
+  assert_dual_stack_kernel
   check_strict_dual_stack_dns "$DOMAIN"
   assert_strict_addresses_local
+
+  if [[ "$SUBSCRIPTION_IPV4_ADDRESS" == "$old_ipv4_address" \
+    && "$SUBSCRIPTION_IPV6_ADDRESS" == "$old_ipv6_address" ]]; then
+    release_maintenance_lock
+    info "严格 IPv4/IPv6 端点没有变化；未修改配置，也没有重启服务。"
+    return 0
+  fi
+
   backup="$(mktemp "${NEKO_STATE}.backup.XXXXXX")"
-  cp -a -- "$NEKO_STATE" "$backup"
+  if ! cp -a -- "$NEKO_STATE" "$backup"; then
+    rm -f -- "$backup"
+    release_maintenance_lock
+    die "无法备份安装状态；未修改地址和配置。"
+  fi
 
   if atomic_json_update \
       '.subscription.ipv4_domain = $v4_domain
@@ -152,7 +159,11 @@ refresh_subscription_endpoints() {
       --arg v4_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
       --arg v6_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
       --arg v4_address "$SUBSCRIPTION_IPV4_ADDRESS" \
-      --arg v6_address "$SUBSCRIPTION_IPV6_ADDRESS" \
+      --arg v6_address "$SUBSCRIPTION_IPV6_ADDRESS"; then
+    update_applied=1
+  fi
+
+  if (( update_applied == 1 )) \
     && render_all \
     && validate_runtime_configs \
     && restart_runtime_services; then
@@ -160,13 +171,27 @@ refresh_subscription_endpoints() {
     release_maintenance_lock
     ok "严格 IPv4/IPv6 端点与六份订阅已刷新。"
     show_subscription_links
-  else
-    cp -a -- "$backup" "$NEKO_STATE"
+    return 0
+  fi
+
+  if (( update_applied == 0 )); then
     rm -f -- "$backup"
-    render_all || true
-    restart_runtime_services >/dev/null 2>&1 || true
+    release_maintenance_lock
+    die "端点刷新失败；原状态和运行配置均未修改。"
+  fi
+
+  warn "端点刷新失败，正在恢复原地址、配置和服务……"
+  if cp -a -- "$backup" "$NEKO_STATE" \
+    && render_all \
+    && validate_runtime_configs \
+    && restart_runtime_services; then
+    rm -f -- "$backup"
+    release_maintenance_lock
     die "端点刷新失败，已恢复原地址和订阅。"
   fi
+
+  release_maintenance_lock
+  die "端点刷新失败，且自动恢复未完全成功；状态备份保留在 ${backup}。"
 }
 
 uninstall_neko() {
@@ -231,6 +256,12 @@ draw_menu() {
 }
 
 main() {
+  if (( EUID != 0 )); then
+    if command -v sudo >/dev/null 2>&1; then
+      exec sudo -- "$0" "$@"
+    fi
+    die "neko 控制面板需要 root 权限。"
+  fi
   [[ -r "$NEKO_STATE" ]] || die "Neko 尚未完整安装。"
   while true; do
     draw_menu
@@ -249,4 +280,6 @@ main() {
   done
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
