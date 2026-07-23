@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
-# Upgrade an existing Neko 1.0.x/1.1.x/1.2.0/1.2.1/1.2.2 installation to the current strict
-# dual-stack layout. Protocol credentials, ports and subscription token are
-# preserved. Every changed file, unit and certificate is backed up for rollback.
+# Upgrade an existing Neko 1.0.x/1.1.x/1.2.x installation to the current
+# strict dual-stack layout. Protocol credentials, ports and subscription token
+# are preserved. Every changed file, unit and certificate is backed up for
+# rollback.
 
 set -Eeuo pipefail
 umask 0077
@@ -91,6 +92,10 @@ trap 'exit 143' TERM
 
 validate_installed_configs() {
   "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/config/sing-box.json" >/dev/null
+  "$NEKO_LIBEXEC/sing-box" check \
+    -c "$NEKO_ETC/subscriptions/sing-box-v4.json" >/dev/null
+  "$NEKO_LIBEXEC/sing-box" check \
+    -c "$NEKO_ETC/subscriptions/sing-box-v6.json" >/dev/null
   "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json" >/dev/null
   "$NEKO_LIBEXEC/caddy" validate \
     --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile >/dev/null

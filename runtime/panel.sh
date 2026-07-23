@@ -29,6 +29,10 @@ release_maintenance_lock() {
 
 validate_runtime_configs() {
   /usr/local/libexec/neko/sing-box check -c "${NEKO_CONFIG_DIR}/sing-box.json" >/dev/null
+  /usr/local/libexec/neko/sing-box check \
+    -c "${NEKO_SUB_DIR}/sing-box-v4.json" >/dev/null
+  /usr/local/libexec/neko/sing-box check \
+    -c "${NEKO_SUB_DIR}/sing-box-v6.json" >/dev/null
   /usr/local/libexec/neko/xray run -test -c "${NEKO_CONFIG_DIR}/xray.json" >/dev/null
   /usr/local/libexec/neko/caddy validate \
     --config "${NEKO_CONFIG_DIR}/Caddyfile" --adapter caddyfile >/dev/null
@@ -99,7 +103,7 @@ restore_bbr() {
 rotate_subscription() {
   local answer new_token backup
   printf '此操作只让旧下载 URL 失效，不会撤销已经导入客户端的节点凭据。\n'
-  read -r -p "继续重置六个订阅 URL？[y/N] " answer
+  read -r -p "继续重置八个订阅 URL？[y/N] " answer
   [[ "$answer" =~ ^[Yy]$ ]] || return 0
 
   acquire_maintenance_lock
@@ -113,7 +117,7 @@ rotate_subscription() {
     && systemctl restart neko-caddy.service; then
     rm -f -- "$backup"
     release_maintenance_lock
-    ok "六个订阅 URL 已重置；旧 URL 不可再访问。"
+    ok "八个订阅 URL 已重置；旧 URL 不可再访问。"
     show_subscription_links
   else
     cp -a -- "$backup" "$NEKO_STATE"
@@ -126,7 +130,7 @@ rotate_subscription() {
 
 refresh_subscription_endpoints() {
   local answer backup old_ipv4_address old_ipv6_address update_applied=0
-  read -r -p "重新解析严格 IPv4/IPv6 地址并更新六份订阅？[y/N] " answer
+  read -r -p "重新解析严格 IPv4/IPv6 地址并更新八份订阅？[y/N] " answer
   [[ "$answer" =~ ^[Yy]$ ]] || return 0
 
   acquire_maintenance_lock
@@ -169,7 +173,7 @@ refresh_subscription_endpoints() {
     && restart_runtime_services; then
     rm -f -- "$backup"
     release_maintenance_lock
-    ok "严格 IPv4/IPv6 端点与六份订阅已刷新。"
+    ok "严格 IPv4/IPv6 端点与八份订阅已刷新。"
     show_subscription_links
     return 0
   fi
@@ -248,7 +252,7 @@ draw_menu() {
   printf 'Neko 终端控制面板\n'
   printf '=================\n'
   printf '0. 退出\n'
-  printf '1. 查看六个严格订阅链接\n'
+  printf '1. 查看八个严格订阅链接\n'
   printf '2. 开启 BBRv1\n'
   printf '3. 重置订阅 URL（不会撤销已导入节点）\n'
   printf '4. 刷新严格 IPv4/IPv6 端点\n'
