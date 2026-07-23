@@ -70,6 +70,33 @@ bash -c '
   is_safe_ip_literal 2001:db8::9
   ! is_safe_ip_literal 999.0.0.1
   ! is_safe_ip_literal "example.com"
+  valid_ipv6=(
+    "::"
+    "::1"
+    "2001:db8::"
+    "2001:db8::9"
+    "2001:0DB8:0000:0000:0000:0000:0000:0009"
+    "1:2:3:4:5:6:7::"
+  )
+  invalid_ipv6=(
+    ""
+    ":"
+    ":::"
+    ":1:2:3:4:5:6:7"
+    "1:2:3:4:5:6:7:"
+    "1:2:3:4:5:6:7"
+    "1:2:3:4:5:6:7:8:9"
+    "1:2:3:4:5:6:7:8::"
+    "1::2::3"
+    "2001:db8::gg"
+    "2001:db8::192.0.2.1"
+  )
+  for address in "${valid_ipv6[@]}"; do
+    is_ipv6_literal "$address"
+  done
+  for address in "${invalid_ipv6[@]}"; do
+    ! is_ipv6_literal "$address"
+  done
 ' _ "$ROOT/lib/common.sh"
 bash -c '
   set -Eeuo pipefail
