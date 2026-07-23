@@ -280,7 +280,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.2.3"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.2.4"' "$ROOT/versions.env"
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
 grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
 grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
@@ -514,6 +514,8 @@ NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO
 
 printf '[5/8] 用真实冻结核心校验配置……\n'
 "$SING_BOX" check -c "$WORK/etc/config/sing-box.json"
+"$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v4.json"
+"$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v6.json"
 "$XRAY" run -test -c "$WORK/etc/config/xray.json"
 "$CADDY" validate --config "$WORK/etc/config/Caddyfile" --adapter caddyfile >/dev/null
 mkdir -p "$WORK/mihomo-v4" "$WORK/mihomo-v6"
@@ -570,6 +572,7 @@ expected_subscription_files = {
     "mihomo-v4.yaml", "mihomo-v6.yaml",
     "stash-v4.yaml", "stash-v6.yaml",
     "shadowrocket-v4.txt", "shadowrocket-v6.txt",
+    "sing-box-v4.json", "sing-box-v6.json",
 }
 assert {p.name for p in (root / "etc/subscriptions").iterdir()} == expected_subscription_files
 
@@ -580,6 +583,9 @@ for family, address, ip_version in (
     mihomo = yaml.safe_load((root / f"etc/subscriptions/mihomo-{family}.yaml").read_text())
     stash = yaml.safe_load((root / f"etc/subscriptions/stash-{family}.yaml").read_text())
     shadow = yaml.safe_load((root / f"etc/subscriptions/shadowrocket-{family}.txt").read_text())
+    sing_client = json.loads(
+        (root / f"etc/subscriptions/sing-box-{family}.json").read_text()
+    )
 
     assert len(mihomo["proxies"]) == 6
     assert all(p["server"] == address for p in mihomo["proxies"])
@@ -611,6 +617,75 @@ for family, address, ip_version in (
     assert shadow_xhttp["network"] == "xhttp"
     assert shadow_xhttp["xhttp-opts"]["mode"] == "stream-one"
     assert shadow_xhttp["xhttp-opts"]["path"] == state["reality"]["xhttp_path"]
+
+    expected_selector = [
+        "HY2", "TUIC-v5", "SS2022", "AnyTLS", "VLESS-Reality-Vision"
+    ]
+    expected_dns_strategy = "ipv4_only" if family == "v4" else "ipv6_only"
+    expected_dns_server = "1.1.1.1" if family == "v4" else "2606:4700:4700::1111"
+    rejected_ip_version = 6 if family == "v4" else 4
+    client_outbounds = {outbound["tag"]: outbound for outbound in sing_client["outbounds"]}
+    assert set(client_outbounds) == {"PROXY", *expected_selector}
+    assert client_outbounds["PROXY"] == {
+        "type": "selector",
+        "tag": "PROXY",
+        "outbounds": expected_selector,
+        "default": "HY2",
+    }
+    assert all(
+        outbound["server"] == address
+        for tag, outbound in client_outbounds.items()
+        if tag != "PROXY"
+    )
+    assert all(outbound["type"] != "direct" for outbound in sing_client["outbounds"])
+    assert client_outbounds["HY2"]["server_ports"] == ["21000:21127"]
+    assert client_outbounds["HY2"]["hop_interval"] == "30s"
+    assert client_outbounds["TUIC-v5"]["udp_relay_mode"] == "native"
+    assert client_outbounds["SS2022"]["method"] == "2022-blake3-aes-128-gcm"
+    assert client_outbounds["VLESS-Reality-Vision"]["flow"] == "xtls-rprx-vision"
+    assert client_outbounds["VLESS-Reality-Vision"]["network"] == "tcp"
+    assert client_outbounds["VLESS-Reality-Vision"]["tls"]["reality"] == {
+        "enabled": True,
+        "public_key": state["reality"]["vision_public_key"],
+        "short_id": state["reality"]["vision_short_id"],
+    }
+    for tag in ("HY2", "TUIC-v5", "AnyTLS", "VLESS-Reality-Vision"):
+        assert client_outbounds[tag]["tls"]["server_name"] == "example.com"
+        assert client_outbounds[tag]["tls"]["insecure"] is False
+    assert sing_client["dns"] == {
+        "servers": [{
+            "type": "https",
+            "tag": "strict-doh",
+            "server": expected_dns_server,
+            "server_port": 443,
+            "path": "/dns-query",
+            "tls": {
+                "enabled": True,
+                "server_name": "cloudflare-dns.com",
+                "insecure": False,
+            },
+            "detour": "PROXY",
+        }],
+        "final": "strict-doh",
+        "strategy": expected_dns_strategy,
+    }
+    assert sing_client["inbounds"] == [{
+        "type": "tun",
+        "tag": "tun-in",
+        "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+        "auto_route": True,
+        "strict_route": True,
+        "stack": "mixed",
+    }]
+    assert sing_client["route"] == {
+        "rules": [
+            {"protocol": "dns", "action": "hijack-dns"},
+            {"ip_version": rejected_ip_version, "action": "reject"},
+        ],
+        "final": "PROXY",
+        "auto_detect_interface": True,
+    }
+    assert sing_client["experimental"] == {"cache_file": {"enabled": True}}
 
 ports = state["ports"]
 singles = [ports[k] for k in ("tuic", "ss2022", "anytls", "vless_reality_vision", "vless_reality_xhttp")]
@@ -750,8 +825,10 @@ assert not (root / "etc/config/hysteria.yaml").exists()
 assert caddy.count(f"tls {cert_path} {key_path}") == 4
 assert "protocols h1 h2" in caddy
 assert "mihomo-v4.yaml" in caddy and "mihomo-v6.yaml" in caddy
+assert "sing-box-v4.json" in caddy and "sing-box-v6.json" in caddy
 assert "https://v4.example.com" in caddy and "https://v6.example.com" in caddy
 assert 'header Content-Type "text/yaml; charset=utf-8"' in caddy
+assert caddy.count('header Content-Type "application/json; charset=utf-8"') == 2
 PY
 
 links="$(
@@ -760,7 +837,9 @@ links="$(
 )"
 [[ "$links" == *'https://v4.example.com/test-subscription-token/mihomo.yaml'* ]]
 [[ "$links" == *'https://v6.example.com/test-subscription-token/mihomo.yaml'* ]]
-[[ "$(grep -c '（严格）' <<< "$links")" == 6 ]]
+[[ "$links" == *'https://v4.example.com/test-subscription-token/sing-box.json'* ]]
+[[ "$links" == *'https://v6.example.com/test-subscription-token/sing-box.json'* ]]
+[[ "$(grep -c '（严格）' <<< "$links")" == 8 ]]
 
 printf '[7/8] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
 jq '.subscription.token = "replacement-token"' "$WORK/etc/state.json" > "$WORK/etc/state.new"
@@ -769,6 +848,7 @@ NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO
   bash -c 'source "$1"; source "$2"; render_all' \
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
 grep -Fq '/replacement-token/mihomo.yaml' "$WORK/etc/config/Caddyfile"
+grep -Fq '/replacement-token/sing-box.json' "$WORK/etc/config/Caddyfile"
 if grep -Fq '/test-subscription-token/' "$WORK/etc/config/Caddyfile"; then
   printf '旧订阅令牌仍出现在 Caddy 配置中。\n' >&2
   exit 1
@@ -835,19 +915,30 @@ dependency_line="$(grep -n 'install_dependencies' "$ROOT/install.sh" | tail -n 1
 lock_line="$(grep -n 'exec 9>/run/lock/neko-install.lock' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 (( domain_gate_line < dependency_line && dependency_line < lock_line ))
 
-printf '[8/8] 模拟 1.0.x/1.1.x 原地升级成功与失败回滚……\n'
+printf '[8/8] 模拟 1.0.x/1.1.x/1.2.3 原地升级成功与失败回滚……\n'
 prepare_upgrade_install() {
-  local target="$1" schema="${2:-1}"
+  local target="$1" schema="${2:-1}" source_release="${3:-}"
   mkdir -p \
     "$target/etc/config" "$target/etc/subscriptions" \
     "$target/var/acme" "$target/libexec/lib" "$target/systemd" "$target/tmp"
   cp -a -- "$WORK/etc/config/." "$target/etc/config/"
-  cp -a -- "$WORK/etc/subscriptions/mihomo-v4.yaml" \
-    "$target/etc/subscriptions/mihomo.yaml"
-  cp -a -- "$WORK/etc/subscriptions/stash-v4.yaml" \
-    "$target/etc/subscriptions/stash.yaml"
-  cp -a -- "$WORK/etc/subscriptions/shadowrocket-v4.txt" \
-    "$target/etc/subscriptions/shadowrocket.txt"
+  if [[ "$source_release" == "1.2.3-test" ]]; then
+    cp -a -- \
+      "$WORK/etc/subscriptions/mihomo-v4.yaml" \
+      "$WORK/etc/subscriptions/mihomo-v6.yaml" \
+      "$WORK/etc/subscriptions/stash-v4.yaml" \
+      "$WORK/etc/subscriptions/stash-v6.yaml" \
+      "$WORK/etc/subscriptions/shadowrocket-v4.txt" \
+      "$WORK/etc/subscriptions/shadowrocket-v6.txt" \
+      "$target/etc/subscriptions/"
+  else
+    cp -a -- "$WORK/etc/subscriptions/mihomo-v4.yaml" \
+      "$target/etc/subscriptions/mihomo.yaml"
+    cp -a -- "$WORK/etc/subscriptions/stash-v4.yaml" \
+      "$target/etc/subscriptions/stash.yaml"
+    cp -a -- "$WORK/etc/subscriptions/shadowrocket-v4.txt" \
+      "$target/etc/subscriptions/shadowrocket.txt"
+  fi
   if [[ "$schema" == 1 ]]; then
     jq '
       .schema = 1
@@ -861,9 +952,9 @@ prepare_upgrade_install() {
       | .firewall = {manager: "none", zone: ""}
     ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
   else
-    jq '
+    jq --arg release "${source_release:-1.1.1-test}" '
       .schema = 2
-      | .release = "1.1.1-test"
+      | .release = $release
       | .acme = {method: "http-01"}
       | .network = {listen_address: "::"}
       | .firewall = {manager: "none", zone: "", zones: []}
@@ -911,7 +1002,7 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ "$(jq -r '.acme.method' "$UPGRADE_OK/etc/state.json")" == http-01 ]]
 [[ "$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
   "$UPGRADE_OK/etc/state.json")" == "$upgrade_identity_before" ]]
-[[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
+[[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
 grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
   "$UPGRADE_OK/systemd/neko-hysteria.service"
@@ -937,11 +1028,28 @@ run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
 [[ ! -e "$UPGRADE_SCHEMA2/etc/config/hysteria.yaml" ]]
 
+UPGRADE_123="$WORK/upgrade-1.2.3"
+prepare_upgrade_install "$UPGRADE_123" 2 1.2.3-test
+release_123_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+  "$UPGRADE_123/etc/state.json")"
+[[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
+run_upgrade "$UPGRADE_123" > "$UPGRADE_123/upgrade.log"
+[[ "$(jq -r '.release' "$UPGRADE_123/etc/state.json")" == "$NEKO_RELEASE" ]]
+[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+  "$UPGRADE_123/etc/state.json")" == "$release_123_identity_before" ]]
+[[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
+[[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v4.json" ]]
+[[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v6.json" ]]
+
 UPGRADE_FAIL="$WORK/upgrade-fail"
 prepare_upgrade_install "$UPGRADE_FAIL"
 state_before="$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')"
 config_before="$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')"
 unit_before="$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')"
+subscriptions_before="$(
+  find "$UPGRADE_FAIL/etc/subscriptions" -maxdepth 1 -type f -printf '%f\n' \
+    | sort | sha256sum | awk '{print $1}'
+)"
 set +e
 run_upgrade "$UPGRADE_FAIL" \
   NEKO_TEST_SYSTEMCTL_FAIL_PATTERN='restart neko-caddy.service' \
@@ -953,6 +1061,10 @@ set -e
 [[ "$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')" == "$state_before" ]]
 [[ "$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')" == "$config_before" ]]
 [[ "$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')" == "$unit_before" ]]
+[[ "$(
+  find "$UPGRADE_FAIL/etc/subscriptions" -maxdepth 1 -type f -printf '%f\n' \
+    | sort | sha256sum | awk '{print $1}'
+)" == "$subscriptions_before" ]]
 [[ ! -e "$UPGRADE_FAIL/libexec/hysteria-dual.sh" ]]
 grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
 if find "$UPGRADE_FAIL/tmp" -maxdepth 1 -name 'neko-upgrade-backup.*' | grep -q .; then

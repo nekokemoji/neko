@@ -628,6 +628,10 @@ show_subscription_links() {
     "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
   printf 'Shadowrocket IPv6（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
     "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
+  printf 'sing-box IPv4（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
+  printf 'sing-box IPv6（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
+    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
 }
 
 show_required_ports() {

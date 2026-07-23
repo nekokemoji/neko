@@ -48,3 +48,25 @@ if [[ -n "${NEKO_CONTAINER_BOOTSTRAP_ARCHIVE:-}" ]]; then
     NEKO_BOOTSTRAP_TEST_MODE=1 \
     bash "$ROOT/bootstrap.sh"
 fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  case "$EXPECTED_FAMILY" in
+    debian)
+      DEBIAN_FRONTEND=noninteractive apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq
+      ;;
+    rhel)
+      if command -v microdnf >/dev/null 2>&1; then
+        microdnf -y install jq
+      else
+        dnf -y install jq
+      fi
+      ;;
+    *)
+      printf '无法为未知系统族安装 jq：%s\n' "$EXPECTED_FAMILY" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+bash "$ROOT/tests/subscription-render-smoke.sh"

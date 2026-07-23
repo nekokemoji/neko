@@ -597,9 +597,11 @@ write_initial_state() {
 validate_generated_configs() {
   info "用冻结的核心二进制校验生成配置……"
   "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/config/sing-box.json"
+  "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v4.json"
+  "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v6.json"
   "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json"
   "$NEKO_LIBEXEC/caddy" validate --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile
-  ok "sing-box、Xray 与 Caddy 配置校验通过。"
+  ok "sing-box 服务端、两份客户端订阅、Xray 与 Caddy 配置校验通过。"
 }
 
 start_services() {

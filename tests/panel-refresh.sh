@@ -110,7 +110,7 @@ if find "$WORK/no-change/etc" -maxdepth 1 -name "state.json.backup.*" | grep -q 
 fi
 
 [[ "$(<"$WORK/success/rc")" == 0 ]]
-grep -Fq "端点与六份订阅已刷新" "$WORK/success/output"
+grep -Fq "端点与八份订阅已刷新" "$WORK/success/output"
 [[ "$(call_count success render)" == 1 ]]
 [[ "$(call_count success validate)" == 1 ]]
 [[ "$(call_count success restart)" == 1 ]]
