@@ -8,7 +8,7 @@ set -Eeuo pipefail
 umask 0077
 
 NEKO_REPOSITORY="nekokemoji/neko"
-NEKO_SOURCE_COMMIT="f881b0de443c8aba59d6b33af5505aed8bd95215"
+NEKO_SOURCE_COMMIT="61958fcf6318fb62cd0a89eac12abd6a50a41759"
 NEKO_BOOTSTRAP_WORK_BASE="${NEKO_BOOTSTRAP_WORK_BASE:-/var/tmp}"
 NEKO_BOOTSTRAP_ARCHIVE="${NEKO_BOOTSTRAP_ARCHIVE:-}"
 WORKDIR=""
@@ -101,7 +101,7 @@ if [[ -n "$NEKO_BOOTSTRAP_ARCHIVE" ]]; then
     || die_bootstrap "测试安装包不可读：${NEKO_BOOTSTRAP_ARCHIVE}"
   cp -- "$NEKO_BOOTSTRAP_ARCHIVE" "$WORKDIR/neko.tar.gz"
 else
-  printf '[信息] 正在从 GitHub 下载固定版本 Neko 1.2.2……\n'
+  printf '[信息] 正在从 GitHub 下载固定版本 Neko 1.2.3……\n'
   curl --fail --location --silent --show-error \
     --retry 4 --connect-timeout 15 --proto '=https' --tlsv1.2 \
     "https://github.com/${NEKO_REPOSITORY}/archive/${NEKO_SOURCE_COMMIT}.tar.gz" \
@@ -121,8 +121,8 @@ for required_file in \
   [[ -s "$WORKDIR/source/$required_file" ]] \
     || die_bootstrap "下载的项目不完整，缺少 ${required_file}。"
 done
-grep -Fq 'NEKO_RELEASE="1.2.2"' "$WORKDIR/source/versions.env" \
-  || die_bootstrap "下载的项目版本不是预期的 Neko 1.2.2。"
+grep -Fq 'NEKO_RELEASE="1.2.3"' "$WORKDIR/source/versions.env" \
+  || die_bootstrap "下载的项目版本不是预期的 Neko 1.2.3。"
 
 if [[ "${NEKO_BOOTSTRAP_TEST_MODE:-0}" == 1 ]]; then
   bash -n "$WORKDIR/source/install.sh" \
