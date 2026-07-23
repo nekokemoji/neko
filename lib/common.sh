@@ -269,10 +269,13 @@ resolved_addresses() {
 }
 
 resolved_ipv4_addresses() {
-  local query_name
+  local query_name address
   query_name="$(absolute_dns_name "$1")"
-  { getent ahostsv4 "$query_name" 2>/dev/null || true; } \
-    | awk '$1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print $1}' \
+  while read -r address _; do
+    if is_ipv4_literal "$address"; then
+      printf '%s\n' "$address"
+    fi
+  done < <({ getent ahostsv4 "$query_name" 2>/dev/null || true; }) \
     | sort -u
 }
 
