@@ -24,3 +24,10 @@ detect_platform
 
 printf '通过：%s %s / %s（Bash %s）\n' \
   "$OS_ID" "$OS_VERSION" "$ARCH" "${BASH_VERSION}"
+
+if [[ -n "${NEKO_CONTAINER_BOOTSTRAP_ARCHIVE:-}" ]]; then
+  NEKO_BOOTSTRAP_ARCHIVE="$NEKO_CONTAINER_BOOTSTRAP_ARCHIVE" \
+    NEKO_BOOTSTRAP_WORK_BASE=/tmp \
+    NEKO_BOOTSTRAP_TEST_MODE=1 \
+    bash "$ROOT/bootstrap.sh"
+fi

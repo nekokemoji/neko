@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Upgrade an existing Neko 1.0.x/1.1.x installation to the current strict
+# Upgrade an existing Neko 1.0.x/1.1.x/1.2.0 installation to the current strict
 # dual-stack layout. Protocol credentials, ports and subscription token are
 # preserved. Every changed file, unit and certificate is backed up for rollback.
 

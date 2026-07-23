@@ -156,6 +156,113 @@ bash -c '
   [[ "$zones" == $'"'"'public\npublic6'"'"' ]]
 ' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"
 
+DNS_TEST_WORK="$(mktemp -d /tmp/neko-dns-test.XXXXXX)"
+mkdir -p "$DNS_TEST_WORK/bin"
+cat > "$DNS_TEST_WORK/bin/getent" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+database="$1"
+name="$2"
+printf '%s %s\n' "$database" "$name" >> "$NEKO_DNS_QUERY_LOG"
+case "${database}:${name}" in
+  ahostsv4:example.com.|ahostsv4:v4.example.com.)
+    printf '192.0.2.44 STREAM\n'
+    ;;
+  ahostsv6:example.com.|ahostsv6:v6.example.com.)
+    printf '2001:db8::44 STREAM\n'
+    ;;
+  *)
+    if [[ "$name" != *. ]]; then
+      printf '13.248.169.48 STREAM\n'
+    fi
+    ;;
+esac
+EOF
+chmod 0755 "$DNS_TEST_WORK/bin/getent"
+if ! NEKO_DNS_QUERY_LOG="$DNS_TEST_WORK/queries" \
+  PATH="$DNS_TEST_WORK/bin:$PATH" LOCALDOMAIN=com bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    check_strict_dual_stack_dns example.com >/dev/null 2>&1
+    while read -r database query_name; do
+      [[ -n "$database" && "$query_name" == *. ]]
+    done < "$NEKO_DNS_QUERY_LOG"
+  ' _ "$ROOT/lib/common.sh"; then
+  rm -rf -- "$DNS_TEST_WORK"
+  printf '严格 DNS 查询仍会受到系统 search 后缀污染。\n' >&2
+  exit 1
+fi
+rm -rf -- "$DNS_TEST_WORK"
+
+FIREWALL_TEST_WORK="$(mktemp -d /tmp/neko-firewall-test.XXXXXX)"
+if ! NEKO_FIREWALL_CALLS="$FIREWALL_TEST_WORK/firewalld-calls" bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  source "$2"
+  firewalld_is_active() { return 0; }
+  ufw_is_active() { return 1; }
+  firewalld_target_zones() { printf "public\npublic6\n"; }
+  declare -A opened_ports=()
+  firewall-cmd() {
+    local argument zone="" action=""
+    printf "%s\n" "$*" >> "$NEKO_FIREWALL_CALLS"
+    for argument in "$@"; do
+      case "$argument" in
+        --zone=*) zone="${argument#--zone=}" ;;
+        --add-port=80/tcp) action=add ;;
+        --query-port=80/tcp) action=query ;;
+        --remove-port=80/tcp) action=remove ;;
+      esac
+    done
+    case "$action" in
+      add) opened_ports["$zone"]=1 ;;
+      query) [[ -n "${opened_ports[$zone]:-}" ]] ;;
+      remove) unset "opened_ports[$zone]" ;;
+    esac
+  }
+  open_temporary_http_challenge_port >/dev/null
+  [[ "$TEMP_HTTP_FIREWALL_MANAGER" == firewalld ]]
+  [[ "${TEMP_HTTP_FIREWALL_ZONES[*]}" == "public public6" ]]
+  close_temporary_http_challenge_port
+  [[ "$TEMP_HTTP_FIREWALL_MANAGER" == none ]]
+  grep -Fq -- "--zone=public --add-port=80/tcp --timeout=10m" "$NEKO_FIREWALL_CALLS"
+  grep -Fq -- "--zone=public6 --add-port=80/tcp --timeout=10m" "$NEKO_FIREWALL_CALLS"
+  grep -Fq -- "--zone=public --remove-port=80/tcp" "$NEKO_FIREWALL_CALLS"
+  grep -Fq -- "--zone=public6 --remove-port=80/tcp" "$NEKO_FIREWALL_CALLS"
+' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"; then
+  rm -rf -- "$FIREWALL_TEST_WORK"
+  printf 'firewalld 的 HTTP-01 临时规则没有正确创建和清理。\n' >&2
+  exit 1
+fi
+if ! NEKO_UFW_CALLS="$FIREWALL_TEST_WORK/ufw-calls" \
+  NEKO_UFW_PROFILE="$FIREWALL_TEST_WORK/neko-acme-temporary" bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    TEMP_HTTP_UFW_PROFILE_FILE="$NEKO_UFW_PROFILE"
+    source "$2"
+    firewalld_is_active() { return 1; }
+    ufw_is_active() { return 0; }
+    ufw() {
+      printf "%s\n" "$*" >> "$NEKO_UFW_CALLS"
+      if [[ "$1" == status ]]; then
+        printf "NekoACMETemporary ALLOW Anywhere\n"
+      fi
+    }
+    open_temporary_http_challenge_port >/dev/null
+    [[ "$TEMP_HTTP_FIREWALL_MANAGER" == ufw ]]
+    [[ -f "$TEMP_HTTP_UFW_PROFILE_FILE" ]]
+    close_temporary_http_challenge_port
+    [[ "$TEMP_HTTP_FIREWALL_MANAGER" == none ]]
+    [[ ! -e "$TEMP_HTTP_UFW_PROFILE_FILE" ]]
+    grep -Fq "allow NekoACMETemporary" "$NEKO_UFW_CALLS"
+    grep -Fq -- "--force delete allow NekoACMETemporary" "$NEKO_UFW_CALLS"
+  ' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"; then
+  rm -rf -- "$FIREWALL_TEST_WORK"
+  printf 'UFW 的 HTTP-01 临时规则没有正确创建和清理。\n' >&2
+  exit 1
+fi
+rm -rf -- "$FIREWALL_TEST_WORK"
+
 printf '[3/8] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$XRAY" version)" == *"$XRAY_VERSION"* ]]
 [[ "$("$SING_BOX" version)" == *"$SING_BOX_VERSION"* ]]
@@ -173,7 +280,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.2.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.2.1"' "$ROOT/versions.env"
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
 grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
 grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
@@ -236,6 +343,59 @@ if NEKO_INSTALL_TEST_TOKEN_FILE="$ACME_WORK/input-token" bash -c '
   printf 'HTTP-01 接受了不应使用的 Cloudflare Token。\n' >&2
   exit 1
 fi
+if bash -c '
+  set -Eeuo pipefail
+  unset CF_DNS_API_TOKEN CF_DNS_API_TOKEN_FILE \
+    CLOUDFLARE_DNS_API_TOKEN CLOUDFLARE_DNS_API_TOKEN_FILE
+  source "$1"
+  ACME_METHOD_INPUT=""
+  CLOUDFLARE_TOKEN_SOURCE_FILE=""
+  collect_acme_settings
+' _ "$ROOT/install.sh" </dev/null >/dev/null 2>&1; then
+  printf '非交互安装没有显式选择 ACME 方式时仍然继续。\n' >&2
+  exit 1
+fi
+printf '%s\n' \
+  'During secondary validation: Fetching http://v6.example.com/: Network unreachable' \
+  > "$ACME_WORK/http-route-error"
+http_failure_message="$(bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  explain_http01_failure "$2"
+' _ "$ROOT/install.sh" "$ACME_WORK/http-route-error" 2>&1)"
+[[ "$http_failure_message" == *"IPv6 路由不完整"* ]]
+cat > "$ACME_WORK/bin/lego" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf 'lego\n' >> "$NEKO_TEST_HTTP_SEQUENCE"
+printf 'During secondary validation: Fetching http://v6.example.com/: Network unreachable\n'
+exit 42
+EOF
+chmod 0755 "$ACME_WORK/bin/lego"
+NEKO_TEST_HTTP_ROOT="$ACME_WORK" bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  trap - EXIT
+  NEKO_VAR="$NEKO_TEST_HTTP_ROOT/http-var"
+  WORKDIR="$NEKO_TEST_HTTP_ROOT"
+  DOMAIN=example.com
+  SUBSCRIPTION_DOMAIN_IPV4=v4.example.com
+  SUBSCRIPTION_DOMAIN_IPV6=v6.example.com
+  ACME_EMAIL=admin@example.com
+  ACME_METHOD=http-01
+  export NEKO_TEST_HTTP_SEQUENCE="$NEKO_TEST_HTTP_ROOT/http-sequence"
+  open_temporary_http_challenge_port() {
+    printf "open\n" >> "$NEKO_TEST_HTTP_SEQUENCE"
+  }
+  close_temporary_http_challenge_port() {
+    printf "close\n" >> "$NEKO_TEST_HTTP_SEQUENCE"
+  }
+  issue_rc=0
+  issue_initial_certificate >/dev/null 2>&1 || issue_rc=$?
+  ROLLBACK_NEEDED=0
+  (( issue_rc == 42 ))
+  [[ "$(<"$NEKO_TEST_HTTP_SEQUENCE")" == $'"'"'open\nlego\nclose'"'"' ]]
+' _ "$ROOT/install.sh"
 NEKO_VAR="$ACME_WORK/var" NEKO_TEST_MODE=1 \
   ACME_TEST_ROOT="$ACME_WORK" bash -c '
     set -Eeuo pipefail
@@ -305,6 +465,46 @@ NEKO_BOOTSTRAP_ARCHIVE="$WORK/bootstrap-source.tar.gz" \
 grep -Fq '[测试] Bootstrap 已成功校验固定安装包。' "$WORK/bootstrap.log"
 if find "$WORK/bootstrap-work" -mindepth 1 -maxdepth 1 -name 'neko-bootstrap.*' | grep -q .; then
   printf 'Bootstrap 没有清理临时源码目录。\n' >&2
+  exit 1
+fi
+
+mkdir -p "$WORK/bootstrap-minimal/bin" "$WORK/bootstrap-minimal/work"
+for command_name in bash mktemp mkdir grep rm cp; do
+  ln -s "$(command -v "$command_name")" "$WORK/bootstrap-minimal/bin/$command_name"
+done
+cat > "$WORK/bootstrap-minimal/bin/dnf" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" > "$NEKO_BOOTSTRAP_PM_LOG"
+bin_dir="${BASH_SOURCE[0]%/*}"
+"$NEKO_TEST_REAL_LN" -s "$NEKO_TEST_REAL_TAR" "$bin_dir/tar"
+"$NEKO_TEST_REAL_LN" -s "$NEKO_TEST_REAL_GZIP" "$bin_dir/gzip"
+EOF
+chmod 0755 "$WORK/bootstrap-minimal/bin/dnf"
+real_ln="$(command -v ln)"
+real_tar="$(command -v tar)"
+real_gzip="$(command -v gzip)"
+PATH="$WORK/bootstrap-minimal/bin" \
+  NEKO_TEST_REAL_LN="$real_ln" \
+  NEKO_TEST_REAL_TAR="$real_tar" \
+  NEKO_TEST_REAL_GZIP="$real_gzip" \
+  NEKO_BOOTSTRAP_PM_LOG="$WORK/bootstrap-minimal/package-manager.log" \
+  NEKO_BOOTSTRAP_ARCHIVE="$WORK/bootstrap-source.tar.gz" \
+  NEKO_BOOTSTRAP_WORK_BASE="$WORK/bootstrap-minimal/work" \
+  NEKO_BOOTSTRAP_TEST_MODE=1 \
+  /usr/bin/bash "$ROOT/bootstrap.sh" > "$WORK/bootstrap-minimal/bootstrap.log"
+grep -Fq 'tar gzip' "$WORK/bootstrap-minimal/bootstrap.log"
+grep -Fxq -- '-y install ca-certificates tar gzip' \
+  "$WORK/bootstrap-minimal/package-manager.log"
+if grep -Eq 'coreutils|curl|gawk|glibc-common' \
+  "$WORK/bootstrap-minimal/package-manager.log"; then
+  printf 'Bootstrap 安装了并未缺少的软件包，可能与最小系统替代包冲突。\n' >&2
+  exit 1
+fi
+grep -Fq '[测试] Bootstrap 已成功校验固定安装包。' \
+  "$WORK/bootstrap-minimal/bootstrap.log"
+if find "$WORK/bootstrap-minimal/work" -mindepth 1 -maxdepth 1 -name 'neko-bootstrap.*' | grep -q .; then
+  printf '缺少 tar/gzip 的 Bootstrap 测试没有清理临时源码目录。\n' >&2
   exit 1
 fi
 

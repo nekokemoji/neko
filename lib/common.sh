@@ -255,18 +255,31 @@ run_lego_acme() {
   esac
 }
 
+absolute_dns_name() {
+  local name="${1%.}"
+  printf '%s.\n' "$name"
+}
+
 resolved_addresses() {
-  { getent ahosts "$1" 2>/dev/null || true; } | awk '{print $1}' | sort -u
+  local query_name
+  query_name="$(absolute_dns_name "$1")"
+  { getent ahosts "$query_name" 2>/dev/null || true; } \
+    | awk '{print $1}' \
+    | sort -u
 }
 
 resolved_ipv4_addresses() {
-  { getent ahostsv4 "$1" 2>/dev/null || true; } \
+  local query_name
+  query_name="$(absolute_dns_name "$1")"
+  { getent ahostsv4 "$query_name" 2>/dev/null || true; } \
     | awk '$1 ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/ {print $1}' \
     | sort -u
 }
 
 resolved_ipv6_addresses() {
-  { getent ahostsv6 "$1" 2>/dev/null || true; } \
+  local query_name
+  query_name="$(absolute_dns_name "$1")"
+  { getent ahostsv6 "$query_name" 2>/dev/null || true; } \
     | awk '$1 ~ /:/ && $1 ~ /^[0-9A-Fa-f:]+$/ {print tolower($1)}' \
     | sort -u
 }

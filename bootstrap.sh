@@ -8,7 +8,7 @@ set -Eeuo pipefail
 umask 0077
 
 NEKO_REPOSITORY="nekokemoji/neko"
-NEKO_SOURCE_COMMIT="f2da816f591fd6c983c85df35896ac55bdff0fbc"
+NEKO_SOURCE_COMMIT="7183a1f95791f8fa22174f0eb2a3a19a765c5459"
 NEKO_BOOTSTRAP_WORK_BASE="${NEKO_BOOTSTRAP_WORK_BASE:-/var/tmp}"
 NEKO_BOOTSTRAP_ARCHIVE="${NEKO_BOOTSTRAP_ARCHIVE:-}"
 WORKDIR=""
@@ -16,6 +16,61 @@ WORKDIR=""
 die_bootstrap() {
   printf '[错误] %s\n' "$*" >&2
   exit 1
+}
+
+install_bootstrap_dependencies() {
+  local -a required_commands=(tar gzip mktemp mkdir grep rm cp)
+  local -a missing_commands=()
+  local -a packages=(ca-certificates)
+  local command_name
+
+  if [[ -z "$NEKO_BOOTSTRAP_ARCHIVE" ]]; then
+    required_commands+=(curl)
+  fi
+  for command_name in "${required_commands[@]}"; do
+    command -v "$command_name" >/dev/null 2>&1 \
+      || missing_commands+=("$command_name")
+  done
+  (( ${#missing_commands[@]} > 0 )) || return 0
+
+  printf '[信息] 系统缺少首次安装工具，正在自动补齐：%s\n' \
+    "${missing_commands[*]}"
+  for command_name in "${missing_commands[@]}"; do
+    case "$command_name" in
+      curl|tar|gzip|grep)
+        packages+=("$command_name")
+        ;;
+      mktemp|mkdir|rm|cp)
+        if [[ " ${packages[*]} " != *" coreutils "* ]]; then
+          packages+=(coreutils)
+        fi
+        ;;
+    esac
+  done
+
+  if command -v apt-get >/dev/null 2>&1; then
+    if ! DEBIAN_FRONTEND=noninteractive apt-get update \
+      || ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        "${packages[@]}"; then
+      die_bootstrap "自动安装基础工具失败；请检查系统软件源后重试。"
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    if ! dnf -y install "${packages[@]}"; then
+      die_bootstrap "自动安装基础工具失败；请检查系统软件源后重试。"
+    fi
+  elif command -v microdnf >/dev/null 2>&1; then
+    if ! microdnf -y install "${packages[@]}"; then
+      die_bootstrap "自动安装基础工具失败；请检查系统软件源后重试。"
+    fi
+  else
+    die_bootstrap \
+      "系统缺少基础工具（${missing_commands[*]}），且找不到 apt-get、dnf 或 microdnf。"
+  fi
+
+  for command_name in "${required_commands[@]}"; do
+    command -v "$command_name" >/dev/null 2>&1 \
+      || die_bootstrap "自动安装后仍缺少基础命令：${command_name}"
+  done
 }
 
 cleanup() {
@@ -34,14 +89,7 @@ if (( EUID != 0 )) && [[ "${NEKO_BOOTSTRAP_TEST_MODE:-0}" != 1 ]]; then
   die_bootstrap "请切换到 root 后重新执行；当前系统没有 sudo。"
 fi
 
-for command_name in bash tar gzip mktemp mkdir grep rm cp; do
-  command -v "$command_name" >/dev/null 2>&1 \
-    || die_bootstrap "系统缺少基础命令：${command_name}"
-done
-if [[ -z "$NEKO_BOOTSTRAP_ARCHIVE" ]]; then
-  command -v curl >/dev/null 2>&1 \
-    || die_bootstrap "系统缺少 curl，请先用系统包管理器安装 curl。"
-fi
+install_bootstrap_dependencies
 [[ -d "$NEKO_BOOTSTRAP_WORK_BASE" && -w "$NEKO_BOOTSTRAP_WORK_BASE" ]] \
   || die_bootstrap "临时目录不可写：${NEKO_BOOTSTRAP_WORK_BASE}"
 
@@ -53,7 +101,7 @@ if [[ -n "$NEKO_BOOTSTRAP_ARCHIVE" ]]; then
     || die_bootstrap "测试安装包不可读：${NEKO_BOOTSTRAP_ARCHIVE}"
   cp -- "$NEKO_BOOTSTRAP_ARCHIVE" "$WORKDIR/neko.tar.gz"
 else
-  printf '[信息] 正在从 GitHub 下载固定版本 Neko 1.2.0……\n'
+  printf '[信息] 正在从 GitHub 下载固定版本 Neko 1.2.1……\n'
   curl --fail --location --silent --show-error \
     --retry 4 --connect-timeout 15 --proto '=https' --tlsv1.2 \
     "https://github.com/${NEKO_REPOSITORY}/archive/${NEKO_SOURCE_COMMIT}.tar.gz" \
@@ -73,8 +121,8 @@ for required_file in \
   [[ -s "$WORKDIR/source/$required_file" ]] \
     || die_bootstrap "下载的项目不完整，缺少 ${required_file}。"
 done
-grep -Fq 'NEKO_RELEASE="1.2.0"' "$WORKDIR/source/versions.env" \
-  || die_bootstrap "下载的项目版本不是预期的 Neko 1.2.0。"
+grep -Fq 'NEKO_RELEASE="1.2.1"' "$WORKDIR/source/versions.env" \
+  || die_bootstrap "下载的项目版本不是预期的 Neko 1.2.1。"
 
 if [[ "${NEKO_BOOTSTRAP_TEST_MODE:-0}" == 1 ]]; then
   bash -n "$WORKDIR/source/install.sh" \

@@ -1,6 +1,6 @@
-# Neko 1.2.0 测试范围
+# Neko 1.2.1 测试范围
 
-最近核对日期：2026-07-23（Asia/Tokyo）。
+最近核对日期：2026-07-24（Asia/Tokyo）。
 
 这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
@@ -18,9 +18,10 @@ bash tests/run.sh
 - 所有 Shell 文件通过 `bash -n` 与 ShellCheck；缺少 ShellCheck 或 PyYAML 时测试失败而不是跳过。
 - `detect_platform` 模拟 Debian 12/13、Ubuntu 24.04/26.04、Rocky 9/10、AlmaLinux 9/10 的 amd64/arm64，共 16 个允许组合，并验证不支持版本会被拒绝。
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证。
-- 严格 DNS 正例通过；`v4` 名称带 AAAA、`v6` 名称带 A 等错误配置会失败。
+- 严格 DNS 正例通过；所有域名查询都使用末尾点号避免系统 DNS search 后缀污染；`v4` 名称带 AAAA、`v6` 名称带 A 等错误配置会失败。
 - firewalld 根据 IPv4/IPv6 默认路由网卡寻找实际 zone，而不是盲目使用 default zone。
-- Bootstrap 离线解压固定源码包、核对 1.2.0 标记并清理临时目录。
+- Bootstrap 离线解压固定源码包、核对 1.2.1 标记并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2 和 Mihomo 1.19.29 的版本身份与 CLI 参数。
 - Cloudflare DNS-01 与 HTTP-01 分别传递正确的 lego 参数；DNS-01 只暴露固定的 `_FILE` 凭据变量，清除原始 Token、旧式变量和外部文件变量。
 - Cloudflare Token 内容格式、凭据目录 `0700`、文件 `0600` 与非符号链接约束。
@@ -36,7 +37,7 @@ bash tests/run.sh
 - 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 与同族 direct 出站由配置加载路径和结构化断言校验。
 - 随机端口连续运行 50 轮：Hysteria2 的 128 端口区间与其余五个单端口无冲突。
 - 订阅令牌轮换后旧路径从 Caddy 配置消失。
-- 分别从 schema 1 / Neko 1.0.x 和 schema 2 / Neko 1.1.x 模拟升级到 Neko 1.2.0，确认端口、协议凭据、REALITY 参数和订阅令牌不变，旧订阅文件被替换为 6 个新文件，并安装 Hysteria 双进程监管脚本与单元。
+- 分别从 schema 1 / Neko 1.0.x 和 schema 2 / Neko 1.1.x 模拟升级到 Neko 1.2.1，确认端口、协议凭据、REALITY 参数和订阅令牌不变，旧订阅文件被替换为 6 个新文件，并安装 Hysteria 双进程监管脚本与单元。
 - 模拟升级中 Caddy 重启失败，确认状态、配置、Hysteria systemd 单元恢复，新增监管脚本移除，临时备份清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
@@ -47,7 +48,7 @@ bash tests/run.sh
 `.github/workflows/ci.yml` 运行两个层次：
 
 1. Ubuntu 24.04 runner 下载真实冻结核心并执行完整 `tests/run.sh`。
-2. 8 个发行版镜像分别在 amd64 与 QEMU arm64 用户空间运行全部 Shell 语法解析和真实 `/etc/os-release` 平台检测，共 16 个组合。
+2. 8 个发行版镜像分别在 amd64 与 QEMU arm64 用户空间运行全部 Shell 语法解析和真实 `/etc/os-release` 平台检测，共 16 个组合；amd64 另外从缺少工具的镜像执行一次离线 Bootstrap，真实调用该发行版的包管理器。
 
 矩阵目标：
 

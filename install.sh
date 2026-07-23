@@ -141,6 +141,7 @@ cleanup_failed_install() {
 finish() {
   local rc=$?
   trap - EXIT
+  close_temporary_http_challenge_port
   if (( rc != 0 && ROLLBACK_NEEDED == 1 )); then
     cleanup_failed_install
   fi
@@ -182,8 +183,7 @@ collect_acme_settings() {
         *) die "无效的证书验证方式选择：${choice}" ;;
       esac
     else
-      # Preserve compatibility for existing non-interactive automation.
-      ACME_METHOD="$ACME_METHOD_HTTP"
+      die "非交互安装必须显式提供 --acme-method；不会自动选择依赖公网 TCP 80 的 HTTP-01。"
     fi
   else
     ACME_METHOD="$(normalize_acme_method "$ACME_METHOD_INPUT")" \
@@ -331,6 +331,7 @@ download_release_binaries() {
 }
 
 issue_initial_certificate() {
+  local acme_log="" acme_rc=0
   ROLLBACK_NEEDED=1
   install -d -m 0700 "$NEKO_VAR" "$NEKO_VAR/lego"
   if [[ "$ACME_METHOD" == "$ACME_METHOD_CLOUDFLARE" ]]; then
@@ -339,16 +340,39 @@ issue_initial_certificate() {
     CLOUDFLARE_DNS_TOKEN_INPUT=""
   else
     info "使用 HTTP-01 申请三个域名的 SAN 证书；失败时安装会停止并回滚。"
+    open_temporary_http_challenge_port
+    warn "请确认云安全组也已为 IPv4 与 IPv6 放行 TCP 80；脚本只能管理本机防火墙。"
   fi
 
-  run_lego_acme "$WORKDIR/bin/lego" standalone run \
-    --path "$NEKO_VAR/lego" \
-    --email "$ACME_EMAIL" \
-    --domains "$DOMAIN" \
-    --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
-    --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
-    --accept-tos \
-    --key-type EC256
+  if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
+    acme_log="$WORKDIR/http-01.log"
+    set +e
+    run_lego_acme "$WORKDIR/bin/lego" standalone run \
+      --path "$NEKO_VAR/lego" \
+      --email "$ACME_EMAIL" \
+      --domains "$DOMAIN" \
+      --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
+      --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
+      --accept-tos \
+      --key-type EC256 2>&1 | tee "$acme_log"
+    acme_rc=${PIPESTATUS[0]}
+    set -e
+    close_temporary_http_challenge_port
+    if (( acme_rc != 0 )); then
+      explain_http01_failure "$acme_log"
+      return "$acme_rc"
+    fi
+    rm -f -- "$acme_log"
+  else
+    run_lego_acme "$WORKDIR/bin/lego" standalone run \
+      --path "$NEKO_VAR/lego" \
+      --email "$ACME_EMAIL" \
+      --domains "$DOMAIN" \
+      --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
+      --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
+      --accept-tos \
+      --key-type EC256
+  fi
 
   CERT_FILE="$NEKO_VAR/lego/certificates/${DOMAIN}.crt"
   KEY_FILE="$NEKO_VAR/lego/certificates/${DOMAIN}.key"
@@ -362,6 +386,25 @@ issue_initial_certificate() {
       || die "取得的证书不包含 ${certificate_domain}。"
   done
   ok "三个域名验证与证书申请成功。"
+}
+
+explain_http01_failure() {
+  local log_file="$1"
+
+  if grep -Eqi \
+    'secondary validation.*(network unreachable|no route to host)|(network unreachable|no route to host).*secondary validation' \
+    "$log_file"; then
+    warn "HTTP-01 日志显示外部验证节点无法经网络到达 VPS。若失败的是 IPv6 域名，通常表示云厂商或上游的 IPv6 路由不完整；脚本无法修复公网路由。"
+    warn "建议重新安装并选择 1（Cloudflare DNS-01），或先让 VPS 商家修复 IPv6 入站路由。"
+  elif grep -Eqi \
+    'timeout during connect|connection timed out|connection refused|dial tcp.*timeout' \
+    "$log_file"; then
+    warn "HTTP-01 日志显示 TCP 80 无法从公网连入。请检查云安全组、商家防火墙和自定义 nftables/iptables 规则。"
+    warn "不想维护公网 TCP 80 时，建议重新安装并选择 1（Cloudflare DNS-01）。"
+  else
+    warn "HTTP-01 验证失败。请根据上方 lego 原始错误检查 DNS、TCP 80 和公网 IPv4/IPv6 可达性。"
+    warn "脚本不会自动切换验证方式；可重新安装并选择 1（Cloudflare DNS-01）。"
+  fi
 }
 
 create_service_user_and_dirs() {
@@ -600,7 +643,7 @@ main() {
   # between two installers that passed the initial read-only check.
   assert_clean_target
   install_dependencies
-  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk stat env ip
+  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk stat env ip tee
 
   exec 9>/run/lock/neko-install.lock
   flock -n 9 || die "另一个 Neko 安装进程正在运行。"
