@@ -1,4 +1,4 @@
-# Neko 1.2.1 测试范围
+# Neko 1.2.2 测试范围
 
 最近核对日期：2026-07-24（Asia/Tokyo）。
 
@@ -20,7 +20,8 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证。
 - 严格 DNS 正例通过；所有域名查询都使用末尾点号避免系统 DNS search 后缀污染；`v4` 名称带 AAAA、`v6` 名称带 A 等错误配置会失败。
 - firewalld 根据 IPv4/IPv6 默认路由网卡寻找实际 zone，而不是盲目使用 default zone。
-- Bootstrap 离线解压固定源码包、核对 1.2.1 标记并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.2.2 标记并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2 和 Mihomo 1.19.29 的版本身份与 CLI 参数。
 - Cloudflare DNS-01 与 HTTP-01 分别传递正确的 lego 参数；DNS-01 只暴露固定的 `_FILE` 凭据变量，清除原始 Token、旧式变量和外部文件变量。
@@ -37,7 +38,7 @@ bash tests/run.sh
 - 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 与同族 direct 出站由配置加载路径和结构化断言校验。
 - 随机端口连续运行 50 轮：Hysteria2 的 128 端口区间与其余五个单端口无冲突。
 - 订阅令牌轮换后旧路径从 Caddy 配置消失。
-- 分别从 schema 1 / Neko 1.0.x 和 schema 2 / Neko 1.1.x 模拟升级到 Neko 1.2.1，确认端口、协议凭据、REALITY 参数和订阅令牌不变，旧订阅文件被替换为 6 个新文件，并安装 Hysteria 双进程监管脚本与单元。
+- 分别从 schema 1 / Neko 1.0.x 和 schema 2 / Neko 1.1.x 模拟升级到 Neko 1.2.2，确认端口、协议凭据、REALITY 参数和订阅令牌不变，旧订阅文件被替换为 6 个新文件，并安装 Hysteria 双进程监管脚本与单元。
 - 模拟升级中 Caddy 重启失败，确认状态、配置、Hysteria systemd 单元恢复，新增监管脚本移除，临时备份清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
