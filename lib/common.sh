@@ -309,11 +309,51 @@ is_ipv4_literal() {
 }
 
 is_ipv6_literal() {
-  local parsed
-  [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
-  parsed="$({ getent ahostsv6 "$1" 2>/dev/null || true; } \
-    | awk '$1 ~ /:/ && !found {value=$1; found=1} END {if (found) print value}')"
-  [[ -n "$parsed" ]]
+  local value="$1" left right hextet
+  local -a hextets=()
+  local -i count=0
+
+  # Validate the literal itself.  getent ahostsv6 applies AI_ADDRCONFIG on
+  # several libc implementations and can reject valid IPv6 syntax whenever
+  # the current network namespace has no configured IPv6 address.
+  [[ "$value" == *:* && "$value" =~ ^[0-9A-Fa-f:]+$ ]] || return 1
+  [[ "$value" != *:::* ]] || return 1
+  [[ "$value" != :* || "$value" == ::* ]] || return 1
+  [[ "$value" != *: || "$value" == *:: ]] || return 1
+
+  if [[ "$value" == *::* ]]; then
+    left="${value%%::*}"
+    right="${value#*::}"
+    # Only one compression marker is permitted.
+    [[ "$right" != *::* ]] || return 1
+
+    if [[ -n "$left" ]]; then
+      IFS=':' read -r -a hextets <<< "$left"
+      for hextet in "${hextets[@]}"; do
+        [[ "$hextet" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+      done
+      ((count += ${#hextets[@]}))
+    fi
+
+    hextets=()
+    if [[ -n "$right" ]]; then
+      IFS=':' read -r -a hextets <<< "$right"
+      for hextet in "${hextets[@]}"; do
+        [[ "$hextet" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+      done
+      ((count += ${#hextets[@]}))
+    fi
+
+    # "::" must replace at least one of the eight 16-bit groups.
+    ((count < 8))
+    return
+  fi
+
+  IFS=':' read -r -a hextets <<< "$value"
+  ((${#hextets[@]} == 8)) || return 1
+  for hextet in "${hextets[@]}"; do
+    [[ "$hextet" =~ ^[0-9A-Fa-f]{1,4}$ ]] || return 1
+  done
 }
 
 is_safe_ip_literal() {
