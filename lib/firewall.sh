@@ -53,8 +53,12 @@ firewalld_target_zones() {
   [[ -n "$default_zone" ]] || die "无法确定 firewalld 默认区域。"
 
   interfaces="$({
-    ip -4 route show default 2>/dev/null || true
-    ip -6 route show default 2>/dev/null || true
+    if network_mode_has_ipv4; then
+      ip -4 route show default 2>/dev/null || true
+    fi
+    if network_mode_has_ipv6; then
+      ip -6 route show default 2>/dev/null || true
+    fi
   } | awk '{for (i = 1; i <= NF; i++) if ($i == "dev" && (i + 1) <= NF) print $(i + 1)}' \
     | sort -u)"
 
@@ -100,7 +104,8 @@ open_temporary_http_challenge_port() {
   fi
 
   if ufw_is_active; then
-    if [[ -r /etc/default/ufw ]] \
+    if network_mode_has_ipv6 \
+      && [[ -r /etc/default/ufw ]] \
       && grep -Eq '^[[:space:]]*IPV6[[:space:]]*=[[:space:]]*no[[:space:]]*$' /etc/default/ufw; then
       die "UFW 已禁用 IPv6 规则管理；HTTP-01 无法安全放行严格 IPv6 域名。请先设置 IPV6=yes 并重载 UFW。"
     fi
@@ -209,12 +214,13 @@ EOF
     firewall-cmd --zone="$zone" --query-service=neko-proxy >/dev/null \
       || die "firewalld 区域 ${zone} 的 Neko 规则未生效。"
   done
-  ok "已在默认 IPv4/IPv6 路由对应的 firewalld 区域添加 Neko Proxy 专用规则：${zones[*]}。"
+  ok "已在 $(network_mode_label) 默认路由对应的 firewalld 区域添加 Neko Proxy 专用规则：${zones[*]}。"
 }
 
 configure_ufw() {
   local ufw_status
-  if [[ -r /etc/default/ufw ]] \
+  if network_mode_has_ipv6 \
+    && [[ -r /etc/default/ufw ]] \
     && grep -Eq '^[[:space:]]*IPV6[[:space:]]*=[[:space:]]*no[[:space:]]*$' /etc/default/ufw; then
     die "UFW 已禁用 IPv6 规则管理；严格 IPv6 服务无法安全放行。请先设置 IPV6=yes 并重载 UFW。"
   fi

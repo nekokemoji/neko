@@ -8,6 +8,7 @@ NEKO_LIBEXEC="${NEKO_LIBEXEC:-/usr/local/libexec/neko}"
 NEKO_SYSTEMD="${NEKO_SYSTEMD:-/etc/systemd/system}"
 NEKO_STATE="${NEKO_STATE:-${NEKO_ETC}/state.json}"
 NEKO_USER="${NEKO_USER:-neko-proxy}"
+NEKO_PANEL_TMP_DIR="${NEKO_PANEL_TMP_DIR:-/var/tmp}"
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
 source "${NEKO_LIBEXEC}/lib/common.sh"
@@ -15,6 +16,45 @@ source "${NEKO_LIBEXEC}/lib/render.sh"
 source "${NEKO_LIBEXEC}/lib/firewall.sh"
 
 SYSCTL_FILE="/etc/sysctl.d/99-neko-bbr.conf"
+FAMILY_BACKUP_DIR=""
+FAMILY_TRANSACTION_ACTIVE=0
+declare -a FAMILY_FIREWALL_ADDED_ZONES=()
+
+family_restore_paths_are_safe() {
+  local target
+  for target in "$NEKO_ETC" "$NEKO_VAR/lego"; do
+    [[ "$target" == /* ]] || return 1
+    case "$target" in
+      ""|/|/etc|/var|/var/lib|/usr|/usr/local|/usr/local/libexec)
+        return 1
+        ;;
+      *"/../"*|*"/.."|*"/./"*|*"//"*)
+        return 1
+        ;;
+    esac
+  done
+}
+
+assert_family_source_trees() {
+  family_restore_paths_are_safe \
+    || die "地址族补装的恢复路径不安全；未修改现有安装。"
+  [[ -d "$NEKO_ETC" && ! -L "$NEKO_ETC" ]] \
+    || die "Neko 配置目录缺失或是符号链接；未开始补装。"
+  [[ -d "$NEKO_VAR/lego" && ! -L "$NEKO_VAR/lego" ]] \
+    || die "Neko 证书目录缺失或是符号链接；未开始补装。"
+}
+
+cleanup_family_backup() {
+  local base="${NEKO_PANEL_TMP_DIR%/}"
+  [[ -n "$FAMILY_BACKUP_DIR" ]] || return 0
+  if [[ -n "$base" \
+    && "$FAMILY_BACKUP_DIR" == "$base"/neko-family-backup.* ]] \
+    && rm -rf -- "$FAMILY_BACKUP_DIR"; then
+    FAMILY_BACKUP_DIR=""
+    return 0
+  fi
+  return 1
+}
 
 acquire_maintenance_lock() {
   exec {MAINTENANCE_LOCK_FD}>/run/lock/neko-maintenance.lock
@@ -28,13 +68,18 @@ release_maintenance_lock() {
 }
 
 validate_runtime_configs() {
-  /usr/local/libexec/neko/sing-box check -c "${NEKO_CONFIG_DIR}/sing-box.json" >/dev/null
-  /usr/local/libexec/neko/sing-box check \
-    -c "${NEKO_SUB_DIR}/sing-box-v4.json" >/dev/null
-  /usr/local/libexec/neko/sing-box check \
-    -c "${NEKO_SUB_DIR}/sing-box-v6.json" >/dev/null
-  /usr/local/libexec/neko/xray run -test -c "${NEKO_CONFIG_DIR}/xray.json" >/dev/null
-  /usr/local/libexec/neko/caddy validate \
+  load_state
+  "$NEKO_LIBEXEC/sing-box" check -c "${NEKO_CONFIG_DIR}/sing-box.json" >/dev/null
+  if network_mode_has_ipv4; then
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "${NEKO_SUB_DIR}/sing-box-v4.json" >/dev/null
+  fi
+  if network_mode_has_ipv6; then
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "${NEKO_SUB_DIR}/sing-box-v6.json" >/dev/null
+  fi
+  "$NEKO_LIBEXEC/xray" run -test -c "${NEKO_CONFIG_DIR}/xray.json" >/dev/null
+  "$NEKO_LIBEXEC/caddy" validate \
     --config "${NEKO_CONFIG_DIR}/Caddyfile" --adapter caddyfile >/dev/null
 }
 
@@ -101,50 +146,117 @@ restore_bbr() {
 }
 
 rotate_subscription() {
-  local answer new_token backup
-  printf '此操作只让旧下载 URL 失效，不会撤销已经导入客户端的节点凭据。\n'
-  read -r -p "继续重置八个订阅 URL？[y/N] " answer
+  local answer choice backup new_ipv4_token="" new_ipv6_token=""
+  local rotate_ipv4=0 rotate_ipv6=0
+  load_state
+  printf '此操作只让所选地址族的旧下载 URL 失效，不会撤销已经导入客户端的节点凭据。\n\n'
+  printf '1. 只重置 IPv4 订阅 URL\n'
+  printf '2. 只重置 IPv6 订阅 URL\n'
+  printf '3. 同时重置 IPv4 与 IPv6 订阅 URL\n'
+  printf '0. 返回\n'
+  read -r -p "请选择 [0-3]：" choice
+  case "$choice" in
+    0|"") return 0 ;;
+    1)
+      if ! network_mode_has_ipv4; then
+        info "IPv4 尚未安装，没有 IPv4 订阅 URL 可重置。"
+        return 0
+      fi
+      rotate_ipv4=1
+      ;;
+    2)
+      if ! network_mode_has_ipv6; then
+        info "IPv6 尚未安装，没有 IPv6 订阅 URL 可重置。"
+        return 0
+      fi
+      rotate_ipv6=1
+      ;;
+    3)
+      if [[ "$NETWORK_MODE" == "$NETWORK_MODE_DUAL" ]]; then
+        rotate_ipv4=1
+        rotate_ipv6=1
+      elif network_mode_has_ipv4; then
+        warn "IPv6 尚未安装，没有 IPv6 订阅 URL。"
+        read -r -p "是否只重置已安装的 IPv4 订阅 URL？[y/N] " answer
+        [[ "$answer" =~ ^[Yy]$ ]] || return 0
+        rotate_ipv4=1
+      else
+        warn "IPv4 尚未安装，没有 IPv4 订阅 URL。"
+        read -r -p "是否只重置已安装的 IPv6 订阅 URL？[y/N] " answer
+        [[ "$answer" =~ ^[Yy]$ ]] || return 0
+        rotate_ipv6=1
+      fi
+      ;;
+    *)
+      warn "请输入 0 到 3。"
+      return 0
+      ;;
+  esac
+
+  read -r -p "确认重置所选订阅 URL？[y/N] " answer
   [[ "$answer" =~ ^[Yy]$ ]] || return 0
 
   acquire_maintenance_lock
-  new_token="$(random_urlsafe 24)"
+  (( rotate_ipv4 == 0 )) || new_ipv4_token="$(random_urlsafe 24)"
+  (( rotate_ipv6 == 0 )) || new_ipv6_token="$(random_urlsafe 24)"
   backup="$(mktemp "${NEKO_STATE}.backup.XXXXXX")"
-  cp -a -- "$NEKO_STATE" "$backup"
-
-  if atomic_json_update '.subscription.token = $token' --arg token "$new_token" \
-    && render_all \
-    && validate_runtime_configs \
-    && systemctl restart neko-caddy.service; then
+  if ! cp -a -- "$NEKO_STATE" "$backup"; then
     rm -f -- "$backup"
     release_maintenance_lock
-    ok "八个订阅 URL 已重置；旧 URL 不可再访问。"
+    die "无法备份安装状态；没有重置任何订阅 URL。"
+  fi
+
+  if atomic_json_update \
+      'if $rotate_ipv4 then .subscription.ipv4_token = $ipv4_token else . end
+       | if $rotate_ipv6 then .subscription.ipv6_token = $ipv6_token else . end' \
+      --argjson rotate_ipv4 "$([[ $rotate_ipv4 == 1 ]] && printf true || printf false)" \
+      --argjson rotate_ipv6 "$([[ $rotate_ipv6 == 1 ]] && printf true || printf false)" \
+      --arg ipv4_token "$new_ipv4_token" \
+      --arg ipv6_token "$new_ipv6_token" \
+    && render_all \
+    && validate_runtime_configs \
+    && systemctl restart neko-caddy.service \
+    && systemctl is-active --quiet neko-caddy.service; then
+    rm -f -- "$backup"
+    release_maintenance_lock
+    ok "所选订阅 URL 已重置；对应旧 URL 不可再访问。"
     show_subscription_links
   else
     cp -a -- "$backup" "$NEKO_STATE"
     rm -f -- "$backup"
     render_all || true
     systemctl restart neko-caddy.service >/dev/null 2>&1 || true
+    release_maintenance_lock
     die "订阅重置失败，已恢复旧链接。"
   fi
 }
 
 refresh_subscription_endpoints() {
   local answer backup old_ipv4_address old_ipv6_address update_applied=0
-  read -r -p "重新解析严格 IPv4/IPv6 地址并更新八份订阅？[y/N] " answer
+  local changed=0
+  load_state
+  read -r -p "重新解析当前 $(network_mode_label) 地址并刷新 $(network_mode_link_count "$NETWORK_MODE") 份订阅？[y/N] " answer
   [[ "$answer" =~ ^[Yy]$ ]] || return 0
 
   acquire_maintenance_lock
   load_state
   old_ipv4_address="$SUBSCRIPTION_IPV4_ADDRESS"
   old_ipv6_address="$SUBSCRIPTION_IPV6_ADDRESS"
-  assert_dual_stack_kernel
-  check_strict_dual_stack_dns "$DOMAIN"
-  assert_strict_addresses_local
+  assert_network_mode_kernel "$NETWORK_MODE"
+  check_strict_stack_dns "$DOMAIN" "$NETWORK_MODE"
+  assert_strict_addresses_local "$NETWORK_MODE"
 
-  if [[ "$SUBSCRIPTION_IPV4_ADDRESS" == "$old_ipv4_address" \
-    && "$SUBSCRIPTION_IPV6_ADDRESS" == "$old_ipv6_address" ]]; then
+  if network_mode_has_ipv4 \
+    && [[ "$SUBSCRIPTION_IPV4_ADDRESS" != "$old_ipv4_address" ]]; then
+    changed=1
+  fi
+  if network_mode_has_ipv6 \
+    && [[ "$SUBSCRIPTION_IPV6_ADDRESS" != "$old_ipv6_address" ]]; then
+    changed=1
+  fi
+  if (( changed == 0 )); then
     release_maintenance_lock
-    info "严格 IPv4/IPv6 端点没有变化；未修改配置，也没有重启服务。"
+    info "当前 $(network_mode_label) 端点没有变化；未修改配置，也没有重启服务。"
     return 0
   fi
 
@@ -156,10 +268,16 @@ refresh_subscription_endpoints() {
   fi
 
   if atomic_json_update \
-      '.subscription.ipv4_domain = $v4_domain
-       | .subscription.ipv6_domain = $v6_domain
-       | .subscription.ipv4_address = $v4_address
-       | .subscription.ipv6_address = $v6_address' \
+      'if $has_ipv4 then
+         .subscription.ipv4_domain = $v4_domain
+         | .subscription.ipv4_address = $v4_address
+       else . end
+       | if $has_ipv6 then
+         .subscription.ipv6_domain = $v6_domain
+         | .subscription.ipv6_address = $v6_address
+       else . end' \
+      --argjson has_ipv4 "$(network_mode_has_ipv4 && printf true || printf false)" \
+      --argjson has_ipv6 "$(network_mode_has_ipv6 && printf true || printf false)" \
       --arg v4_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
       --arg v6_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
       --arg v4_address "$SUBSCRIPTION_IPV4_ADDRESS" \
@@ -173,7 +291,7 @@ refresh_subscription_endpoints() {
     && restart_runtime_services; then
     rm -f -- "$backup"
     release_maintenance_lock
-    ok "严格 IPv4/IPv6 端点与八份订阅已刷新。"
+    ok "当前 $(network_mode_label) 端点与 $(network_mode_link_count "$NETWORK_MODE") 份订阅已刷新。"
     show_subscription_links
     return 0
   fi
@@ -196,6 +314,322 @@ refresh_subscription_endpoints() {
 
   release_maintenance_lock
   die "端点刷新失败，且自动恢复未完全成功；状态备份保留在 ${backup}。"
+}
+
+set_runtime_certificate_permissions() {
+  chown -R root:root "$NEKO_VAR/lego"
+  find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
+  find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
+  chown "root:${NEKO_USER}" "$NEKO_VAR/lego"
+  chmod 0750 "$NEKO_VAR/lego"
+  chown -R "root:${NEKO_USER}" "$NEKO_VAR/lego/certificates"
+  find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} +
+  find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
+}
+
+preflight_family_firewall_add() {
+  local target_mode="$1" manager
+  manager="$(jq -r '.firewall.manager // "none"' "$NEKO_STATE")"
+  case "$manager" in
+    firewalld)
+      firewalld_is_active \
+        || die "原安装由 firewalld 管理，但 firewalld 当前未运行；未开始补装。"
+      [[ -s "$FIREWALLD_SERVICE_FILE" ]] \
+        || die "Neko 的 firewalld 服务文件缺失；未开始补装。"
+      ;;
+    ufw)
+      if network_mode_has_ipv6 "$target_mode" \
+        && [[ -r /etc/default/ufw ]] \
+        && grep -Eq \
+          '^[[:space:]]*IPV6[[:space:]]*=[[:space:]]*no[[:space:]]*$' \
+          /etc/default/ufw; then
+        die "UFW 已禁用 IPv6 规则管理；未开始补装 IPv6。请先设置 IPV6=yes 并重载 UFW。"
+      fi
+      ;;
+    none) ;;
+    *) die "state.json 中记录了未知防火墙管理器：${manager}" ;;
+  esac
+}
+
+sync_firewall_for_family_add() {
+  local manager zone old_zone
+  local -a old_zones=() desired_zones=()
+  manager="$(jq -r '.firewall.manager // "none"' "$NEKO_STATE")"
+  case "$manager" in
+    firewalld)
+      mapfile -t old_zones < <(
+        jq -r '.firewall.zones[]? // empty' "$NEKO_STATE"
+      )
+      if (( ${#old_zones[@]} == 0 )); then
+        old_zone="$(jq -r '.firewall.zone // empty' "$NEKO_STATE")"
+        [[ -z "$old_zone" ]] || old_zones=("$old_zone")
+      fi
+      mapfile -t desired_zones < <(firewalld_target_zones)
+      (( ${#desired_zones[@]} > 0 )) \
+        || die "无法确定补装地址族使用的 firewalld 区域。"
+      for zone in "${desired_zones[@]}"; do
+        if printf '%s\n' "${old_zones[@]}" | grep -Fxq -- "$zone"; then
+          continue
+        fi
+        if firewall-cmd --permanent --zone="$zone" \
+          --query-service=neko-proxy >/dev/null 2>&1; then
+          # The rule already existed outside the state snapshot.  Record the
+          # zone in state, but never claim ownership or remove it on rollback.
+          continue
+        fi
+        firewall-cmd --permanent --zone="$zone" --add-service=neko-proxy \
+          >/dev/null \
+          || die "无法在 firewalld 区域 ${zone} 放行 Neko 服务。"
+        FAMILY_FIREWALL_ADDED_ZONES+=("$zone")
+      done
+      firewall-cmd --reload >/dev/null \
+        || die "补装地址族后 firewalld 重载失败。"
+      for zone in "${desired_zones[@]}"; do
+        firewall-cmd --zone="$zone" --query-service=neko-proxy >/dev/null \
+          || die "firewalld 区域 ${zone} 的 Neko 规则未生效。"
+      done
+      set_firewall_manager firewalld "${desired_zones[@]}"
+      ;;
+    ufw)
+      # The existing NekoProxy application rule already covers both address
+      # families when UFW has IPv6 support enabled.
+      ;;
+    none) ;;
+  esac
+}
+
+rollback_family_transaction() {
+  local rollback_ok=1 zone service
+  set +e
+  trap - EXIT INT TERM
+  warn "地址族补装未完成，正在恢复原来的安装状态……"
+
+  if family_restore_paths_are_safe; then
+    rm -rf -- "$NEKO_ETC"
+    cp -a -- "$FAMILY_BACKUP_DIR/etc" "$NEKO_ETC" || rollback_ok=0
+    rm -rf -- "$NEKO_VAR/lego"
+    cp -a -- "$FAMILY_BACKUP_DIR/lego" "$NEKO_VAR/lego" || rollback_ok=0
+  else
+    rollback_ok=0
+  fi
+
+  if (( ${#FAMILY_FIREWALL_ADDED_ZONES[@]} > 0 )) \
+    && command -v firewall-cmd >/dev/null 2>&1; then
+    for zone in "${FAMILY_FIREWALL_ADDED_ZONES[@]}"; do
+      firewall-cmd --permanent --zone="$zone" --remove-service=neko-proxy \
+        >/dev/null 2>&1 || rollback_ok=0
+    done
+    firewall-cmd --reload >/dev/null 2>&1 || rollback_ok=0
+  fi
+
+  systemctl restart \
+    neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service \
+    >/dev/null 2>&1 || rollback_ok=0
+  sleep 1
+  for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
+    systemctl is-active --quiet "${service}.service" || rollback_ok=0
+  done
+
+  FAMILY_TRANSACTION_ACTIVE=0
+  release_maintenance_lock
+  if (( rollback_ok == 1 )); then
+    if cleanup_family_backup; then
+      warn "已恢复补装前的地址族、证书、配置和服务；原订阅仍可使用。"
+    else
+      rollback_ok=0
+      warn "安装内容已恢复，但临时备份无法清理：${FAMILY_BACKUP_DIR}"
+    fi
+  else
+    warn "自动恢复未完全成功；备份保留在 ${FAMILY_BACKUP_DIR}，请不要再次操作面板。"
+  fi
+  return "$((1 - rollback_ok))"
+}
+
+finish_family_transaction() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if (( FAMILY_TRANSACTION_ACTIVE == 1 )); then
+    rollback_family_transaction || true
+  fi
+  exit "$rc"
+}
+
+add_missing_address_family() {
+  local requested="$1" answer old_mode target_mode
+  local new_ipv4_token="" new_ipv6_token="" certificate_domain
+  local service
+  local -a domain_args=()
+
+  load_state
+  old_mode="$NETWORK_MODE"
+  case "$requested" in
+    ipv4)
+      if network_mode_has_ipv4; then
+        info "IPv4 已经安装，订阅链接已经存在；没有修改任何内容。"
+        show_subscription_links
+        return 0
+      fi
+      ;;
+    ipv6)
+      if network_mode_has_ipv6; then
+        info "IPv6 已经安装，订阅链接已经存在；没有修改任何内容。"
+        show_subscription_links
+        return 0
+      fi
+      ;;
+    both)
+      if [[ "$NETWORK_MODE" == "$NETWORK_MODE_DUAL" ]]; then
+        info "IPv4 与 IPv6 都已经安装；没有修改任何内容。"
+        show_subscription_links
+        return 0
+      fi
+      ;;
+    *) die "未知的地址族补装请求：${requested}" ;;
+  esac
+
+  target_mode="$NETWORK_MODE_DUAL"
+  printf '\n当前模式：%s\n' "$(network_mode_label "$old_mode")"
+  printf '补装后模式：%s\n' "$(network_mode_label "$target_mode")"
+  warn "请先为基础域名补齐缺少的 A/AAAA，并为缺少的 v4/v6 专用域名添加唯一的直连记录。"
+  if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
+    warn "当前证书使用 HTTP-01；新增地址族还必须能从公网访问本机 TCP 80。"
+  fi
+  read -r -p "DNS 已准备好，继续执行可回滚补装？[y/N] " answer
+  [[ "$answer" =~ ^[Yy]$ ]] || return 0
+
+  acquire_maintenance_lock
+  load_state
+  [[ "$NETWORK_MODE" == "$old_mode" ]] \
+    || die "安装状态在操作期间发生变化，请重新打开面板。"
+
+  NETWORK_MODE="$target_mode"
+  assert_network_mode_kernel "$NETWORK_MODE"
+  check_strict_stack_dns "$DOMAIN" "$NETWORK_MODE"
+  assert_strict_addresses_local "$NETWORK_MODE"
+  preflight_family_firewall_add "$NETWORK_MODE"
+  [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]] \
+    || die "现有证书文件缺失；未开始补装。"
+  if [[ "$ACME_METHOD" == "$ACME_METHOD_CLOUDFLARE" ]]; then
+    assert_cloudflare_dns_token_file
+  fi
+  assert_family_source_trees
+
+  [[ -d "$NEKO_PANEL_TMP_DIR" && -w "$NEKO_PANEL_TMP_DIR" ]] \
+    || die "地址族补装临时目录不可写：${NEKO_PANEL_TMP_DIR}"
+  FAMILY_BACKUP_DIR="$(
+    mktemp -d "${NEKO_PANEL_TMP_DIR%/}/neko-family-backup.XXXXXX"
+  )"
+  if ! cp -a -- "$NEKO_ETC" "$FAMILY_BACKUP_DIR/etc" \
+    || ! cp -a -- "$NEKO_VAR/lego" "$FAMILY_BACKUP_DIR/lego"; then
+    cleanup_family_backup || true
+    release_maintenance_lock
+    die "无法完整备份当前配置与证书；未开始补装。"
+  fi
+  FAMILY_FIREWALL_ADDED_ZONES=()
+  FAMILY_TRANSACTION_ACTIVE=1
+  trap finish_family_transaction EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  if network_mode_has_ipv4 "$old_mode"; then
+    new_ipv4_token="$(jq -r '.subscription.ipv4_token' "$NEKO_STATE")"
+  else
+    new_ipv4_token="$(random_urlsafe 24)"
+  fi
+  if network_mode_has_ipv6 "$old_mode"; then
+    new_ipv6_token="$(jq -r '.subscription.ipv6_token' "$NEKO_STATE")"
+  else
+    new_ipv6_token="$(random_urlsafe 24)"
+  fi
+
+  atomic_json_update \
+    '.network.mode = "dual"
+     | .subscription.ipv4_token = $ipv4_token
+     | .subscription.ipv6_token = $ipv6_token
+     | .subscription.ipv4_domain = $ipv4_domain
+     | .subscription.ipv6_domain = $ipv6_domain
+     | .subscription.ipv4_address = $ipv4_address
+     | .subscription.ipv6_address = $ipv6_address' \
+    --arg ipv4_token "$new_ipv4_token" \
+    --arg ipv6_token "$new_ipv6_token" \
+    --arg ipv4_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
+    --arg ipv6_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
+    --arg ipv4_address "$SUBSCRIPTION_IPV4_ADDRESS" \
+    --arg ipv6_address "$SUBSCRIPTION_IPV6_ADDRESS"
+
+  load_state
+  render_all
+  validate_runtime_configs
+  systemctl restart neko-caddy.service
+  systemctl is-active --quiet neko-caddy.service \
+    || die "Caddy 未能为新增域名启动。"
+
+  if ! certificate_has_active_domains "$CERT_FILE"; then
+    domain_args=()
+    while IFS= read -r certificate_domain; do
+      domain_args+=(--domains "$certificate_domain")
+    done < <(active_certificate_domains)
+    info "正在把证书安全扩展到新增地址族域名……"
+    run_lego_acme "$NEKO_LIBEXEC/lego" webroot run \
+      --path "$NEKO_VAR/lego" \
+      --email "$ACME_EMAIL" \
+      "${domain_args[@]}" \
+      --accept-tos \
+      --key-type EC256 \
+      --force-cert-domains \
+      --renew-force \
+      --no-random-sleep
+  fi
+  certificate_has_active_domains "$CERT_FILE" \
+    || die "扩展后的证书没有覆盖全部已安装域名。"
+  openssl x509 -in "$CERT_FILE" -noout -checkend 604800 >/dev/null \
+    || die "扩展后的证书有效期不足 7 天。"
+  set_runtime_certificate_permissions
+
+  sync_firewall_for_family_add
+  render_all
+  validate_runtime_configs
+  restart_runtime_services || die "新增地址族后服务未保持运行。"
+  for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
+    systemctl is-active --quiet "${service}.service" \
+      || die "${service} 在补装后未保持运行。"
+  done
+
+  FAMILY_TRANSACTION_ACTIVE=0
+  trap - EXIT INT TERM
+  cleanup_family_backup \
+    || warn "补装已成功，但临时备份无法清理：${FAMILY_BACKUP_DIR}"
+  release_maintenance_lock
+  ok "缺少的地址族已经补装完成；当前为 IPv4 + IPv6 双栈。"
+  show_subscription_links
+}
+
+manage_address_families() {
+  local choice
+  load_state
+  printf '当前安装状态：\n'
+  if network_mode_has_ipv4; then
+    printf '  IPv4：已安装\n'
+  else
+    printf '  IPv4：未安装\n'
+  fi
+  if network_mode_has_ipv6; then
+    printf '  IPv6：已安装\n'
+  else
+    printf '  IPv6：未安装\n'
+  fi
+  printf '\n1. 添加 IPv4\n'
+  printf '2. 添加 IPv6\n'
+  printf '3. 添加 IPv4 与 IPv6\n'
+  printf '0. 返回\n'
+  read -r -p "请选择 [0-3]：" choice
+  case "$choice" in
+    0|"") return 0 ;;
+    1) add_missing_address_family ipv4 ;;
+    2) add_missing_address_family ipv6 ;;
+    3) add_missing_address_family both ;;
+    *) warn "请输入 0 到 3。" ;;
+  esac
 }
 
 uninstall_neko() {
@@ -248,15 +682,18 @@ uninstall_neko() {
 }
 
 draw_menu() {
+  load_state
   clear 2>/dev/null || true
   printf 'Neko 终端控制面板\n'
   printf '=================\n'
+  printf '当前网络：%s\n\n' "$(network_mode_label)"
   printf '0. 退出\n'
-  printf '1. 查看八个严格订阅链接\n'
+  printf '1. 查看当前严格订阅链接\n'
   printf '2. 开启 BBRv1\n'
-  printf '3. 重置订阅 URL（不会撤销已导入节点）\n'
-  printf '4. 刷新严格 IPv4/IPv6 端点\n'
-  printf '5. 卸载全部协议\n\n'
+  printf '3. 按 IPv4/IPv6 重置订阅 URL\n'
+  printf '4. 刷新已安装地址族端点\n'
+  printf '5. IPv4/IPv6 安装管理\n'
+  printf '6. 卸载全部协议\n\n'
 }
 
 main() {
@@ -269,15 +706,16 @@ main() {
   [[ -r "$NEKO_STATE" ]] || die "Neko 尚未完整安装。"
   while true; do
     draw_menu
-    read -r -p "请选择 [0-5]：" choice
+    read -r -p "请选择 [0-6]：" choice
     case "$choice" in
       0) exit 0 ;;
       1) show_subscription_links ;;
       2) enable_bbr ;;
       3) rotate_subscription ;;
       4) refresh_subscription_endpoints ;;
-      5) uninstall_neko ;;
-      *) warn "请输入 0 到 5。" ;;
+      5) manage_address_families ;;
+      6) uninstall_neko ;;
+      *) warn "请输入 0 到 6。" ;;
     esac
     printf '\n'
     read -r -p "按 Enter 返回菜单……" _

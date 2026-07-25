@@ -20,7 +20,7 @@ done
 
 source "$ROOT/versions.env"
 
-printf '[1/8] Bash 语法、ShellCheck 与 Python YAML……\n'
+printf '[1/9] Bash 语法、ShellCheck 与 Python YAML……\n'
 mapfile -t shell_files <<< "$(find "$ROOT" -type f -name '*.sh' -print | sort)"
 bash -n "${shell_files[@]}"
 command -v shellcheck >/dev/null 2>&1 \
@@ -30,13 +30,18 @@ python3 -c 'import yaml' >/dev/null 2>&1 \
 # Dynamic library sourcing and cross-file globals are intentional.
 shellcheck -x -e SC1090,SC1091,SC2016,SC2034 "${shell_files[@]}"
 
-printf '[2/8] 发行版、架构、DNS 与防火墙区域逻辑……\n'
+printf '[2/9] 发行版、架构、DNS 与防火墙区域逻辑……\n'
 bash "$ROOT/tests/platform-matrix.sh"
 bash -c '
   set -Eeuo pipefail
   source "$1"
   calls=0
-  apt-get() { ((calls += 1)); }
+  apt-get() {
+    ((calls += 1))
+    if [[ "$1" == install ]]; then
+      [[ " $* " == *" bind9-dnsutils "* ]]
+    fi
+  }
   OS_FAMILY=debian install_dependencies >/dev/null
   [[ "$calls" == 2 ]]
 ' _ "$ROOT/lib/common.sh"
@@ -44,7 +49,11 @@ bash -c '
   set -Eeuo pipefail
   source "$1"
   calls=0
-  microdnf() { ((calls += 1)); [[ "$1" == "-y" && "$2" == "install" ]]; }
+  microdnf() {
+    ((calls += 1))
+    [[ "$1" == "-y" && "$2" == "install" ]]
+    [[ " $* " == *" bind-utils "* ]]
+  }
   OS_FAMILY=rhel install_dependencies >/dev/null
   [[ "$calls" == 1 ]]
 ' _ "$ROOT/lib/common.sh"
@@ -185,34 +194,35 @@ bash -c '
 
 DNS_TEST_WORK="$(mktemp -d /tmp/neko-dns-test.XXXXXX)"
 mkdir -p "$DNS_TEST_WORK/bin"
-cat > "$DNS_TEST_WORK/bin/getent" <<'EOF'
+cat > "$DNS_TEST_WORK/bin/dig" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-database="$1"
-name="$2"
-printf '%s %s\n' "$database" "$name" >> "$NEKO_DNS_QUERY_LOG"
-case "${database}:${name}" in
-  ahostsv4:example.com.|ahostsv4:v4.example.com.)
-    printf '192.0.2.44 STREAM\n'
+name="${@: -2:1}"
+record_type="${@: -1}"
+printf '%s %s\n' "$record_type" "$name" >> "$NEKO_DNS_QUERY_LOG"
+printf ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1\n'
+case "${record_type}:${name}" in
+  A:example.com.|A:v4.example.com.)
+    printf '%s 60 IN A 192.0.2.44\n' "$name"
     ;;
-  ahostsv6:example.com.|ahostsv6:v6.example.com.)
-    printf '2001:db8::44 STREAM\n'
+  AAAA:example.com.|AAAA:v6.example.com.)
+    printf '%s 60 IN AAAA 2001:db8::44\n' "$name"
     ;;
   *)
     if [[ "$name" != *. ]]; then
-      printf '13.248.169.48 STREAM\n'
+      printf '%s 60 IN A 13.248.169.48\n' "$name"
     fi
     ;;
 esac
 EOF
-chmod 0755 "$DNS_TEST_WORK/bin/getent"
+chmod 0755 "$DNS_TEST_WORK/bin/dig"
 if ! NEKO_DNS_QUERY_LOG="$DNS_TEST_WORK/queries" \
   PATH="$DNS_TEST_WORK/bin:$PATH" LOCALDOMAIN=com bash -c '
     set -Eeuo pipefail
     source "$1"
     check_strict_dual_stack_dns example.com >/dev/null 2>&1
-    while read -r database query_name; do
-      [[ -n "$database" && "$query_name" == *. ]]
+    while read -r record_type query_name; do
+      [[ -n "$record_type" && "$query_name" == *. ]]
     done < "$NEKO_DNS_QUERY_LOG"
   ' _ "$ROOT/lib/common.sh"; then
   rm -rf -- "$DNS_TEST_WORK"
@@ -290,7 +300,7 @@ if ! NEKO_UFW_CALLS="$FIREWALL_TEST_WORK/ufw-calls" \
 fi
 rm -rf -- "$FIREWALL_TEST_WORK"
 
-printf '[3/8] 冻结版本身份与 lego v5 CLI……\n'
+printf '[3/9] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$XRAY" version)" == *"$XRAY_VERSION"* ]]
 [[ "$("$SING_BOX" version)" == *"$SING_BOX_VERSION"* ]]
 [[ "$("$HYSTERIA" version 2>&1)" == *"v${HYSTERIA_VERSION}"* ]]
@@ -307,7 +317,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.2.4"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.3.0"' "$ROOT/versions.env"
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
 grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
 grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
@@ -472,8 +482,8 @@ NEKO_VAR="$ACME_WORK/var" NEKO_TEST_MODE=1 \
   ' _ "$ROOT/lib/common.sh"
 rm -rf -- "$ACME_WORK"
 
-printf '[4/8] 渲染服务端配置与客户端订阅……\n'
-WORK="$(mktemp -d "$ROOT/tests/run.XXXXXX")"
+printf '[4/9] 渲染服务端配置与客户端订阅……\n'
+WORK="$(mktemp -d /tmp/neko-tests.XXXXXX)"
 trap 'rm -rf -- "$WORK"' EXIT
 mkdir -p "$WORK/etc" "$WORK/var/lego/certificates" "$WORK/var/acme"
 cp "$ROOT/tests/fixtures/state.json" "$WORK/etc/state.json"
@@ -483,8 +493,15 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj /CN=example.com \
   -out "$WORK/var/lego/certificates/example.com.crt" >/dev/null 2>&1
 
 root_dir_name="${ROOT##*/}"
-tar --exclude="${root_dir_name}/tests/run.*" \
-  -czf "$WORK/bootstrap-source.tar.gz" -C "$ROOT/.." "$root_dir_name"
+(
+  cd "$ROOT"
+  find . \
+    -path './.git' -prune -o \
+    -path './tests/.tools' -prune -o \
+    \( -type f -o -type l \) -print0
+) | tar --null --no-recursion \
+  --transform="s#^\\./#${root_dir_name}/#" \
+  -czf "$WORK/bootstrap-source.tar.gz" -C "$ROOT" --files-from=-
 mkdir -p "$WORK/bootstrap-work"
 NEKO_BOOTSTRAP_ARCHIVE="$WORK/bootstrap-source.tar.gz" \
   NEKO_BOOTSTRAP_WORK_BASE="$WORK/bootstrap-work" NEKO_BOOTSTRAP_TEST_MODE=1 \
@@ -539,7 +556,7 @@ NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO
   bash -c 'source "$1"; source "$2"; render_all' \
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
 
-printf '[5/8] 用真实冻结核心校验配置……\n'
+printf '[5/9] 用真实冻结核心校验配置……\n'
 "$SING_BOX" check -c "$WORK/etc/config/sing-box.json"
 "$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v4.json"
 "$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v6.json"
@@ -559,7 +576,7 @@ for family in v4 v6; do
   grep -Fq 'executable file not found' "$WORK/hysteria-${family}-check.log"
 done
 
-printf '[6/8] 校验严格订阅、出口策略、端口和 REALITY 目标……\n'
+printf '[6/9] 校验严格订阅、出口策略、端口和 REALITY 目标……\n'
 bash -c '
   set -Eeuo pipefail
   source "$1"
@@ -868,16 +885,22 @@ links="$(
 [[ "$links" == *'https://v6.example.com/test-subscription-token/sing-box.json'* ]]
 [[ "$(grep -c '（严格）' <<< "$links")" == 8 ]]
 
-printf '[7/8] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
-jq '.subscription.token = "replacement-token"' "$WORK/etc/state.json" > "$WORK/etc/state.new"
+printf '[7/9] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
+jq '.subscription.ipv4_token = "replacement-ipv4-token"' \
+  "$WORK/etc/state.json" > "$WORK/etc/state.new"
 mv "$WORK/etc/state.new" "$WORK/etc/state.json"
 NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO_USER=root \
   bash -c 'source "$1"; source "$2"; render_all' \
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
-grep -Fq '/replacement-token/mihomo.yaml' "$WORK/etc/config/Caddyfile"
-grep -Fq '/replacement-token/sing-box.json' "$WORK/etc/config/Caddyfile"
-if grep -Fq '/test-subscription-token/' "$WORK/etc/config/Caddyfile"; then
-  printf '旧订阅令牌仍出现在 Caddy 配置中。\n' >&2
+grep -Fq '/replacement-ipv4-token/mihomo.yaml' "$WORK/etc/config/Caddyfile"
+grep -Fq '/replacement-ipv4-token/sing-box.json' "$WORK/etc/config/Caddyfile"
+[[ "$(grep -Fc '/test-subscription-token/' "$WORK/etc/config/Caddyfile")" == 4 ]]
+if awk '
+    /^https:\/\/v4\.example\.com \{/ {inside=1}
+    inside {print}
+    inside && /^}/ {exit}
+  ' "$WORK/etc/config/Caddyfile" | grep -Fq '/test-subscription-token/'; then
+  printf 'IPv4 的旧订阅令牌仍出现在 IPv4 Caddy 站点中。\n' >&2
   exit 1
 fi
 grep -Fq 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' "$ROOT/systemd/neko-sing-box.service"
@@ -891,6 +914,8 @@ bash "$ROOT/tests/panel-refresh.sh"
 
 SUPERVISOR_WORK="$WORK/hysteria-supervisor"
 mkdir -p "$SUPERVISOR_WORK/config"
+printf 'listen: test-v4\n' > "$SUPERVISOR_WORK/config/hysteria-v4.yaml"
+printf 'listen: test-v6\n' > "$SUPERVISOR_WORK/config/hysteria-v6.yaml"
 cat > "$SUPERVISOR_WORK/fake-hysteria" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -937,14 +962,21 @@ if kill -0 "$v6_pid" 2>/dev/null; then
   exit 1
 fi
 
+mode_gate_line="$(grep -n 'collect_network_mode' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 domain_gate_line="$(grep -n 'collect_identity' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 dependency_line="$(grep -n 'install_dependencies' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 lock_line="$(grep -n 'exec 9>/run/lock/neko-install.lock' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
-(( domain_gate_line < dependency_line && dependency_line < lock_line ))
+(( mode_gate_line < dependency_line
+  && dependency_line < domain_gate_line
+  && domain_gate_line < lock_line ))
 
-printf '[8/8] 模拟 1.0.x/1.1.x/1.2.3 原地升级成功与失败回滚……\n'
+printf '[8/9] IPv4-only、IPv6-only 与面板地址族事务……\n'
+bash "$ROOT/tests/family-modes.sh"
+
+printf '[9/9] 模拟旧版本原地升级成功与失败回滚……\n'
 prepare_upgrade_install() {
   local target="$1" schema="${2:-1}" source_release="${3:-}"
+  local source_mode="${4:-dual}"
   mkdir -p \
     "$target/etc/config" "$target/etc/subscriptions" \
     "$target/var/acme" "$target/libexec/lib" "$target/systemd" "$target/tmp"
@@ -973,17 +1005,37 @@ prepare_upgrade_install() {
       | del(.acme)
       | del(.network)
       | .subscription = {
-          token: .subscription.token,
+          token: .subscription.ipv4_token,
           shadowrocket_server: .subscription.ipv4_address
         }
       | .firewall = {manager: "none", zone: ""}
     ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
-  else
+  elif [[ "$schema" == 2 ]]; then
     jq --arg release "${source_release:-1.1.1-test}" '
       .schema = 2
       | .release = $release
       | .acme = {method: "http-01"}
       | .network = {listen_address: "::"}
+      | .subscription.token = .subscription.ipv4_token
+      | del(.subscription.ipv4_token, .subscription.ipv6_token)
+      | .firewall = {manager: "none", zone: "", zones: []}
+    ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
+  else
+    jq \
+      --arg release "${source_release:-1.2.4-test}" \
+      --arg mode "$source_mode" '
+      .schema = 3
+      | .release = $release
+      | .network = {mode: $mode}
+      | if $mode == "ipv4-only" then
+          .subscription.ipv6_token = null
+          | .subscription.ipv6_domain = null
+          | .subscription.ipv6_address = null
+        elif $mode == "ipv6-only" then
+          .subscription.ipv4_token = null
+          | .subscription.ipv4_domain = null
+          | .subscription.ipv4_address = null
+        else . end
       | .firewall = {manager: "none", zone: "", zones: []}
     ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
   fi
@@ -1021,14 +1073,17 @@ prepare_upgrade_install "$UPGRADE_OK"
 upgrade_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
   "$UPGRADE_OK/etc/state.json")"
 run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
-[[ "$(jq -r '.schema' "$UPGRADE_OK/etc/state.json")" == 2 ]]
+[[ "$(jq -r '.schema' "$UPGRADE_OK/etc/state.json")" == 3 ]]
 [[ "$(jq -r '.release' "$UPGRADE_OK/etc/state.json")" == "$NEKO_RELEASE" ]]
+[[ "$(jq -r '.network.mode' "$UPGRADE_OK/etc/state.json")" == dual ]]
 [[ "$(jq -r '.subscription.ipv4_domain' "$UPGRADE_OK/etc/state.json")" == v4.example.com ]]
 [[ "$(jq -r '.subscription.ipv6_domain' "$UPGRADE_OK/etc/state.json")" == v6.example.com ]]
 [[ "$(jq -r '.subscription.shadowrocket_server // empty' "$UPGRADE_OK/etc/state.json")" == "" ]]
 [[ "$(jq -r '.acme.method' "$UPGRADE_OK/etc/state.json")" == http-01 ]]
-[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.ipv4_token}' \
   "$UPGRADE_OK/etc/state.json")" == "$upgrade_identity_before" ]]
+[[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_OK/etc/state.json")" \
+  == "$(jq -r '.token' <<< "$upgrade_identity_before")" ]]
 [[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
 grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
@@ -1046,10 +1101,12 @@ prepare_upgrade_install "$UPGRADE_SCHEMA2" 2
 schema2_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
   "$UPGRADE_SCHEMA2/etc/state.json")"
 run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
-[[ "$(jq -r '.schema' "$UPGRADE_SCHEMA2/etc/state.json")" == 2 ]]
+[[ "$(jq -r '.schema' "$UPGRADE_SCHEMA2/etc/state.json")" == 3 ]]
 [[ "$(jq -r '.release' "$UPGRADE_SCHEMA2/etc/state.json")" == "$NEKO_RELEASE" ]]
-[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.ipv4_token}' \
   "$UPGRADE_SCHEMA2/etc/state.json")" == "$schema2_identity_before" ]]
+[[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_SCHEMA2/etc/state.json")" \
+  == "$(jq -r '.token' <<< "$schema2_identity_before")" ]]
 [[ -x "$UPGRADE_SCHEMA2/libexec/hysteria-dual.sh" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
@@ -1062,11 +1119,41 @@ release_123_identity_before="$(jq -cS '{ports, credentials, reality, token: .sub
 [[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
 run_upgrade "$UPGRADE_123" > "$UPGRADE_123/upgrade.log"
 [[ "$(jq -r '.release' "$UPGRADE_123/etc/state.json")" == "$NEKO_RELEASE" ]]
-[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
+[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.ipv4_token}' \
   "$UPGRADE_123/etc/state.json")" == "$release_123_identity_before" ]]
+[[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_123/etc/state.json")" \
+  == "$(jq -r '.token' <<< "$release_123_identity_before")" ]]
 [[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
 [[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v4.json" ]]
 [[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v6.json" ]]
+
+UPGRADE_V4="$WORK/upgrade-v4-only"
+prepare_upgrade_install "$UPGRADE_V4" 3 1.2.4-test ipv4-only
+v4_token_before="$(jq -r '.subscription.ipv4_token' "$UPGRADE_V4/etc/state.json")"
+run_upgrade "$UPGRADE_V4" > "$UPGRADE_V4/upgrade.log"
+[[ "$(jq -r '.schema' "$UPGRADE_V4/etc/state.json")" == 3 ]]
+[[ "$(jq -r '.network.mode' "$UPGRADE_V4/etc/state.json")" == ipv4-only ]]
+[[ "$(jq -r '.subscription.ipv4_token' "$UPGRADE_V4/etc/state.json")" \
+  == "$v4_token_before" ]]
+[[ "$(jq -r '.subscription.ipv6_token // empty' "$UPGRADE_V4/etc/state.json")" == "" ]]
+[[ "$(find "$UPGRADE_V4/etc/subscriptions" -maxdepth 1 -type f \
+  | wc -l | tr -d ' ')" == 4 ]]
+[[ -s "$UPGRADE_V4/etc/config/hysteria-v4.yaml" ]]
+[[ ! -e "$UPGRADE_V4/etc/config/hysteria-v6.yaml" ]]
+
+UPGRADE_V6="$WORK/upgrade-v6-only"
+prepare_upgrade_install "$UPGRADE_V6" 3 1.2.4-test ipv6-only
+v6_token_before="$(jq -r '.subscription.ipv6_token' "$UPGRADE_V6/etc/state.json")"
+run_upgrade "$UPGRADE_V6" > "$UPGRADE_V6/upgrade.log"
+[[ "$(jq -r '.schema' "$UPGRADE_V6/etc/state.json")" == 3 ]]
+[[ "$(jq -r '.network.mode' "$UPGRADE_V6/etc/state.json")" == ipv6-only ]]
+[[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_V6/etc/state.json")" \
+  == "$v6_token_before" ]]
+[[ "$(jq -r '.subscription.ipv4_token // empty' "$UPGRADE_V6/etc/state.json")" == "" ]]
+[[ "$(find "$UPGRADE_V6/etc/subscriptions" -maxdepth 1 -type f \
+  | wc -l | tr -d ' ')" == 4 ]]
+[[ ! -e "$UPGRADE_V6/etc/config/hysteria-v4.yaml" ]]
+[[ -s "$UPGRADE_V6/etc/config/hysteria-v6.yaml" ]]
 
 UPGRADE_FAIL="$WORK/upgrade-fail"
 prepare_upgrade_install "$UPGRADE_FAIL"

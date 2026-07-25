@@ -27,6 +27,7 @@ source "$SCRIPT_DIR/lib/firewall.sh"
 DOMAIN_INPUT=""
 EMAIL_INPUT=""
 ACME_METHOD_INPUT=""
+NETWORK_MODE_INPUT=""
 CLOUDFLARE_TOKEN_SOURCE_FILE=""
 CLOUDFLARE_DNS_TOKEN_INPUT=""
 ASSUME_YES=0
@@ -40,6 +41,7 @@ usage() {
 
   --domain example.com     必填域名（不提供时交互询问）
   --email admin@example.com  ACME 账户邮箱
+  --network-mode MODE       ipv4-only、ipv6-only 或 dual
   --acme-method METHOD     http-01 或 cloudflare-dns-01
   --cloudflare-token-file FILE
                            从文件读取受限 Cloudflare API Token；不要把 Token 放在命令行
@@ -66,6 +68,11 @@ parse_args() {
         ACME_METHOD_INPUT="$2"
         shift 2
         ;;
+      --network-mode)
+        (( $# >= 2 )) || die "--network-mode 缺少值。"
+        NETWORK_MODE_INPUT="$2"
+        shift 2
+        ;;
       --cloudflare-token-file)
         (( $# >= 2 )) || die "--cloudflare-token-file 缺少值。"
         CLOUDFLARE_TOKEN_SOURCE_FILE="$2"
@@ -84,6 +91,31 @@ parse_args() {
         ;;
     esac
   done
+}
+
+collect_network_mode() {
+  local choice
+  if [[ -n "$NETWORK_MODE_INPUT" ]]; then
+    NETWORK_MODE="$(normalize_network_mode "$NETWORK_MODE_INPUT")" \
+      || die "不支持的 --network-mode：${NETWORK_MODE_INPUT}"
+  elif [[ -t 0 ]]; then
+    printf '\n请选择要安装的网络类型：\n'
+    printf '  1. 只安装严格 IPv4\n'
+    printf '  2. 只安装严格 IPv6\n'
+    printf '  3. 同时安装严格 IPv4 与 IPv6\n'
+    read -r -p "请选择 [3]：" choice
+    case "$choice" in
+      1) NETWORK_MODE="$NETWORK_MODE_IPV4" ;;
+      2) NETWORK_MODE="$NETWORK_MODE_IPV6" ;;
+      ""|3) NETWORK_MODE="$NETWORK_MODE_DUAL" ;;
+      *) die "无效的网络类型选择：${choice}" ;;
+    esac
+  else
+    # Preserve compatibility with existing non-interactive deployments.
+    NETWORK_MODE="$NETWORK_MODE_DUAL"
+    info "未提供 --network-mode；非交互安装继续使用兼容的 IPv4 + IPv6 双栈模式。"
+  fi
+  export NETWORK_MODE
 }
 
 assert_clean_target() {
@@ -175,7 +207,7 @@ collect_acme_settings() {
     elif [[ -t 0 ]]; then
       printf '\n证书验证方式：\n'
       printf '  1. Cloudflare DNS-01（推荐，不依赖 IPv6 HTTP 入站；需要受限 API Token）\n'
-      printf '  2. HTTP-01（无需 Token；要求 Let\x27s Encrypt 所有验证节点均能访问双栈 TCP 80）\n'
+      printf '  2. HTTP-01（无需 Token；要求 Let\x27s Encrypt 能经已启用地址族访问所有域名的 TCP 80）\n'
       read -r -p "请选择 [1]：" choice
       case "$choice" in
         ""|1) ACME_METHOD="$ACME_METHOD_CLOUDFLARE" ;;
@@ -249,18 +281,24 @@ collect_identity() {
   ACME_EMAIL="$EMAIL_INPUT"
   export DOMAIN ACME_EMAIL
 
-  check_strict_dual_stack_dns "$DOMAIN"
+  check_strict_stack_dns "$DOMAIN" "$NETWORK_MODE"
   collect_acme_settings
   if (( ASSUME_YES == 0 )); then
-    printf '\n基础域名：%s\nIPv4 订阅域名：%s\nIPv6 订阅域名：%s\n邮箱：%s\n证书验证：%s\n' \
-      "$DOMAIN" "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_DOMAIN_IPV6" \
-      "$ACME_EMAIL" "$ACME_METHOD"
-    if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
-      printf '安装会用 Let\x27s Encrypt HTTP-01 验证三个域名，并占用 TCP 80/443。\n'
-    else
-      printf '安装会用 Cloudflare DNS-01 验证三个域名；受限 Token 将以 root-only 文件保存供续期。\n'
+    printf '\n安装模式：%s\n基础域名：%s\n' \
+      "$(network_mode_label)" "$DOMAIN"
+    if network_mode_has_ipv4; then
+      printf 'IPv4 订阅域名：%s\n' "$SUBSCRIPTION_DOMAIN_IPV4"
     fi
-    read -r -p "确认三个域名均为 DNS only、直连本机并接受 ACME 服务条款？[y/N] " answer
+    if network_mode_has_ipv6; then
+      printf 'IPv6 订阅域名：%s\n' "$SUBSCRIPTION_DOMAIN_IPV6"
+    fi
+    printf '邮箱：%s\n证书验证：%s\n' "$ACME_EMAIL" "$ACME_METHOD"
+    if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
+      printf '安装会用 Let\x27s Encrypt HTTP-01 验证基础域名和已启用的订阅域名，并占用 TCP 80/443。\n'
+    else
+      printf '安装会用 Cloudflare DNS-01 验证基础域名和已启用的订阅域名；受限 Token 将以 root-only 文件保存供续期。\n'
+    fi
+    read -r -p "确认上述域名均为 DNS only、直连本机并接受 ACME 服务条款？[y/N] " answer
     [[ "$answer" =~ ^[Yy]$ ]] || die "用户取消。"
   fi
 }
@@ -332,16 +370,21 @@ download_release_binaries() {
 
 issue_initial_certificate() {
   local acme_log="" acme_rc=0
+  local certificate_domain
+  local -a domain_args=()
+  while IFS= read -r certificate_domain; do
+    domain_args+=(--domains "$certificate_domain")
+  done < <(active_certificate_domains)
   ROLLBACK_NEEDED=1
   install -d -m 0700 "$NEKO_VAR" "$NEKO_VAR/lego"
   if [[ "$ACME_METHOD" == "$ACME_METHOD_CLOUDFLARE" ]]; then
-    info "使用 Cloudflare DNS-01 申请三个域名的 SAN 证书；不依赖 IPv6 HTTP 入站。"
+    info "使用 Cloudflare DNS-01 申请当前 $(network_mode_label) 所需的 SAN 证书。"
     write_cloudflare_dns_token "$CLOUDFLARE_DNS_TOKEN_INPUT"
     CLOUDFLARE_DNS_TOKEN_INPUT=""
   else
-    info "使用 HTTP-01 申请三个域名的 SAN 证书；失败时安装会停止并回滚。"
+    info "使用 HTTP-01 申请当前 $(network_mode_label) 所需的 SAN 证书；失败时安装会停止并回滚。"
     open_temporary_http_challenge_port
-    warn "请确认云安全组也已为 IPv4 与 IPv6 放行 TCP 80；脚本只能管理本机防火墙。"
+    warn "请确认云安全组已为 $(network_mode_label) 放行 TCP 80；脚本只能管理本机防火墙。"
   fi
 
   if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
@@ -350,9 +393,7 @@ issue_initial_certificate() {
     run_lego_acme "$WORKDIR/bin/lego" standalone run \
       --path "$NEKO_VAR/lego" \
       --email "$ACME_EMAIL" \
-      --domains "$DOMAIN" \
-      --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
-      --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
+      "${domain_args[@]}" \
       --accept-tos \
       --key-type EC256 2>&1 | tee "$acme_log"
     acme_rc=${PIPESTATUS[0]}
@@ -367,9 +408,7 @@ issue_initial_certificate() {
     run_lego_acme "$WORKDIR/bin/lego" standalone run \
       --path "$NEKO_VAR/lego" \
       --email "$ACME_EMAIL" \
-      --domains "$DOMAIN" \
-      --domains "$SUBSCRIPTION_DOMAIN_IPV4" \
-      --domains "$SUBSCRIPTION_DOMAIN_IPV6" \
+      "${domain_args[@]}" \
       --accept-tos \
       --key-type EC256
   fi
@@ -379,13 +418,11 @@ issue_initial_certificate() {
   [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]] || die "ACME 返回成功但证书文件不存在。"
   openssl x509 -in "$CERT_FILE" -noout -checkend 2592000 >/dev/null \
     || die "取得的证书有效期不足 30 天。"
-  local certificate_domain
-  for certificate_domain in \
-    "$DOMAIN" "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_DOMAIN_IPV6"; do
+  while IFS= read -r certificate_domain; do
     openssl x509 -in "$CERT_FILE" -noout -checkhost "$certificate_domain" >/dev/null \
       || die "取得的证书不包含 ${certificate_domain}。"
-  done
-  ok "三个域名验证与证书申请成功。"
+  done < <(active_certificate_domains)
+  ok "当前 $(network_mode_label) 所需的域名验证与证书申请成功。"
 }
 
 explain_http01_failure() {
@@ -480,7 +517,7 @@ write_initial_state() {
   local hy2_password hy2_obfs_password tuic_uuid tuic_password ss_password
   local anytls_password vision_uuid xhttp_uuid vision_pair xhttp_pair
   local vision_private vision_public xhttp_private xhttp_public
-  local vision_sid xhttp_sid xhttp_path sub_token installed_at listen_address
+  local vision_sid xhttp_sid xhttp_path sub_token_ipv4 sub_token_ipv6 installed_at
   local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT VISION_PORT XHTTP_PORT
 
   initialize_port_reservations
@@ -506,9 +543,15 @@ write_initial_state() {
   vision_sid="$(random_hex 8)"
   xhttp_sid="$(random_hex 8)"
   xhttp_path="/$(random_urlsafe 12)"
-  sub_token="$(random_urlsafe 24)"
+  sub_token_ipv4=""
+  sub_token_ipv6=""
+  if network_mode_has_ipv4; then
+    sub_token_ipv4="$(random_urlsafe 24)"
+  fi
+  if network_mode_has_ipv6; then
+    sub_token_ipv6="$(random_urlsafe 24)"
+  fi
   installed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-  listen_address="::"
 
   jq -n \
     --arg release "$NEKO_RELEASE" \
@@ -517,7 +560,7 @@ write_initial_state() {
     --arg xray_version "$XRAY_VERSION" --arg sing_version "$SING_BOX_VERSION" \
     --arg hysteria_version "$HYSTERIA_VERSION" --arg caddy_version "$CADDY_VERSION" \
     --arg lego_version "$LEGO_VERSION" \
-    --arg domain "$DOMAIN" --arg email "$ACME_EMAIL" --arg listen "$listen_address" \
+    --arg domain "$DOMAIN" --arg email "$ACME_EMAIL" --arg network_mode "$NETWORK_MODE" \
     --arg acme_method "$ACME_METHOD" \
     --argjson hy2_start "$HY2_START" --argjson hy2_end "$HY2_END" \
     --argjson tuic_port "$TUIC_PORT" --argjson ss_port "$SS_PORT" \
@@ -530,13 +573,15 @@ write_initial_state() {
     --arg vision_private "$vision_private" --arg vision_public "$vision_public" \
     --arg vision_sid "$vision_sid" --arg xhttp_private "$xhttp_private" \
     --arg xhttp_public "$xhttp_public" --arg xhttp_sid "$xhttp_sid" \
-    --arg xhttp_path "$xhttp_path" --arg sub_token "$sub_token" \
+    --arg xhttp_path "$xhttp_path" \
+    --arg sub_token_ipv4 "$sub_token_ipv4" \
+    --arg sub_token_ipv6 "$sub_token_ipv6" \
     --arg subscription_domain_ipv4 "$SUBSCRIPTION_DOMAIN_IPV4" \
     --arg subscription_domain_ipv6 "$SUBSCRIPTION_DOMAIN_IPV6" \
     --arg subscription_address_ipv4 "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg subscription_address_ipv6 "$SUBSCRIPTION_IPV6_ADDRESS" \
     '{
-      schema: 2,
+      schema: 3,
       release: $release,
       installed_at: $installed_at,
       platform: {id: $os_id, version: $os_version, arch: $arch},
@@ -550,7 +595,7 @@ write_initial_state() {
       domain: $domain,
       acme_email: $email,
       acme: {method: $acme_method},
-      network: {listen_address: $listen},
+      network: {mode: $network_mode},
       system_user_created: true,
       ports: {
         hysteria2_start: $hy2_start,
@@ -581,11 +626,30 @@ write_initial_state() {
         xhttp_path: $xhttp_path
       },
       subscription: {
-        token: $sub_token,
-        ipv4_domain: $subscription_domain_ipv4,
-        ipv6_domain: $subscription_domain_ipv6,
-        ipv4_address: $subscription_address_ipv4,
-        ipv6_address: $subscription_address_ipv6
+        ipv4_token: (
+          if $network_mode == "ipv4-only" or $network_mode == "dual"
+          then $sub_token_ipv4 else null end
+        ),
+        ipv6_token: (
+          if $network_mode == "ipv6-only" or $network_mode == "dual"
+          then $sub_token_ipv6 else null end
+        ),
+        ipv4_domain: (
+          if $network_mode == "ipv4-only" or $network_mode == "dual"
+          then $subscription_domain_ipv4 else null end
+        ),
+        ipv6_domain: (
+          if $network_mode == "ipv6-only" or $network_mode == "dual"
+          then $subscription_domain_ipv6 else null end
+        ),
+        ipv4_address: (
+          if $network_mode == "ipv4-only" or $network_mode == "dual"
+          then $subscription_address_ipv4 else null end
+        ),
+        ipv6_address: (
+          if $network_mode == "ipv6-only" or $network_mode == "dual"
+          then $subscription_address_ipv6 else null end
+        )
       },
       firewall: {manager: "none", zone: "", zones: []},
       bbr: {managed: false, previous_qdisc: "", previous_congestion_control: ""}
@@ -597,11 +661,15 @@ write_initial_state() {
 validate_generated_configs() {
   info "用冻结的核心二进制校验生成配置……"
   "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/config/sing-box.json"
-  "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v4.json"
-  "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v6.json"
+  if network_mode_has_ipv4; then
+    "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v4.json"
+  fi
+  if network_mode_has_ipv6; then
+    "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v6.json"
+  fi
   "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json"
   "$NEKO_LIBEXEC/caddy" validate --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile
-  ok "sing-box 服务端、两份客户端订阅、Xray 与 Caddy 配置校验通过。"
+  ok "sing-box 服务端、当前地址族客户端订阅、Xray 与 Caddy 配置校验通过。"
 }
 
 start_services() {
@@ -638,20 +706,19 @@ main() {
   detect_platform
   require_systemd
 
-  require_commands getent awk sort grep
-  collect_identity
-  # Keep the domain gate ahead of package installation and all Neko file
-  # creation.  Recheck the target after taking the lock to close the race
-  # between two installers that passed the initial read-only check.
-  assert_clean_target
+  collect_network_mode
+  # Package setup is allowed to repair a minimal image, but no Neko state,
+  # service, certificate or firewall rule is created before all preflights.
   install_dependencies
-  require_commands curl jq openssl tar unzip ss getent flock sha256sum systemctl find nft useradd df awk stat env ip tee
+  require_commands curl jq openssl tar unzip ss getent dig flock sha256sum systemctl find nft useradd df awk sed stat env ip tee
+  collect_identity
+  assert_clean_target
 
   exec 9>/run/lock/neko-install.lock
   flock -n 9 || die "另一个 Neko 安装进程正在运行。"
   assert_clean_target
-  assert_dual_stack_kernel
-  assert_strict_addresses_local
+  assert_network_mode_kernel "$NETWORK_MODE"
+  assert_strict_addresses_local "$NETWORK_MODE"
   assert_public_ports_free
   assert_work_space
 
