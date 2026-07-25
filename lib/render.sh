@@ -23,9 +23,12 @@ write_atomic() {
   mv -f "$tmp" "$target"
 }
 
+# DOMAIN and the other render globals are populated by load_state.
+# shellcheck disable=SC2153
 render_sing_box() {
   jq -n \
     --arg domain "$DOMAIN" \
+    --arg mode "$NETWORK_MODE" \
     --arg listen_v4 "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg listen_v6 "$SUBSCRIPTION_IPV6_ADDRESS" \
     --arg cert "$CERT_FILE" \
@@ -77,64 +80,68 @@ render_sing_box() {
           }
         }
       ];
+    def has_v4: ($mode == "ipv4-only" or $mode == "dual");
+    def has_v6: ($mode == "ipv6-only" or $mode == "dual");
+    def v4_inbound_tags: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"];
+    def v6_inbound_tags: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"];
     {
       log: {level: "info", timestamp: true},
       dns: {
         servers: [{type: "local", tag: "local"}]
       },
-      inbounds: (family_inbounds("v4"; $listen_v4) + family_inbounds("v6"; $listen_v6)),
-      outbounds: [
-        {
+      inbounds:
+        ((if has_v4 then family_inbounds("v4"; $listen_v4) else [] end)
+        + (if has_v6 then family_inbounds("v6"; $listen_v6) else [] end)),
+      outbounds:
+        ((if has_v4 then [{
           type: "direct",
           tag: "direct-v4",
           inet4_bind_address: $listen_v4,
           domain_resolver: {server: "local", strategy: "ipv4_only"}
-        },
-        {
+        }] else [] end)
+        + (if has_v6 then [{
           type: "direct",
           tag: "direct-v6",
           inet6_bind_address: $listen_v6,
           domain_resolver: {server: "local", strategy: "ipv6_only"}
-        }
-      ],
+        }] else [] end)),
       route: {
-        rules: [
-          {network: "tcp", port: 25, action: "reject"},
-          {
-            inbound: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+        rules:
+          ([{network: "tcp", port: 25, action: "reject"}]
+          + (if has_v4 then [{
+            inbound: v4_inbound_tags,
             action: "resolve",
             server: "local",
             strategy: "ipv4_only"
-          },
-          {
-            inbound: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+          }] else [] end)
+          + (if has_v6 then [{
+            inbound: v6_inbound_tags,
             action: "resolve",
             server: "local",
             strategy: "ipv6_only"
-          },
-          {ip_is_private: true, action: "reject"},
-          {
-            inbound: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+          }] else [] end)
+          + [{ip_is_private: true, action: "reject"}]
+          + (if has_v4 then [{
+            inbound: v4_inbound_tags,
             ip_version: 6,
             action: "reject"
-          },
-          {
-            inbound: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+          }] else [] end)
+          + (if has_v6 then [{
+            inbound: v6_inbound_tags,
             ip_version: 4,
             action: "reject"
-          },
-          {
-            inbound: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+          }] else [] end)
+          + (if has_v4 then [{
+            inbound: v4_inbound_tags,
             action: "route",
             outbound: "direct-v4"
-          },
-          {
-            inbound: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+          }] else [] end)
+          + (if has_v6 then [{
+            inbound: v6_inbound_tags,
             action: "route",
             outbound: "direct-v6"
-          }
-        ],
-        final: "direct-v4"
+          }] else [] end)),
+        final: (if has_v4 then "direct-v4" else "direct-v6" end)
       }
     }' | write_atomic "${NEKO_CONFIG_DIR}/sing-box.json"
 }
@@ -142,6 +149,7 @@ render_sing_box() {
 render_xray() {
   jq -n \
     --arg domain "$DOMAIN" \
+    --arg mode "$NETWORK_MODE" \
     --arg listen_v4 "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg listen_v6 "$SUBSCRIPTION_IPV6_ADDRESS" \
     --argjson vision_port "$VISION_PORT" \
@@ -203,35 +211,39 @@ render_xray() {
         },
         sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
       };
+    def has_v4: ($mode == "ipv4-only" or $mode == "dual");
+    def has_v6: ($mode == "ipv6-only" or $mode == "dual");
     {
       log: {loglevel: "warning"},
-      inbounds: [
-        vision_inbound("v4"; $listen_v4),
-        vision_inbound("v6"; $listen_v6),
-        xhttp_inbound("v4"; $listen_v4),
-        xhttp_inbound("v6"; $listen_v6)
-      ],
-      outbounds: [
-        {
+      inbounds:
+        ((if has_v4 then [
+          vision_inbound("v4"; $listen_v4),
+          xhttp_inbound("v4"; $listen_v4)
+        ] else [] end)
+        + (if has_v6 then [
+          vision_inbound("v6"; $listen_v6),
+          xhttp_inbound("v6"; $listen_v6)
+        ] else [] end)),
+      outbounds:
+        ((if has_v4 then [{
           sendThrough: $listen_v4,
           protocol: "freedom",
           tag: "direct-v4",
           targetStrategy: "ForceIPv4",
           settings: {domainStrategy: "ForceIPv4"}
-        },
-        {
+        }] else [] end)
+        + (if has_v6 then [{
           sendThrough: $listen_v6,
           protocol: "freedom",
           tag: "direct-v6",
           targetStrategy: "ForceIPv6",
           settings: {domainStrategy: "ForceIPv6"}
-        },
-        {protocol: "blackhole", tag: "blocked"}
-      ],
+        }] else [] end)
+        + [{protocol: "blackhole", tag: "blocked"}]),
       routing: {
         domainStrategy: "IPIfNonMatch",
-        rules: [
-          {
+        rules: (
+          [{
             type: "field",
             ip: [
               "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10",
@@ -247,18 +259,17 @@ render_xray() {
             network: "tcp",
             port: 25,
             outboundTag: "blocked"
-          },
-          {
+          }]
+          + (if has_v4 then [{
             type: "field",
             inboundTag: ["vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"],
             outboundTag: "direct-v4"
-          },
-          {
+          }] else [] end)
+          + (if has_v6 then [{
             type: "field",
             inboundTag: ["vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"],
             outboundTag: "direct-v6"
-          }
-        ]
+          }] else [] end))
       }
     }' | write_atomic "${NEKO_CONFIG_DIR}/xray.json"
 }
@@ -318,19 +329,79 @@ EOF
 }
 
 render_hysteria() {
-  render_hysteria_family \
+  rm -f -- \
     "${NEKO_CONFIG_DIR}/hysteria-v4.yaml" \
-    "${SUBSCRIPTION_IPV4_ADDRESS}:${HY2_START}-${HY2_END}" \
-    4 bindIPv4 "$SUBSCRIPTION_IPV4_ADDRESS"
-  render_hysteria_family \
     "${NEKO_CONFIG_DIR}/hysteria-v6.yaml" \
-    "[${SUBSCRIPTION_IPV6_ADDRESS}]:${HY2_START}-${HY2_END}" \
-    6 bindIPv6 "$SUBSCRIPTION_IPV6_ADDRESS"
-  rm -f -- "${NEKO_CONFIG_DIR}/hysteria.yaml"
+    "${NEKO_CONFIG_DIR}/hysteria.yaml"
+  if network_mode_has_ipv4; then
+    render_hysteria_family \
+      "${NEKO_CONFIG_DIR}/hysteria-v4.yaml" \
+      "${SUBSCRIPTION_IPV4_ADDRESS}:${HY2_START}-${HY2_END}" \
+      4 bindIPv4 "$SUBSCRIPTION_IPV4_ADDRESS"
+  fi
+  if network_mode_has_ipv6; then
+    render_hysteria_family \
+      "${NEKO_CONFIG_DIR}/hysteria-v6.yaml" \
+      "[${SUBSCRIPTION_IPV6_ADDRESS}]:${HY2_START}-${HY2_END}" \
+      6 bindIPv6 "$SUBSCRIPTION_IPV6_ADDRESS"
+  fi
+}
+
+render_caddy_subscription_site() {
+  local domain="$1" token="$2" family="$3"
+  cat <<EOF
+https://${domain} {
+	tls ${CERT_FILE} ${KEY_FILE}
+	header {
+		Cache-Control "no-store"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	handle /${token}/mihomo.yaml {
+		rewrite * /mihomo-${family}.yaml
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle /${token}/stash.yaml {
+		rewrite * /stash-${family}.yaml
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle /${token}/shadowrocket.txt {
+		rewrite * /shadowrocket-${family}.txt
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle /${token}/sing-box.json {
+		rewrite * /sing-box-${family}.json
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "application/json; charset=utf-8"
+		file_server
+	}
+	handle {
+		respond "Not Found" 404
+	}
+}
+
+EOF
 }
 
 render_caddy() {
-  write_atomic "${NEKO_CONFIG_DIR}/Caddyfile" <<EOF
+  local http_hosts="http://${DOMAIN}"
+  if network_mode_has_ipv4; then
+    http_hosts+=", http://${SUBSCRIPTION_DOMAIN_IPV4}"
+  fi
+  if network_mode_has_ipv6; then
+    http_hosts+=", http://${SUBSCRIPTION_DOMAIN_IPV6}"
+  fi
+
+  {
+    cat <<EOF
 {
 	admin off
 	auto_https off
@@ -340,7 +411,7 @@ render_caddy() {
 	}
 }
 
-http://${DOMAIN}, http://${SUBSCRIPTION_DOMAIN_IPV4}, http://${SUBSCRIPTION_DOMAIN_IPV6} {
+${http_hosts} {
 	@acme path /.well-known/acme-challenge/*
 	handle @acme {
 		root * ${NEKO_VAR}/acme
@@ -364,82 +435,6 @@ https://${DOMAIN} {
 	}
 }
 
-https://${SUBSCRIPTION_DOMAIN_IPV4} {
-	tls ${CERT_FILE} ${KEY_FILE}
-	header {
-		Cache-Control "no-store"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "no-referrer"
-	}
-
-	handle /${SUB_TOKEN}/mihomo.yaml {
-		rewrite * /mihomo-v4.yaml
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${SUB_TOKEN}/stash.yaml {
-		rewrite * /stash-v4.yaml
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${SUB_TOKEN}/shadowrocket.txt {
-		rewrite * /shadowrocket-v4.txt
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${SUB_TOKEN}/sing-box.json {
-		rewrite * /sing-box-v4.json
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "application/json; charset=utf-8"
-		file_server
-	}
-	handle {
-		respond "Not Found" 404
-	}
-}
-
-https://${SUBSCRIPTION_DOMAIN_IPV6} {
-	tls ${CERT_FILE} ${KEY_FILE}
-	header {
-		Cache-Control "no-store"
-		X-Content-Type-Options "nosniff"
-		X-Frame-Options "DENY"
-		Referrer-Policy "no-referrer"
-	}
-
-	handle /${SUB_TOKEN}/mihomo.yaml {
-		rewrite * /mihomo-v6.yaml
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${SUB_TOKEN}/stash.yaml {
-		rewrite * /stash-v6.yaml
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${SUB_TOKEN}/shadowrocket.txt {
-		rewrite * /shadowrocket-v6.txt
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${SUB_TOKEN}/sing-box.json {
-		rewrite * /sing-box-v6.json
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "application/json; charset=utf-8"
-		file_server
-	}
-	handle {
-		respond "Not Found" 404
-	}
-}
-
 https://${DOMAIN}:8443 {
 	bind 127.0.0.1
 	tls ${CERT_FILE} ${KEY_FILE}
@@ -450,6 +445,15 @@ https://${DOMAIN}:8443 {
 	respond "Welcome" 200
 }
 EOF
+    if network_mode_has_ipv4; then
+      render_caddy_subscription_site \
+        "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4" v4
+    fi
+    if network_mode_has_ipv6; then
+      render_caddy_subscription_site \
+        "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6" v6
+    fi
+  } | write_atomic "${NEKO_CONFIG_DIR}/Caddyfile"
 }
 
 render_sing_box_client() {
@@ -918,21 +922,35 @@ EOF
 
 render_subscriptions() {
   mkdir -p "$NEKO_SUB_DIR"
-  render_client_yaml "${NEKO_SUB_DIR}/mihomo-v4.yaml" yes \
-    "$SUBSCRIPTION_IPV4_ADDRESS" ipv4
-  render_client_yaml "${NEKO_SUB_DIR}/mihomo-v6.yaml" yes \
-    "$SUBSCRIPTION_IPV6_ADDRESS" ipv6
-  # Stash does not implement XHTTP; each strict subscription has five nodes.
-  render_stash_yaml "${NEKO_SUB_DIR}/stash-v4.yaml" "$SUBSCRIPTION_IPV4_ADDRESS"
-  render_stash_yaml "${NEKO_SUB_DIR}/stash-v6.yaml" "$SUBSCRIPTION_IPV6_ADDRESS"
-  render_shadowrocket "${NEKO_SUB_DIR}/shadowrocket-v4.txt" "$SUBSCRIPTION_IPV4_ADDRESS"
-  render_shadowrocket "${NEKO_SUB_DIR}/shadowrocket-v6.txt" "$SUBSCRIPTION_IPV6_ADDRESS"
-  # Official sing-box Remote Profiles are complete JSON configurations. XHTTP
-  # is intentionally omitted because it is not a sing-box V2Ray transport.
-  render_sing_box_client "${NEKO_SUB_DIR}/sing-box-v4.json" \
-    "$SUBSCRIPTION_IPV4_ADDRESS" "1.1.1.1" "ipv4_only" 6
-  render_sing_box_client "${NEKO_SUB_DIR}/sing-box-v6.json" \
-    "$SUBSCRIPTION_IPV6_ADDRESS" "2606:4700:4700::1111" "ipv6_only" 4
+  rm -f -- \
+    "${NEKO_SUB_DIR}/mihomo-v4.yaml" \
+    "${NEKO_SUB_DIR}/mihomo-v6.yaml" \
+    "${NEKO_SUB_DIR}/stash-v4.yaml" \
+    "${NEKO_SUB_DIR}/stash-v6.yaml" \
+    "${NEKO_SUB_DIR}/shadowrocket-v4.txt" \
+    "${NEKO_SUB_DIR}/shadowrocket-v6.txt" \
+    "${NEKO_SUB_DIR}/sing-box-v4.json" \
+    "${NEKO_SUB_DIR}/sing-box-v6.json"
+  if network_mode_has_ipv4; then
+    render_client_yaml "${NEKO_SUB_DIR}/mihomo-v4.yaml" yes \
+      "$SUBSCRIPTION_IPV4_ADDRESS" ipv4
+    # Stash does not implement XHTTP; each strict subscription has five nodes.
+    render_stash_yaml "${NEKO_SUB_DIR}/stash-v4.yaml" "$SUBSCRIPTION_IPV4_ADDRESS"
+    render_shadowrocket \
+      "${NEKO_SUB_DIR}/shadowrocket-v4.txt" "$SUBSCRIPTION_IPV4_ADDRESS"
+    # Official sing-box Remote Profiles are complete JSON configurations.
+    render_sing_box_client "${NEKO_SUB_DIR}/sing-box-v4.json" \
+      "$SUBSCRIPTION_IPV4_ADDRESS" "1.1.1.1" "ipv4_only" 6
+  fi
+  if network_mode_has_ipv6; then
+    render_client_yaml "${NEKO_SUB_DIR}/mihomo-v6.yaml" yes \
+      "$SUBSCRIPTION_IPV6_ADDRESS" ipv6
+    render_stash_yaml "${NEKO_SUB_DIR}/stash-v6.yaml" "$SUBSCRIPTION_IPV6_ADDRESS"
+    render_shadowrocket \
+      "${NEKO_SUB_DIR}/shadowrocket-v6.txt" "$SUBSCRIPTION_IPV6_ADDRESS"
+    render_sing_box_client "${NEKO_SUB_DIR}/sing-box-v6.json" \
+      "$SUBSCRIPTION_IPV6_ADDRESS" "2606:4700:4700::1111" "ipv6_only" 4
+  fi
 }
 
 render_all() {

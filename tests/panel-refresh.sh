@@ -32,15 +32,16 @@ run_case() {
       }
       load_state() {
         DOMAIN="$(jq -r ".domain" "$NEKO_STATE")"
+        NETWORK_MODE="$(jq -r ".network.mode" "$NEKO_STATE")"
         SUBSCRIPTION_DOMAIN_IPV4="$(jq -r ".subscription.ipv4_domain" "$NEKO_STATE")"
         SUBSCRIPTION_DOMAIN_IPV6="$(jq -r ".subscription.ipv6_domain" "$NEKO_STATE")"
         SUBSCRIPTION_IPV4_ADDRESS="$(jq -r ".subscription.ipv4_address" "$NEKO_STATE")"
         SUBSCRIPTION_IPV6_ADDRESS="$(jq -r ".subscription.ipv6_address" "$NEKO_STATE")"
       }
-      assert_dual_stack_kernel() {
+      assert_network_mode_kernel() {
         printf "dual-stack\n" >> "$CASE_DIR/calls"
       }
-      check_strict_dual_stack_dns() {
+      check_strict_stack_dns() {
         printf "dns\n" >> "$CASE_DIR/calls"
         SUBSCRIPTION_DOMAIN_IPV4="v4.example.com"
         SUBSCRIPTION_DOMAIN_IPV6="v6.example.com"
@@ -110,7 +111,7 @@ if find "$WORK/no-change/etc" -maxdepth 1 -name "state.json.backup.*" | grep -q 
 fi
 
 [[ "$(<"$WORK/success/rc")" == 0 ]]
-grep -Fq "端点与八份订阅已刷新" "$WORK/success/output"
+grep -Fq "端点与 8 份订阅已刷新" "$WORK/success/output"
 [[ "$(call_count success render)" == 1 ]]
 [[ "$(call_count success validate)" == 1 ]]
 [[ "$(call_count success restart)" == 1 ]]

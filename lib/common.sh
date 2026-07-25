@@ -12,6 +12,9 @@ CLOUDFLARE_DNS_TOKEN_FILE="${NEKO_VAR}/credentials/cloudflare-dns-api-token"
 
 ACME_METHOD_HTTP="http-01"
 ACME_METHOD_CLOUDFLARE="cloudflare-dns-01"
+NETWORK_MODE_IPV4="ipv4-only"
+NETWORK_MODE_IPV6="ipv6-only"
+NETWORK_MODE_DUAL="dual"
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_BLUE=$'\033[1;34m'
@@ -41,6 +44,54 @@ require_commands() {
   for command_name in "$@"; do
     command -v "$command_name" >/dev/null 2>&1 || die "缺少命令：${command_name}"
   done
+}
+
+normalize_network_mode() {
+  case "${1,,}" in
+    4|ipv4|ipv4-only|v4)
+      printf '%s' "$NETWORK_MODE_IPV4"
+      ;;
+    6|ipv6|ipv6-only|v6)
+      printf '%s' "$NETWORK_MODE_IPV6"
+      ;;
+    both|dual|dual-stack)
+      printf '%s' "$NETWORK_MODE_DUAL"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+network_mode_has_ipv4() {
+  case "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" in
+    "$NETWORK_MODE_IPV4"|"$NETWORK_MODE_DUAL") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+network_mode_has_ipv6() {
+  case "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" in
+    "$NETWORK_MODE_IPV6"|"$NETWORK_MODE_DUAL") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+network_mode_label() {
+  case "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" in
+    "$NETWORK_MODE_IPV4") printf '仅 IPv4' ;;
+    "$NETWORK_MODE_IPV6") printf '仅 IPv6' ;;
+    "$NETWORK_MODE_DUAL") printf 'IPv4 + IPv6 双栈' ;;
+    *) return 1 ;;
+  esac
+}
+
+network_mode_link_count() {
+  if [[ "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" == "$NETWORK_MODE_DUAL" ]]; then
+    printf '8'
+  else
+    printf '4'
+  fi
 }
 
 detect_platform() {
@@ -101,7 +152,7 @@ install_dependencies() {
     apt-get update
     apt-get install -y --no-install-recommends \
       ca-certificates curl jq openssl tar unzip iproute2 procps \
-      nftables util-linux passwd kmod findutils
+      nftables util-linux passwd kmod findutils bind9-dnsutils
   else
     local rhel_package_manager
     if command -v dnf >/dev/null 2>&1; then
@@ -113,8 +164,32 @@ install_dependencies() {
     fi
     "$rhel_package_manager" -y install \
       ca-certificates curl jq openssl tar unzip iproute procps-ng \
-      nftables util-linux shadow-utils kmod findutils
+      nftables util-linux shadow-utils kmod findutils bind-utils
   fi
+}
+
+ensure_dns_query_tool() {
+  command -v dig >/dev/null 2>&1 && return 0
+
+  info "旧安装缺少严格 DNS 检查工具，正在自动补齐……"
+  if command -v apt-get >/dev/null 2>&1; then
+    if ! DEBIAN_FRONTEND=noninteractive apt-get update \
+      || ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        bind9-dnsutils; then
+      die "自动安装 bind9-dnsutils 失败；原安装尚未修改。"
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf -y install bind-utils \
+      || die "自动安装 bind-utils 失败；原安装尚未修改。"
+  elif command -v microdnf >/dev/null 2>&1; then
+    microdnf -y install bind-utils \
+      || die "自动安装 bind-utils 失败；原安装尚未修改。"
+  else
+    die "系统缺少 dig，且找不到 apt-get、dnf 或 microdnf；原安装尚未修改。"
+  fi
+
+  command -v dig >/dev/null 2>&1 \
+    || die "安装 DNS 工具后仍找不到 dig；原安装尚未修改。"
 }
 
 validate_domain() {
@@ -260,31 +335,65 @@ absolute_dns_name() {
   printf '%s.\n' "$name"
 }
 
+dns_records() {
+  local record_type="${1^^}" query_name output status
+  query_name="$(absolute_dns_name "$2")"
+  case "$record_type" in
+    A|AAAA) ;;
+    *) die "不支持的 DNS 记录类型：${record_type}" ;;
+  esac
+
+  if ! output="$(dig +time=4 +tries=2 +noall +answer +comments \
+    "$query_name" "$record_type" 2>&1)"; then
+    die "DNS 查询失败：${query_name} ${record_type}。请检查 VPS 的 DNS 与网络后重试。"
+  fi
+  status="$(
+    sed -nE 's/^;; ->>HEADER<<- opcode: [A-Z]+, status: ([A-Z]+),.*/\1/p' \
+      <<< "$output" | awk 'NR == 1 {print}'
+  )"
+  case "$status" in
+    NOERROR|NXDOMAIN) ;;
+    "")
+      die "无法解析 DNS 查询结果：${query_name} ${record_type}。"
+      ;;
+    *)
+      die "DNS 查询返回 ${status}：${query_name} ${record_type}。请稍后重试。"
+      ;;
+  esac
+
+  # Only accept an RR owned by the queried name itself.  A CNAME followed by
+  # an address for its target is not a direct A/AAAA record and must not pass
+  # the strict endpoint check.
+  awk -v wanted="$record_type" -v owner="${query_name,,}" \
+    'tolower($1) == owner && $4 == wanted {print $5}' <<< "$output"
+}
+
 resolved_addresses() {
-  local query_name
-  query_name="$(absolute_dns_name "$1")"
-  { getent ahosts "$query_name" 2>/dev/null || true; } \
-    | awk '{print $1}' \
-    | sort -u
+  {
+    resolved_ipv4_addresses "$1"
+    resolved_ipv6_addresses "$1"
+  } | sort -u
 }
 
 resolved_ipv4_addresses() {
-  local query_name address
-  query_name="$(absolute_dns_name "$1")"
-  while read -r address _; do
+  local address records
+  records="$(dns_records A "$1")"
+  while IFS= read -r address; do
     if is_ipv4_literal "$address"; then
       printf '%s\n' "$address"
     fi
-  done < <({ getent ahostsv4 "$query_name" 2>/dev/null || true; }) \
-    | sort -u
+  done <<< "$records" | sort -u
 }
 
 resolved_ipv6_addresses() {
-  local query_name
-  query_name="$(absolute_dns_name "$1")"
-  { getent ahostsv6 "$query_name" 2>/dev/null || true; } \
-    | awk '$1 ~ /:/ && $1 ~ /^[0-9A-Fa-f:]+$/ {print tolower($1)}' \
-    | sort -u
+  local address records
+  records="$(dns_records AAAA "$1")"
+  while IFS= read -r address; do
+    address="${address,,}"
+    if is_ipv6_literal "$address"; then
+      printf '%s\n' "$address"
+    fi
+  done <<< "$records" | sort -u
 }
 
 first_resolved_ipv4() {
@@ -381,60 +490,110 @@ derive_subscription_domains() {
     || die "派生的 IPv6 订阅域名无效：${SUBSCRIPTION_DOMAIN_IPV6}"
 }
 
-check_strict_dual_stack_dns() {
-  local domain="$1" base_v4 base_v6 v4_addresses v6_addresses v4_wrong v6_wrong
+check_strict_stack_dns() {
+  local domain="$1" requested_mode="${2:-${NETWORK_MODE:-}}"
+  local base_v4 base_v6 v4_addresses="" v6_addresses="" v4_wrong="" v6_wrong=""
   local v4_count v6_count
+  requested_mode="$(normalize_network_mode "$requested_mode")" \
+    || die "不支持的网络安装模式：${requested_mode:-empty}"
   derive_subscription_domains "$domain"
 
-  v4_addresses="$(resolved_ipv4_addresses "$SUBSCRIPTION_DOMAIN_IPV4")"
-  v6_addresses="$(resolved_ipv6_addresses "$SUBSCRIPTION_DOMAIN_IPV6")"
+  SUBSCRIPTION_IPV4_ADDRESS=""
+  SUBSCRIPTION_IPV6_ADDRESS=""
+  if network_mode_has_ipv4 "$requested_mode"; then
+    v4_addresses="$(resolved_ipv4_addresses "$SUBSCRIPTION_DOMAIN_IPV4")"
+    v4_wrong="$(first_resolved_ipv6 "$SUBSCRIPTION_DOMAIN_IPV4")"
+  fi
+  if network_mode_has_ipv6 "$requested_mode"; then
+    v6_addresses="$(resolved_ipv6_addresses "$SUBSCRIPTION_DOMAIN_IPV6")"
+    v6_wrong="$(first_resolved_ipv4 "$SUBSCRIPTION_DOMAIN_IPV6")"
+  fi
   v4_count="$(awk 'NF {count++} END {print count + 0}' <<< "$v4_addresses")"
   v6_count="$(awk 'NF {count++} END {print count + 0}' <<< "$v6_addresses")"
   SUBSCRIPTION_IPV4_ADDRESS="$(awk 'NF {value=$0} END {if (value != "") print value}' <<< "$v4_addresses")"
   SUBSCRIPTION_IPV6_ADDRESS="$(awk 'NF {value=$0} END {if (value != "") print value}' <<< "$v6_addresses")"
-  v4_wrong="$(first_resolved_ipv6 "$SUBSCRIPTION_DOMAIN_IPV4")"
-  v6_wrong="$(first_resolved_ipv4 "$SUBSCRIPTION_DOMAIN_IPV6")"
-
-  (( v4_count == 1 )) || die \
-    "${SUBSCRIPTION_DOMAIN_IPV4} 必须且只能配置 1 条直连 VPS 的 A 记录；当前检测到 ${v4_count} 条。"
-  [[ -z "$v4_wrong" ]] || die \
-    "${SUBSCRIPTION_DOMAIN_IPV4} 检测到 AAAA（${v4_wrong}）；严格 IPv4 域名不能有 AAAA，请关闭 Cloudflare 橙云并删除该记录。"
-  (( v6_count == 1 )) || die \
-    "${SUBSCRIPTION_DOMAIN_IPV6} 必须且只能配置 1 条直连 VPS 的 AAAA 记录；当前检测到 ${v6_count} 条。"
-  [[ -z "$v6_wrong" ]] || die \
-    "${SUBSCRIPTION_DOMAIN_IPV6} 检测到 A（${v6_wrong}）；严格 IPv6 域名不能有 A，请关闭 Cloudflare 橙云并删除该记录。"
 
   base_v4="$(resolved_ipv4_addresses "$domain")"
   base_v6="$(resolved_ipv6_addresses "$domain")"
-  [[ "$base_v4" == "$v4_addresses" ]] || die \
-    "基础域名 ${domain} 必须且只能使用与 ${SUBSCRIPTION_DOMAIN_IPV4} 相同的 A 记录。"
-  [[ "${base_v6,,}" == "${v6_addresses,,}" ]] || die \
-    "基础域名 ${domain} 必须且只能使用与 ${SUBSCRIPTION_DOMAIN_IPV6} 相同的 AAAA 记录。"
 
-  info "严格双栈 DNS 检查通过："
-  printf '  - IPv4：%s -> %s\n' "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_IPV4_ADDRESS"
-  printf '  - IPv6：%s -> %s\n' "$SUBSCRIPTION_DOMAIN_IPV6" "$SUBSCRIPTION_IPV6_ADDRESS"
-  warn "三个域名都必须保持 Cloudflare DNS only（灰云）；安装还会执行所选的 ACME 域名验证。"
+  if network_mode_has_ipv4 "$requested_mode"; then
+    (( v4_count == 1 )) || die \
+      "${SUBSCRIPTION_DOMAIN_IPV4} 必须且只能配置 1 条直连 VPS 的 A 记录；当前检测到 ${v4_count} 条。"
+    [[ -z "$v4_wrong" ]] || die \
+      "${SUBSCRIPTION_DOMAIN_IPV4} 检测到 AAAA（${v4_wrong}）；严格 IPv4 域名不能有 AAAA，请关闭 Cloudflare 橙云并删除该记录。"
+    [[ "$base_v4" == "$v4_addresses" ]] || die \
+      "基础域名 ${domain} 必须且只能使用与 ${SUBSCRIPTION_DOMAIN_IPV4} 相同的 A 记录。"
+  else
+    [[ -z "$base_v4" ]] || die \
+      "当前选择仅 IPv6，但基础域名 ${domain} 仍有 A 记录；请删除 A 后重试。"
+  fi
+
+  if network_mode_has_ipv6 "$requested_mode"; then
+    (( v6_count == 1 )) || die \
+      "${SUBSCRIPTION_DOMAIN_IPV6} 必须且只能配置 1 条直连 VPS 的 AAAA 记录；当前检测到 ${v6_count} 条。"
+    [[ -z "$v6_wrong" ]] || die \
+      "${SUBSCRIPTION_DOMAIN_IPV6} 检测到 A（${v6_wrong}）；严格 IPv6 域名不能有 A，请关闭 Cloudflare 橙云并删除该记录。"
+    [[ "${base_v6,,}" == "${v6_addresses,,}" ]] || die \
+      "基础域名 ${domain} 必须且只能使用与 ${SUBSCRIPTION_DOMAIN_IPV6} 相同的 AAAA 记录。"
+  else
+    [[ -z "$base_v6" ]] || die \
+      "当前选择仅 IPv4，但基础域名 ${domain} 仍有 AAAA 记录；请删除 AAAA 后重试。"
+  fi
+
+  info "严格 $(network_mode_label "$requested_mode") DNS 检查通过："
+  if network_mode_has_ipv4 "$requested_mode"; then
+    printf '  - IPv4：%s -> %s\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUBSCRIPTION_IPV4_ADDRESS"
+  fi
+  if network_mode_has_ipv6 "$requested_mode"; then
+    printf '  - IPv6：%s -> %s\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUBSCRIPTION_IPV6_ADDRESS"
+  fi
+  warn "基础域名和已启用的订阅域名必须保持 DNS only（灰云）；安装还会执行所选的 ACME 域名验证。"
+}
+
+check_strict_dual_stack_dns() {
+  check_strict_stack_dns "$1" "$NETWORK_MODE_DUAL"
+}
+
+assert_network_mode_kernel() {
+  local requested_mode="${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}"
+  local disable_ipv6 ipv4_default_routes ipv6_default_routes
+  requested_mode="$(normalize_network_mode "$requested_mode")" \
+    || die "不支持的网络安装模式：${requested_mode:-empty}"
+  if network_mode_has_ipv4 "$requested_mode"; then
+    ipv4_default_routes="$(ip -4 route show default 2>/dev/null || true)"
+    [[ -n "$ipv4_default_routes" ]] \
+      || die "系统没有 IPv4 默认路由，无法提供严格 IPv4 订阅。"
+  fi
+  if network_mode_has_ipv6 "$requested_mode"; then
+    disable_ipv6="$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || printf 1)"
+    [[ "$disable_ipv6" == "0" ]] \
+      || die "系统内核已禁用 IPv6，无法提供严格 IPv6 订阅。"
+    ipv6_default_routes="$(ip -6 route show default 2>/dev/null || true)"
+    [[ -n "$ipv6_default_routes" ]] \
+      || die "系统没有 IPv6 默认路由，无法提供严格 IPv6 订阅。"
+  fi
 }
 
 assert_dual_stack_kernel() {
-  local disable_ipv6 ipv4_default_routes ipv6_default_routes
-  disable_ipv6="$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || printf 1)"
-  [[ "$disable_ipv6" == "0" ]] || die "系统内核已禁用 IPv6，无法提供严格 IPv6 订阅。"
-  ipv4_default_routes="$(ip -4 route show default 2>/dev/null || true)"
-  ipv6_default_routes="$(ip -6 route show default 2>/dev/null || true)"
-  [[ -n "$ipv4_default_routes" ]] || die "系统没有 IPv4 默认路由，无法提供严格 IPv4 订阅。"
-  [[ -n "$ipv6_default_routes" ]] || die "系统没有 IPv6 默认路由，无法提供严格 IPv6 订阅。"
+  assert_network_mode_kernel "$NETWORK_MODE_DUAL"
 }
 
 assert_strict_addresses_local() {
-  local route_v4 route_v6
-  route_v4="$(ip -4 route get "$SUBSCRIPTION_IPV4_ADDRESS" 2>/dev/null || true)"
-  route_v6="$(ip -6 route get "$SUBSCRIPTION_IPV6_ADDRESS" 2>/dev/null || true)"
-  [[ "$(awk 'NR == 1 {print $1}' <<< "$route_v4")" == "local" ]] || die \
-    "${SUBSCRIPTION_IPV4_ADDRESS} 不是本机网卡地址；无法把 IPv4 入站和出站严格绑定到它。"
-  [[ "$(awk 'NR == 1 {print $1}' <<< "$route_v6")" == "local" ]] || die \
-    "${SUBSCRIPTION_IPV6_ADDRESS} 不是本机网卡地址；无法把 IPv6 入站和出站严格绑定到它。"
+  local requested_mode="${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" route_v4 route_v6
+  requested_mode="$(normalize_network_mode "$requested_mode")" \
+    || die "不支持的网络安装模式：${requested_mode:-empty}"
+  if network_mode_has_ipv4 "$requested_mode"; then
+    route_v4="$(ip -4 route get "$SUBSCRIPTION_IPV4_ADDRESS" 2>/dev/null || true)"
+    [[ "$(awk 'NR == 1 {print $1}' <<< "$route_v4")" == "local" ]] || die \
+      "${SUBSCRIPTION_IPV4_ADDRESS} 不是本机网卡地址；无法把 IPv4 入站和出站严格绑定到它。"
+  fi
+  if network_mode_has_ipv6 "$requested_mode"; then
+    route_v6="$(ip -6 route get "$SUBSCRIPTION_IPV6_ADDRESS" 2>/dev/null || true)"
+    [[ "$(awk 'NR == 1 {print $1}' <<< "$route_v6")" == "local" ]] || die \
+      "${SUBSCRIPTION_IPV6_ADDRESS} 不是本机网卡地址；无法把 IPv6 入站和出站严格绑定到它。"
+  fi
 }
 
 random_hex() {
@@ -584,7 +743,7 @@ load_state() {
   [[ -r "$NEKO_STATE" ]] || die "找不到安装状态：${NEKO_STATE}"
 
   state_schema="$(state_value '.schema')"
-  [[ "$state_schema" == "2" ]] \
+  [[ "$state_schema" == "3" ]] \
     || die "安装状态 schema 为 ${state_schema}；请先运行当前版本的升级脚本。"
   DOMAIN="$(state_value '.domain')"
   ACME_EMAIL="$(state_value '.acme_email')"
@@ -615,35 +774,66 @@ load_state() {
   XHTTP_PUBLIC_KEY="$(state_value '.reality.xhttp_public_key')"
   XHTTP_SHORT_ID="$(state_value '.reality.xhttp_short_id')"
   XHTTP_PATH="$(state_value '.reality.xhttp_path')"
-  SUB_TOKEN="$(state_value '.subscription.token')"
-  [[ "$SUB_TOKEN" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
-    || die "state.json 中的订阅令牌格式无效。"
+  NETWORK_MODE="$(jq -r '.network.mode // empty' "$NEKO_STATE")"
+  NETWORK_MODE="$(normalize_network_mode "$NETWORK_MODE")" \
+    || die "state.json 中的网络安装模式无效。"
+  SUB_TOKEN_IPV4="$(jq -r '.subscription.ipv4_token // empty' "$NEKO_STATE")"
+  SUB_TOKEN_IPV6="$(jq -r '.subscription.ipv6_token // empty' "$NEKO_STATE")"
   SUBSCRIPTION_DOMAIN_IPV4="$(jq -r '.subscription.ipv4_domain // empty' "$NEKO_STATE")"
   SUBSCRIPTION_DOMAIN_IPV6="$(jq -r '.subscription.ipv6_domain // empty' "$NEKO_STATE")"
   SUBSCRIPTION_IPV4_ADDRESS="$(jq -r '.subscription.ipv4_address // empty' "$NEKO_STATE")"
   SUBSCRIPTION_IPV6_ADDRESS="$(jq -r '.subscription.ipv6_address // empty' "$NEKO_STATE")"
-  [[ -n "$SUBSCRIPTION_DOMAIN_IPV4" && -n "$SUBSCRIPTION_DOMAIN_IPV6" \
-    && -n "$SUBSCRIPTION_IPV4_ADDRESS" && -n "$SUBSCRIPTION_IPV6_ADDRESS" ]] \
-    || die "安装状态缺少严格双栈订阅字段；请先运行当前版本的升级脚本。"
-  validate_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
-    || die "state.json 中的 IPv4 订阅域名无效。"
-  validate_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
-    || die "state.json 中的 IPv6 订阅域名无效。"
   expected_ipv4_domain="v4.${DOMAIN}"
   expected_ipv6_domain="v6.${DOMAIN}"
-  [[ "$SUBSCRIPTION_DOMAIN_IPV4" == "$expected_ipv4_domain" ]] \
-    || die "state.json 中的 IPv4 订阅域名不是 ${expected_ipv4_domain}。"
-  [[ "$SUBSCRIPTION_DOMAIN_IPV6" == "$expected_ipv6_domain" ]] \
-    || die "state.json 中的 IPv6 订阅域名不是 ${expected_ipv6_domain}。"
-  is_ipv4_literal "$SUBSCRIPTION_IPV4_ADDRESS" \
-    || die "state.json 中的严格 IPv4 地址无效。"
-  is_ipv6_literal "$SUBSCRIPTION_IPV6_ADDRESS" \
-    || die "state.json 中的严格 IPv6 地址无效。"
-  LISTEN_ADDRESS="$(jq -r '.network.listen_address // "::"' "$NEKO_STATE")"
-  [[ "$LISTEN_ADDRESS" == "::" ]] \
-    || die "严格双栈模式要求 network.listen_address 为 ::。"
+  if network_mode_has_ipv4 "$NETWORK_MODE"; then
+    [[ "$SUB_TOKEN_IPV4" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+      || die "state.json 中的 IPv4 订阅令牌格式无效。"
+    validate_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
+      || die "state.json 中的 IPv4 订阅域名无效。"
+    [[ "$SUBSCRIPTION_DOMAIN_IPV4" == "$expected_ipv4_domain" ]] \
+      || die "state.json 中的 IPv4 订阅域名不是 ${expected_ipv4_domain}。"
+    is_ipv4_literal "$SUBSCRIPTION_IPV4_ADDRESS" \
+      || die "state.json 中的严格 IPv4 地址无效。"
+  else
+    SUB_TOKEN_IPV4=""
+    SUBSCRIPTION_DOMAIN_IPV4=""
+    SUBSCRIPTION_IPV4_ADDRESS=""
+  fi
+  if network_mode_has_ipv6 "$NETWORK_MODE"; then
+    [[ "$SUB_TOKEN_IPV6" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+      || die "state.json 中的 IPv6 订阅令牌格式无效。"
+    validate_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
+      || die "state.json 中的 IPv6 订阅域名无效。"
+    [[ "$SUBSCRIPTION_DOMAIN_IPV6" == "$expected_ipv6_domain" ]] \
+      || die "state.json 中的 IPv6 订阅域名不是 ${expected_ipv6_domain}。"
+    is_ipv6_literal "$SUBSCRIPTION_IPV6_ADDRESS" \
+      || die "state.json 中的严格 IPv6 地址无效。"
+  else
+    SUB_TOKEN_IPV6=""
+    SUBSCRIPTION_DOMAIN_IPV6=""
+    SUBSCRIPTION_IPV6_ADDRESS=""
+  fi
   CERT_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.crt"
   KEY_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.key"
+}
+
+active_certificate_domains() {
+  printf '%s\n' "$DOMAIN"
+  if network_mode_has_ipv4; then
+    printf '%s\n' "$SUBSCRIPTION_DOMAIN_IPV4"
+  fi
+  if network_mode_has_ipv6; then
+    printf '%s\n' "$SUBSCRIPTION_DOMAIN_IPV6"
+  fi
+}
+
+certificate_has_active_domains() {
+  local certificate_file="$1" certificate_domain
+  [[ -s "$certificate_file" ]] || return 1
+  while IFS= read -r certificate_domain; do
+    openssl x509 -in "$certificate_file" -noout -checkhost "$certificate_domain" \
+      >/dev/null 2>&1 || return 1
+  done < <(active_certificate_domains)
 }
 
 urlencode_path() {
@@ -656,35 +846,42 @@ urlencode_path() {
 
 show_subscription_links() {
   load_state
-  printf '\nMihomo IPv4（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
-  printf 'Mihomo IPv6（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
-  printf 'Stash IPv4（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
-  printf 'Stash IPv6（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
-  printf 'Shadowrocket IPv4（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
-  printf 'Shadowrocket IPv6（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
-  printf 'sing-box IPv4（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN"
-  printf 'sing-box IPv6（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
-    "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN"
+  printf '\n当前模式：%s\n' "$(network_mode_label)"
+  if network_mode_has_ipv4; then
+    printf '\nMihomo IPv4（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
+    printf 'Stash IPv4（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
+    printf 'Shadowrocket IPv4（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
+    printf 'sing-box IPv4（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
+  fi
+  if network_mode_has_ipv6; then
+    printf 'Mihomo IPv6（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
+    printf 'Stash IPv6（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
+    printf 'Shadowrocket IPv6（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
+    printf 'sing-box IPv6（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
+      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
+  fi
 }
 
 show_required_ports() {
   load_state
+  local family_label
+  family_label="$(network_mode_label)"
   if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
-    printf 'IPv4 与 IPv6 云防火墙 TCP：80, 443, %s, %s, %s, %s\n' \
+    printf '%s 云防火墙 TCP：80, 443, %s, %s, %s, %s\n' "$family_label" \
       "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
   else
-    printf 'IPv4 与 IPv6 云防火墙 TCP：443, %s, %s, %s, %s\n' \
+    printf '%s 云防火墙 TCP：443, %s, %s, %s, %s\n' "$family_label" \
       "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
     printf 'TCP 80：DNS-01 模式无需公网放行（Caddy 仍会在本机监听 HTTP 跳转）。\n'
   fi
-  printf 'IPv4 与 IPv6 云防火墙 UDP：%s-%s, %s, %s\n' \
-    "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT"
+  printf '%s 云防火墙 UDP：%s-%s, %s, %s\n' \
+    "$family_label" "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT"
   printf '仅回环 TCP：8443（不要对公网放行）\n'
 }

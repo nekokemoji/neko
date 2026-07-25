@@ -25,22 +25,17 @@ detect_platform
 printf '通过：%s %s / %s（Bash %s）\n' \
   "$OS_ID" "$OS_VERSION" "$ARCH" "${BASH_VERSION}"
 
-# Debian 12 ships mawk 1.3.4.20200120, which does not understand interval
-# expressions such as {1,3}.  Exercise the real distro awk while mocking only
-# the resolver, so the strict IPv4 parser remains portable across the matrix.
-getent() {
-  case "${1:-}:${2:-}" in
-    ahostsv4:v4.neko-test.invalid.)
-      printf '%s\n' \
-        '192.0.2.44 STREAM' \
-        '192.0.2.44 DGRAM' \
-        '999.0.0.1 RAW' \
-        'not-an-address RAW'
-      ;;
-  esac
+# Exercise each distro's real awk while mocking only the explicit DNS query,
+# so malformed A answers are rejected consistently across the matrix.
+dig() {
+  printf '%s\n' \
+    ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1' \
+    'v4.neko-test.invalid. 60 IN A 192.0.2.44' \
+    'v4.neko-test.invalid. 60 IN A 999.0.0.1' \
+    'v4.neko-test.invalid. 60 IN A not-an-address'
 }
 [[ "$(resolved_ipv4_addresses v4.neko-test.invalid)" == "192.0.2.44" ]]
-unset -f getent
+unset -f dig
 
 if [[ -n "${NEKO_CONTAINER_BOOTSTRAP_ARCHIVE:-}" ]]; then
   NEKO_BOOTSTRAP_ARCHIVE="$NEKO_CONTAINER_BOOTSTRAP_ARCHIVE" \
@@ -70,3 +65,4 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 bash "$ROOT/tests/subscription-render-smoke.sh"
+bash "$ROOT/tests/family-render-smoke.sh"

@@ -1,10 +1,13 @@
 {
-  "schema": 2,
+  "schema": 3,
   "release": "1.0.0-test",
   "domain": "example.com",
   "acme_email": "admin@example.com",
   "acme": {
     "method": "http-01"
+  },
+  "network": {
+    "mode": "dual"
   },
   "ports": {
     "hysteria2_start": 21000,
@@ -35,7 +38,8 @@
     "xhttp_path": "/test-xhttp"
   },
   "subscription": {
-    "token": "test-subscription-token",
+    "ipv4_token": "test-subscription-token",
+    "ipv6_token": "test-subscription-token",
     "ipv4_domain": "v4.example.com",
     "ipv6_domain": "v6.example.com",
     "ipv4_address": "127.0.0.1",
