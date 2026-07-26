@@ -26,7 +26,7 @@ EOF
 chmod 0755 "$WORK/fake-qrc"
 
 panel_output="$(
-  printf '1\n1\n\n0\n0\n' \
+  printf '1\n\n0\n' \
     | NEKO_ETC="$WORK/etc" \
       NEKO_STATE="$WORK/etc/state.json" \
       NEKO_LIBEXEC="$WORK/libexec" \
@@ -34,7 +34,8 @@ panel_output="$(
       NEKO_QR_ARGS_LOG="$WORK/qrc.args" \
       NEKO_QR_STDIN_LOG="$WORK/qrc.stdin" \
       NEKO_QR_TEST_MODE=1 COLUMNS=120 TERM=xterm \
-      bash "$WORK/libexec/panel.sh" 2>&1
+      bash -c 'source "$1"; draw_menu; subscription_qr_menu' \
+        _ "$WORK/libexec/panel.sh" 2>&1
 )"
 expected_url='https://v4.example.com/test-subscription-token/mihomo.yaml'
 [[ "$(< "$WORK/qrc.stdin")" == "$expected_url" ]]
@@ -77,13 +78,14 @@ for mode in ipv4-only ipv6-only; do
       end
   ' "$ROOT/tests/fixtures/state.json" > "$WORK/etc/state-${mode}.json"
   single_output="$(
-    printf '1\n0\n0\n' \
+    printf '0\n' \
       | NEKO_ETC="$WORK/etc" \
         NEKO_STATE="$WORK/etc/state-${mode}.json" \
         NEKO_LIBEXEC="$WORK/libexec" \
         NEKO_QRC_BINARY="$WORK/fake-qrc" \
         NEKO_QR_TEST_MODE=1 COLUMNS=120 TERM=xterm \
-        bash "$WORK/libexec/panel.sh" 2>&1
+        bash -c 'source "$1"; subscription_qr_menu' \
+          _ "$WORK/libexec/panel.sh" 2>&1
   )"
   [[ "$single_output" == *"4. sing-box ${installed_family}（严格）"* ]]
   [[ "$single_output" != *"Mihomo ${missing_family}（严格）"* ]]
