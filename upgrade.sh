@@ -17,6 +17,8 @@ NEKO_USER="${NEKO_USER:-neko-proxy}"
 NEKO_UPDATE_TMP_DIR="${NEKO_UPDATE_TMP_DIR:-/var/tmp}"
 NEKO_UPDATE_LOCK_FILE="${NEKO_UPDATE_LOCK_FILE:-/run/lock/neko-maintenance.lock}"
 BACKUP_DIR=""
+QRC_STAGE_DIR=""
+QRC_STAGED_BINARY=""
 ROLLBACK_READY=0
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
@@ -30,6 +32,95 @@ cleanup_backup() {
   if [[ -n "$BACKUP_DIR" && "$BACKUP_DIR" == "$base"/neko-upgrade-backup.* ]]; then
     rm -rf -- "$BACKUP_DIR"
   fi
+}
+
+cleanup_qrc_stage() {
+  local base="${NEKO_UPDATE_TMP_DIR%/}"
+  [[ -n "$QRC_STAGE_DIR" ]] || return 0
+  if [[ -n "$base" && "$QRC_STAGE_DIR" == "$base"/neko-qrc-stage.* ]]; then
+    rm -rf -- "$QRC_STAGE_DIR"
+    QRC_STAGE_DIR=""
+    QRC_STAGED_BINARY=""
+  fi
+}
+
+stage_optional_qrc() {
+  local qrc_source="${NEKO_UPDATE_QRC_BINARY:-}"
+  local qrc_asset qrc_archive qrc_help
+
+  case "${ARCH_OVERRIDE:-$(uname -m)}" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *)
+      warn "当前 CPU 没有匹配的 qrc；升级仍会继续，文字订阅链接不受影响。"
+      return 0
+      ;;
+  esac
+  export ARCH
+
+  if ! QRC_STAGE_DIR="$(
+      mktemp -d "${NEKO_UPDATE_TMP_DIR%/}/neko-qrc-stage.XXXXXX"
+    )"; then
+    QRC_STAGE_DIR=""
+    warn "无法创建 qrc 临时目录；升级仍会继续，文字订阅链接不受影响。"
+    return 0
+  fi
+  QRC_STAGED_BINARY="${QRC_STAGE_DIR}/qrc"
+
+  if [[ -n "$qrc_source" ]]; then
+    if [[ ! -x "$qrc_source" ]] \
+      || ! install -m 0755 "$qrc_source" "$QRC_STAGED_BINARY"; then
+      warn "测试提供的 qrc 不可用；升级仍会继续，文字订阅链接不受影响。"
+      cleanup_qrc_stage
+      return 0
+    fi
+  else
+    for qrc_source in curl sha256sum tar install; do
+      if ! command -v "$qrc_source" >/dev/null 2>&1; then
+        warn "缺少 ${qrc_source}，无法更新可选 qrc；文字订阅链接不受影响。"
+        cleanup_qrc_stage
+        return 0
+      fi
+    done
+    qrc_asset="qrc_${QRC_VERSION}_linux_${ARCH}.tar.gz"
+    qrc_archive="${QRC_STAGE_DIR}/qrc.tar.gz"
+    if ! download_optional_verified "qrc ${QRC_VERSION}" \
+        "https://github.com/fumiyas/qrc/releases/download/v${QRC_VERSION}/${qrc_asset}" \
+        "$(sha_for_arch QRC)" "$qrc_archive"; then
+      cleanup_qrc_stage
+      return 0
+    fi
+    if ! tar --no-same-owner -xzf "$qrc_archive" \
+        -C "$QRC_STAGE_DIR" qrc \
+      || [[ ! -f "$QRC_STAGED_BINARY" ]] \
+      || ! chmod 0755 "$QRC_STAGED_BINARY"; then
+      warn "qrc 准备失败；升级仍会继续，文字订阅链接不受影响。"
+      cleanup_qrc_stage
+      return 0
+    fi
+  fi
+
+  if ! qrc_help="$("$QRC_STAGED_BINARY" --help 2>&1)" \
+    || ! grep -Fq -- '--output-format=<auto|ansi|sixel|unicode>' \
+      <<< "$qrc_help"; then
+    warn "qrc 运行检查失败；升级仍会继续，文字订阅链接不受影响。"
+    cleanup_qrc_stage
+    return 0
+  fi
+  ok "可选终端二维码组件 qrc ${QRC_VERSION} 已校验。"
+}
+
+install_staged_qrc() {
+  local qrc_tmp=""
+  [[ -n "$QRC_STAGED_BINARY" && -x "$QRC_STAGED_BINARY" ]] || return 0
+  if ! qrc_tmp="$(mktemp "${NEKO_LIBEXEC}/.qrc.tmp.XXXXXX")" \
+    || ! install -m 0755 "$QRC_STAGED_BINARY" "$qrc_tmp" \
+    || ! mv -f -- "$qrc_tmp" "$NEKO_LIBEXEC/qrc"; then
+    [[ -z "$qrc_tmp" ]] || rm -f -- "$qrc_tmp"
+    warn "qrc 安装失败；已保留原状态，文字订阅链接不受影响。"
+    return 0
+  fi
+  ok "终端二维码组件已更新。"
 }
 
 restore_tree() {
@@ -61,6 +152,8 @@ rollback_upgrade() {
   restore_optional_file \
     "$BACKUP_DIR/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh" || rollback_ok=0
   restore_optional_file \
+    "$BACKUP_DIR/qrc" "$NEKO_LIBEXEC/qrc" || rollback_ok=0
+  restore_optional_file \
     "$BACKUP_DIR/neko-hysteria.service" \
     "$NEKO_SYSTEMD/neko-hysteria.service" || rollback_ok=0
   systemctl daemon-reload >/dev/null 2>&1 || rollback_ok=0
@@ -68,6 +161,7 @@ rollback_upgrade() {
     neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service \
     >/dev/null 2>&1 || rollback_ok=0
   if (( rollback_ok == 1 )); then
+    cleanup_qrc_stage
     cleanup_backup
   else
     warn "自动恢复未完全成功；为防止数据丢失，备份保留在 ${BACKUP_DIR}。"
@@ -81,6 +175,7 @@ finish_upgrade() {
   if (( rc != 0 && ROLLBACK_READY == 1 )); then
     rollback_upgrade "$rc"
   fi
+  cleanup_qrc_stage
   cleanup_backup
   exit "$rc"
 }
@@ -189,6 +284,7 @@ main() {
     || die "systemd 单元目录不可写：${NEKO_SYSTEMD}"
   [[ -d "$NEKO_UPDATE_TMP_DIR" && -w "$NEKO_UPDATE_TMP_DIR" ]] \
     || die "升级临时目录不可写：${NEKO_UPDATE_TMP_DIR}"
+  stage_optional_qrc
 
   current_schema="$(jq -er '.schema // 1 | select(type == "number")' "$NEKO_STATE")" \
     || die "state.json 缺少有效 schema。"
@@ -229,6 +325,8 @@ main() {
   cp -a -- "$NEKO_LIBEXEC/renew.sh" "$BACKUP_DIR/renew.sh"
   [[ ! -e "$NEKO_LIBEXEC/hysteria-dual.sh" ]] \
     || cp -a -- "$NEKO_LIBEXEC/hysteria-dual.sh" "$BACKUP_DIR/hysteria-dual.sh"
+  [[ ! -e "$NEKO_LIBEXEC/qrc" ]] \
+    || cp -a -- "$NEKO_LIBEXEC/qrc" "$BACKUP_DIR/qrc"
   [[ ! -e "$NEKO_SYSTEMD/neko-hysteria.service" ]] \
     || cp -a -- \
       "$NEKO_SYSTEMD/neko-hysteria.service" "$BACKUP_DIR/neko-hysteria.service"
@@ -242,6 +340,7 @@ main() {
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
   install -m 0755 \
     "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
+  install_staged_qrc
   install -m 0644 \
     "$SCRIPT_DIR/systemd/neko-hysteria.service" \
     "$NEKO_SYSTEMD/neko-hysteria.service"
@@ -356,6 +455,7 @@ main() {
   done
 
   ROLLBACK_READY=0
+  cleanup_qrc_stage
   cleanup_backup
   ok "已从 Neko ${current_release} 升级到 ${NEKO_RELEASE}。"
   show_subscription_links

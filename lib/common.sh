@@ -723,6 +723,31 @@ download_verified() {
     || die "${label} 的 SHA-256 校验失败。"
 }
 
+download_optional_verified() {
+  local label="$1" url="$2" expected="$3" output="$4"
+  if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+    warn "${label} 缺少固定 SHA-256；跳过这个可选组件。"
+    return 1
+  fi
+  info "下载可选组件 ${label}……"
+  if ! curl --fail --location --silent --show-error \
+      --retry 4 --retry-all-errors --connect-timeout 15 \
+      --max-time 120 --speed-limit 1024 --speed-time 30 \
+      --proto '=https' --tlsv1.2 \
+      --output "$output" "$url"; then
+    rm -f -- "$output"
+    warn "${label} 下载失败；Neko 仍会继续安装，文字订阅链接不受影响。"
+    return 1
+  fi
+  if ! printf '%s  %s\n' "$expected" "$output" \
+      | sha256sum --check --status; then
+    rm -f -- "$output"
+    warn "${label} 的 SHA-256 校验失败；已丢弃文件，文字订阅链接不受影响。"
+    return 1
+  fi
+  return 0
+}
+
 atomic_json_update() {
   local filter="$1"
   shift
@@ -844,29 +869,152 @@ urlencode_path() {
   printf '%s' "$value"
 }
 
+subscription_client_label() {
+  case "$1" in
+    mihomo) printf 'Mihomo' ;;
+    stash) printf 'Stash' ;;
+    shadowrocket) printf 'Shadowrocket' ;;
+    sing-box) printf 'sing-box' ;;
+    *) return 1 ;;
+  esac
+}
+
+subscription_client_filename() {
+  case "$1" in
+    mihomo) printf 'mihomo.yaml' ;;
+    stash) printf 'stash.yaml' ;;
+    shadowrocket) printf 'shadowrocket.txt' ;;
+    sing-box) printf 'sing-box.json' ;;
+    *) return 1 ;;
+  esac
+}
+
+subscription_url() {
+  local family="$1" client="$2" domain token filename
+  filename="$(subscription_client_filename "$client")" || return 1
+  case "$family" in
+    ipv4)
+      network_mode_has_ipv4 || return 1
+      domain="$SUBSCRIPTION_DOMAIN_IPV4"
+      token="$SUB_TOKEN_IPV4"
+      ;;
+    ipv6)
+      network_mode_has_ipv6 || return 1
+      domain="$SUBSCRIPTION_DOMAIN_IPV6"
+      token="$SUB_TOKEN_IPV6"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  [[ -n "$domain" && -n "$token" ]] || return 1
+  printf 'https://%s/%s/%s' "$domain" "$token" "$filename"
+}
+
 show_subscription_links() {
+  local family client family_label client_label url
   load_state
   printf '\n当前模式：%s\n' "$(network_mode_label)"
-  if network_mode_has_ipv4; then
-    printf '\nMihomo IPv4（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
-    printf 'Stash IPv4（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
-    printf 'Shadowrocket IPv4（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
-    printf 'sing-box IPv4（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV4" "$SUB_TOKEN_IPV4"
+  for family in ipv4 ipv6; do
+    if [[ "$family" == ipv4 ]]; then
+      network_mode_has_ipv4 || continue
+      family_label=IPv4
+    else
+      network_mode_has_ipv6 || continue
+      family_label=IPv6
+    fi
+    for client in mihomo stash shadowrocket sing-box; do
+      client_label="$(subscription_client_label "$client")"
+      url="$(subscription_url "$family" "$client")"
+      printf '\n%s %s（严格）：\n%s\n' \
+        "$client_label" "$family_label" "$url"
+    done
+  done
+  printf '\n'
+}
+
+terminal_columns() {
+  local size rows columns
+  if [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && (( COLUMNS > 0 )); then
+    printf '%s' "$COLUMNS"
+    return 0
   fi
-  if network_mode_has_ipv6; then
-    printf 'Mihomo IPv6（严格）：\nhttps://%s/%s/mihomo.yaml\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
-    printf 'Stash IPv6（严格）：\nhttps://%s/%s/stash.yaml\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
-    printf 'Shadowrocket IPv6（严格）：\nhttps://%s/%s/shadowrocket.txt\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
-    printf 'sing-box IPv6（严格）：\nhttps://%s/%s/sing-box.json\n\n' \
-      "$SUBSCRIPTION_DOMAIN_IPV6" "$SUB_TOKEN_IPV6"
+  if command -v stty >/dev/null 2>&1; then
+    size="$(stty size 2>/dev/null < /dev/tty || true)"
+    rows="${size%% *}"
+    columns="${size##* }"
+    if [[ "$rows" =~ ^[0-9]+$ && "$columns" =~ ^[0-9]+$ ]] \
+      && (( rows > 0 && columns > 0 )); then
+      printf '%s' "$columns"
+      return 0
+    fi
   fi
+  printf '80'
+}
+
+unicode_qr_width() {
+  local output="$1" line normalized line_width width=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # sed replaces each three-byte block glyph with one ASCII byte, so the
+    # result is correct even when a minimal image starts Bash in LC_ALL=C.
+    normalized="$(
+      printf '%s' "$line" \
+        | sed 's/▀/#/g; s/▄/#/g; s/█/#/g'
+    )"
+    line_width="${#normalized}"
+    if (( line_width > width )); then
+      width="$line_width"
+    fi
+  done <<< "$output"
+  printf '%s' "$width"
+}
+
+show_terminal_qr() {
+  local url="$1" qrc_binary qr_output qr_width columns
+  local -a qrc_command
+  qrc_binary="${NEKO_QRC_BINARY:-${NEKO_LIBEXEC}/qrc}"
+
+  if [[ ! -x "$qrc_binary" ]]; then
+    warn "二维码组件不可用；上面的文字订阅链接仍可正常使用。"
+    return 0
+  fi
+  if [[ "${NEKO_QR_TEST_MODE:-0}" != "1" ]] \
+    && { [[ ! -t 1 ]] || [[ "${TERM:-dumb}" == dumb ]]; }; then
+    warn "当前输出不是可显示二维码的交互终端；请直接使用上面的文字链接。"
+    return 0
+  fi
+
+  qrc_command=(
+    "$qrc_binary"
+    --output-format unicode
+    --invert
+    --ec-level M
+    --scale 1
+    --border 4
+  )
+  if command -v timeout >/dev/null 2>&1; then
+    qrc_command=(timeout 5 "${qrc_command[@]}")
+  fi
+  if ! qr_output="$(
+      printf '%s' "$url" | "${qrc_command[@]}" 2>/dev/null
+    )" || [[ -z "$qr_output" ]]; then
+    warn "二维码生成失败；上面的文字订阅链接仍可正常使用。"
+    return 0
+  fi
+
+  qr_width="$(unicode_qr_width "$qr_output")"
+  columns="$(terminal_columns)"
+  if [[ "$qr_width" =~ ^[0-9]+$ && "$columns" =~ ^[0-9]+$ ]] \
+    && (( qr_width > columns )); then
+    warn "当前终端约 ${columns} 列，二维码需要 ${qr_width} 列。请横屏或缩小终端字体后重试；文字链接不受影响。"
+    return 0
+  fi
+
+  # qrc's compact Unicode mode packs two modules into one row. Explicit
+  # foreground/background colors keep the code readable on both light and
+  # dark terminal themes; the URL itself is only supplied over stdin.
+  printf '\n\033[30;47m%s\033[0m\n' "$qr_output"
+  warn "二维码等同于订阅密码；请勿分享二维码、截图或上方完整链接。"
 }
 
 show_required_ports() {

@@ -122,7 +122,9 @@ sudo bash install.sh \
 
 非交互安装如果既没有 Token 文件也没有显式指定 `--acme-method`，安装器会停止并说明用法，不会悄悄选择更依赖公网网络的 HTTP-01。
 
-安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前 Neko 版本为 1.3.0，冻结核心见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2；Mihomo 1.19.29 只用于测试生成配置。
+安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前 Neko 版本为 1.3.1，冻结核心见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2。Mihomo 1.19.29 只用于测试生成配置；qrc 0.9.0 是可选的终端二维码渲染器。
+
+qrc 也只从上游精确版本下载并校验对应 amd64/arm64 SHA-256，但它不属于代理运行链路。下载、解压或运行检查失败时，安装和升级仍会完成，面板保留全部文字订阅链接，只不显示二维码。
 
 ## 云安全组与本机防火墙
 
@@ -169,7 +171,7 @@ sudo neko
 
 ```text
 0. 退出
-1. 查看当前 4 个或 8 个严格订阅链接
+1. 查看当前 4 个或 8 个严格订阅链接与二维码
 2. 开启 BBRv1
 3. 按 IPv4/IPv6 重置订阅 URL（不会撤销已导入节点）
 4. 刷新已安装地址族端点
@@ -177,7 +179,11 @@ sudo neko
 6. 卸载全部协议
 ```
 
+选择第 1 项后，先显示所有现有文字链接，再按客户端和地址族选择一个二维码。二维码由 VPS 上固定版本的 qrc 本地生成，不调用在线二维码 API、不写入临时图片，完整订阅 URL 只通过标准输入传给 qrc，不出现在进程命令参数中。面板使用标准 4 模块留白、M 级纠错和紧凑 Unicode 显示；终端太窄、不是交互终端或 qrc 不可用时只给出说明，不影响文字链接和任何代理服务。iPad 可截图后用“照片”识别，也可以直接复制链接。
+
 订阅令牌相当于密码。IPv4 与 IPv6 令牌相互独立；可以只重置一族，也可以同时重置。如果所选地址族尚未安装，面板会明确提示且不修改任何内容。重置令牌只会使对应旧下载 URL 返回 404；已经导入客户端的端口、密码和 UUID 不会因此失效。若怀疑节点凭据泄露，应卸载后重新安装或手动轮换全部协议凭据。
+
+二维码本身等同于完整订阅链接和订阅密码。不要分享面板截图、二维码或完整 URL；二维码功能不会改变“重置订阅 URL”与“补装地址族”的含义。
 
 安装管理只做“补装缺少的地址族”，不提供从双栈降级或删除单族，避免误删仍在使用的订阅。补装前必须先补齐基础域名和新专用域名的 DNS；脚本会重新检查路由、本机地址、证书方式和防火墙，保留原端口、协议凭据和已有地址族令牌，再用事务扩展证书、配置和服务。任何一步失败都会恢复补装前的状态。
 
@@ -191,7 +197,7 @@ sudo neko
 sudo bash upgrade.sh
 ```
 
-升级器保留协议端口、密码、UUID 与原订阅 URL；schema 1/2 的旧共享令牌会同时成为 IPv4 和 IPv6 令牌，因此链接不会无故变化。升级还会按需补齐严格 DNS 查询工具。状态、配置、程序文件、systemd 单元与证书会先备份；任何校验、证书或服务启动失败都会自动回滚。仅最早期 schema 1 的单域名旧 URL 会停用，需要重新导入严格链接。
+升级器保留协议端口、密码、UUID 与原订阅 URL；schema 1/2 的旧共享令牌会同时成为 IPv4 和 IPv6 令牌，因此链接不会无故变化。升级还会按需补齐严格 DNS 查询工具，并尽力安装固定版本的可选 qrc；qrc 失败不会让升级失败。状态、配置、程序文件、systemd 单元、可选 qrc 与证书会先备份；任何校验、证书或服务启动失败都会自动回滚。仅最早期 schema 1 的单域名旧 URL 会停用，需要重新导入严格链接。
 
 ## 证书续期
 
@@ -222,7 +228,7 @@ bash tests/fetch-pinned-tools.sh
 bash tests/run.sh
 ```
 
-测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego 和 Mihomo，分别验证 IPv4-only、IPv6-only、dual 三种服务端配置与 4/4/8 份订阅，覆盖 Remote Profile 真实核心解析、严格 DNS/CNAME 拒绝、Cloudflare/HTTP 两种 ACME 调度、证书从单栈扩展到双栈、API Token 权限与环境隔离、服务端出口阻断、升级迁移、按族令牌轮换、面板补装成功和失败回滚。GitHub Actions 还在 8 个发行版镜像的 amd64/arm64 用户空间中执行语法、平台检测和三种模式渲染，共 16 个组合。
+测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego、Mihomo 和 qrc，分别验证 IPv4-only、IPv6-only、dual 三种服务端配置与 4/4/8 份订阅，覆盖 Remote Profile 真实核心解析、严格 DNS/CNAME 拒绝、Cloudflare/HTTP 两种 ACME 调度、证书从单栈扩展到双栈、API Token 权限与环境隔离、服务端出口阻断、升级迁移、按族令牌轮换、面板补装成功和失败回滚。二维码测试会把真实 qrc 的 Unicode 输出转换为图像，再独立解码并核对原 URL；同时验证链接只走标准输入，以及缺失、失败、窄终端和非交互输出都能安全降级。GitHub Actions 还在 8 个发行版镜像的 amd64/arm64 用户空间中实际执行对应架构的 qrc、语法、平台检测和三种模式渲染，共 16 个组合。
 
 容器用户空间不等同于完整 systemd VM。真实 ACME、公网 IPv4/IPv6、云安全组、重启/卸载循环以及 Stash/Shadowrocket 真机导入仍必须在你自己的可重装 VPS 上做最终验收。详细范围见 [TESTING.md](TESTING.md)。
 
@@ -256,3 +262,4 @@ tests/                   本地与 CI 测试
 - [Caddy 自定义 TLS 证书](https://caddyserver.com/docs/caddyfile/directives/tls)
 - [lego CLI](https://go-acme.github.io/lego/usage/cli/) 与 [Cloudflare DNS provider](https://go-acme.github.io/lego/dns/cloudflare/)
 - [Let’s Encrypt Challenge Types](https://letsencrypt.org/docs/challenge-types/)
+- [qrc 官方仓库与命令行说明](https://github.com/fumiyas/qrc)
