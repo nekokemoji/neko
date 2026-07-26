@@ -632,6 +632,70 @@ manage_address_families() {
   esac
 }
 
+subscription_qr_menu() {
+  local choice index family client family_label client_label url
+  local -a qr_families=() qr_clients=() qr_labels=()
+
+  while true; do
+    load_state
+    qr_families=()
+    qr_clients=()
+    qr_labels=()
+    for family in ipv4 ipv6; do
+      if [[ "$family" == ipv4 ]]; then
+        network_mode_has_ipv4 || continue
+        family_label=IPv4
+      else
+        network_mode_has_ipv6 || continue
+        family_label=IPv6
+      fi
+      for client in mihomo stash shadowrocket sing-box; do
+        client_label="$(subscription_client_label "$client")"
+        qr_families+=("$family")
+        qr_clients+=("$client")
+        qr_labels+=("${client_label} ${family_label}（严格）")
+      done
+    done
+
+    clear 2>/dev/null || true
+    printf '当前严格订阅链接\n'
+    printf '================\n'
+    show_subscription_links
+    printf '订阅二维码（每次显示一个）：\n'
+    for index in "${!qr_labels[@]}"; do
+      printf '%d. %s\n' "$((index + 1))" "${qr_labels[$index]}"
+    done
+    printf '0. 返回\n\n'
+    read -r -p "请选择 [0-${#qr_labels[@]}]：" choice
+
+    [[ -n "$choice" ]] || return 0
+    if [[ ! "$choice" =~ ^[0-9]+$ ]]; then
+      warn "请输入菜单中已有的数字。"
+      sleep 1
+      continue
+    fi
+    index=$((10#$choice))
+    (( index != 0 )) || return 0
+    if (( index < 1 || index > ${#qr_labels[@]} )); then
+      warn "请输入 0 到 ${#qr_labels[@]}。"
+      sleep 1
+      continue
+    fi
+    index=$((index - 1))
+    family="${qr_families[$index]}"
+    client="${qr_clients[$index]}"
+    url="$(subscription_url "$family" "$client")" \
+      || die "无法读取所选订阅链接；安装状态可能不完整。"
+
+    clear 2>/dev/null || true
+    printf '%s\n' "${qr_labels[$index]}"
+    printf '%s\n' "$url"
+    show_terminal_qr "$url"
+    printf '\n可在 iPad 上截图后，用“照片”识别二维码；也可以直接复制上方链接。\n'
+    read -r -p "按 Enter 返回订阅菜单……" _
+  done
+}
+
 uninstall_neko() {
   local answer created_user service
   printf '\n这会删除全部协议、证书、订阅和本工具创建的防火墙规则。\n'
@@ -688,7 +752,7 @@ draw_menu() {
   printf '=================\n'
   printf '当前网络：%s\n\n' "$(network_mode_label)"
   printf '0. 退出\n'
-  printf '1. 查看当前严格订阅链接\n'
+  printf '1. 查看当前严格订阅链接与二维码\n'
   printf '2. 开启 BBRv1\n'
   printf '3. 按 IPv4/IPv6 重置订阅 URL\n'
   printf '4. 刷新已安装地址族端点\n'
@@ -709,7 +773,10 @@ main() {
     read -r -p "请选择 [0-6]：" choice
     case "$choice" in
       0) exit 0 ;;
-      1) show_subscription_links ;;
+      1)
+        subscription_qr_menu
+        continue
+        ;;
       2) enable_bbr ;;
       3) rotate_subscription ;;
       4) refresh_subscription_endpoints ;;

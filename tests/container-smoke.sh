@@ -25,6 +25,18 @@ detect_platform
 printf '通过：%s %s / %s（Bash %s）\n' \
   "$OS_ID" "$OS_VERSION" "$ARCH" "${BASH_VERSION}"
 
+if [[ -n "${NEKO_CONTAINER_QRC:-}" ]]; then
+  [[ -x "$NEKO_CONTAINER_QRC" ]]
+  qrc_help="$("$NEKO_CONTAINER_QRC" --help 2>&1)"
+  [[ "$qrc_help" == *'--output-format=<auto|ansi|sixel|unicode>'* ]]
+  qrc_output="$(
+    printf 'https://v4.neko-test.invalid/token/mihomo.yaml' \
+      | "$NEKO_CONTAINER_QRC" --output-format unicode --invert \
+        --ec-level M --scale 1 --border 4
+  )"
+  [[ -n "$qrc_output" && "$qrc_output" == *'█'* ]]
+fi
+
 # Exercise each distro's real awk while mocking only the explicit DNS query,
 # so malformed A answers are rejected consistently across the matrix.
 dig() {

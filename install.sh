@@ -316,7 +316,8 @@ assert_work_space() {
 }
 
 download_release_binaries() {
-  local xray_asset sing_asset hysteria_asset caddy_asset lego_asset
+  local xray_asset sing_asset hysteria_asset caddy_asset lego_asset qrc_asset
+  local qrc_help=""
   if [[ "$ARCH" == "amd64" ]]; then
     xray_asset="Xray-linux-64.zip"
   else
@@ -326,6 +327,7 @@ download_release_binaries() {
   hysteria_asset="hysteria-linux-${ARCH}"
   caddy_asset="caddy_${CADDY_VERSION}_linux_${ARCH}.tar.gz"
   lego_asset="lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz"
+  qrc_asset="qrc_${QRC_VERSION}_linux_${ARCH}.tar.gz"
 
   mkdir -p "$WORKDIR/downloads" "$WORKDIR/unpack" "$WORKDIR/bin"
   download_verified "Xray ${XRAY_VERSION}" \
@@ -343,6 +345,23 @@ download_release_binaries() {
   download_verified "lego ${LEGO_VERSION}" \
     "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/${lego_asset}" \
     "$(sha_for_arch LEGO)" "$WORKDIR/downloads/lego.tar.gz"
+  if download_optional_verified "qrc ${QRC_VERSION}" \
+      "https://github.com/fumiyas/qrc/releases/download/v${QRC_VERSION}/${qrc_asset}" \
+      "$(sha_for_arch QRC)" "$WORKDIR/downloads/qrc.tar.gz"; then
+    mkdir -p "$WORKDIR/unpack/qrc"
+    if tar --no-same-owner -xzf "$WORKDIR/downloads/qrc.tar.gz" \
+        -C "$WORKDIR/unpack/qrc" qrc \
+      && [[ -f "$WORKDIR/unpack/qrc/qrc" ]] \
+      && install -m 0755 "$WORKDIR/unpack/qrc/qrc" "$WORKDIR/bin/qrc" \
+      && qrc_help="$("$WORKDIR/bin/qrc" --help 2>&1)" \
+      && grep -Fq -- '--output-format=<auto|ansi|sixel|unicode>' \
+        <<< "$qrc_help"; then
+      ok "可选终端二维码组件 qrc ${QRC_VERSION} 已校验。"
+    else
+      rm -f -- "$WORKDIR/bin/qrc"
+      warn "qrc 解压或运行检查失败；Neko 仍会继续安装，文字订阅链接不受影响。"
+    fi
+  fi
 
   unzip -q "$WORKDIR/downloads/xray.zip" -d "$WORKDIR/unpack/xray"
   tar --no-same-owner -xzf "$WORKDIR/downloads/sing-box.tar.gz" -C "$WORKDIR/unpack"
@@ -481,11 +500,20 @@ create_service_user_and_dirs() {
 }
 
 install_payload() {
+  local qrc_tmp="" unit
   install -m 0755 "$WORKDIR/bin/xray" "$NEKO_LIBEXEC/xray"
   install -m 0755 "$WORKDIR/bin/sing-box" "$NEKO_LIBEXEC/sing-box"
   install -m 0755 "$WORKDIR/bin/hysteria" "$NEKO_LIBEXEC/hysteria"
   install -m 0755 "$WORKDIR/bin/caddy" "$NEKO_LIBEXEC/caddy"
   install -m 0755 "$WORKDIR/bin/lego" "$NEKO_LIBEXEC/lego"
+  if [[ -x "$WORKDIR/bin/qrc" ]]; then
+    if ! qrc_tmp="$(mktemp "${NEKO_LIBEXEC}/.qrc.tmp.XXXXXX")" \
+      || ! install -m 0755 "$WORKDIR/bin/qrc" "$qrc_tmp" \
+      || ! mv -f -- "$qrc_tmp" "$NEKO_LIBEXEC/qrc"; then
+      [[ -z "$qrc_tmp" ]] || rm -f -- "$qrc_tmp"
+      warn "qrc 安装失败；Neko 仍会继续安装，文字订阅链接不受影响。"
+    fi
+  fi
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
@@ -495,7 +523,6 @@ install_payload() {
   install -m 0755 "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
   ln -s "$NEKO_LIBEXEC/panel.sh" /usr/local/bin/neko
 
-  local unit
   for unit in \
     neko-caddy.service neko-sing-box.service neko-xray.service \
     neko-hysteria.service neko-renew.service neko-renew.timer; do

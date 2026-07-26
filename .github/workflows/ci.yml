@@ -25,7 +25,8 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends shellcheck python3-yaml
+          sudo apt-get install -y --no-install-recommends \
+            shellcheck python3-yaml zbar-tools
       - name: Fetch pinned core binaries
         run: bash tests/fetch-pinned-tools.sh
       - name: Run test suite
@@ -93,12 +94,20 @@ jobs:
           tar --exclude="${workspace_name}/.git" \
             -czf "$RUNNER_TEMP/neko-bootstrap-source.tar.gz" \
             -C "$workspace_parent" "$workspace_name"
+      - name: Fetch pinned QR binaries
+        run: |
+          bash tests/fetch-pinned-qrc.sh \
+            amd64 "$RUNNER_TEMP/neko-qrc/amd64/qrc"
+          bash tests/fetch-pinned-qrc.sh \
+            arm64 "$RUNNER_TEMP/neko-qrc/arm64/qrc"
       - name: Test amd64 userland
         run: >-
           docker run --rm --platform linux/amd64
           -v "$PWD:/src:ro" -w /src
           -v "$RUNNER_TEMP/neko-bootstrap-source.tar.gz:/tmp/neko-bootstrap-source.tar.gz:ro"
+          -v "$RUNNER_TEMP/neko-qrc:/tmp/neko-qrc:ro"
           -e NEKO_CONTAINER_BOOTSTRAP_ARCHIVE=/tmp/neko-bootstrap-source.tar.gz
+          -e NEKO_CONTAINER_QRC=/tmp/neko-qrc/amd64/qrc
           "${{ matrix.distro.image }}"
           bash tests/container-smoke.sh
           "${{ matrix.distro.id }}"
@@ -109,6 +118,8 @@ jobs:
         run: >-
           docker run --rm --platform linux/arm64
           -v "$PWD:/src:ro" -w /src
+          -v "$RUNNER_TEMP/neko-qrc:/tmp/neko-qrc:ro"
+          -e NEKO_CONTAINER_QRC=/tmp/neko-qrc/arm64/qrc
           "${{ matrix.distro.image }}"
           bash tests/container-smoke.sh
           "${{ matrix.distro.id }}"
