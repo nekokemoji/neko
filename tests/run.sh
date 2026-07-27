@@ -323,7 +323,10 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.3.1"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.4.0"' "$ROOT/versions.env"
+grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
+grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
+grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
 grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
 grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
@@ -925,6 +928,7 @@ decoded_qr="$(
 )"
 [[ "$decoded_qr" == "$qr_url" ]]
 bash "$ROOT/tests/panel-qrcode.sh"
+bash "$ROOT/tests/diagnostics.sh"
 
 printf '[7/9] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
 jq '.subscription.ipv4_token = "replacement-ipv4-token"' \
@@ -1128,6 +1132,7 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
   == "$(jq -r '.token' <<< "$upgrade_identity_before")" ]]
 [[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
+[[ -x "$UPGRADE_OK/libexec/diagnostics.sh" ]]
 cmp -s -- "$QRC" "$UPGRADE_OK/libexec/qrc"
 grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
   "$UPGRADE_OK/systemd/neko-hysteria.service"
@@ -1153,6 +1158,7 @@ run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_SCHEMA2/etc/state.json")" \
   == "$(jq -r '.token' <<< "$schema2_identity_before")" ]]
 [[ -x "$UPGRADE_SCHEMA2/libexec/hysteria-dual.sh" ]]
+[[ -x "$UPGRADE_SCHEMA2/libexec/diagnostics.sh" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
 [[ ! -e "$UPGRADE_SCHEMA2/etc/config/hysteria.yaml" ]]
@@ -1228,6 +1234,7 @@ set -e
     | sort | sha256sum | awk '{print $1}'
 )" == "$subscriptions_before" ]]
 [[ ! -e "$UPGRADE_FAIL/libexec/hysteria-dual.sh" ]]
+[[ ! -e "$UPGRADE_FAIL/libexec/diagnostics.sh" ]]
 grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
 if find "$UPGRADE_FAIL/tmp" -maxdepth 1 \
     \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \) \

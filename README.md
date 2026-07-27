@@ -122,7 +122,7 @@ sudo bash install.sh \
 
 非交互安装如果既没有 Token 文件也没有显式指定 `--acme-method`，安装器会停止并说明用法，不会悄悄选择更依赖公网网络的 HTTP-01。
 
-安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前 Neko 版本为 1.3.1，冻结核心见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2。Mihomo 1.19.29 只用于测试生成配置；qrc 0.9.0 是可选的终端二维码渲染器。
+安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前 Neko 版本为 1.4.0，冻结核心见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2。Mihomo 1.19.29 只用于测试生成配置；qrc 0.9.0 是可选的终端二维码渲染器。
 
 qrc 也只从上游精确版本下载并校验对应 amd64/arm64 SHA-256，但它不属于代理运行链路。下载、解压或运行检查失败时，安装和升级仍会完成，面板保留全部文字订阅链接，只不显示二维码。
 
@@ -177,6 +177,7 @@ sudo neko
 4. 刷新已安装地址族端点
 5. IPv4/IPv6 安装管理
 6. 卸载全部协议
+7. VPS 硬件、IP 与网络体检
 ```
 
 选择第 1 项后，先显示所有现有文字链接，再按客户端和地址族选择一个二维码。二维码由 VPS 上固定版本的 qrc 本地生成，不调用在线二维码 API、不写入临时图片，完整订阅 URL 只通过标准输入传给 qrc，不出现在进程命令参数中。面板使用标准 4 模块留白、M 级纠错和紧凑 Unicode 显示；终端太窄、不是交互终端或 qrc 不可用时只给出说明，不影响文字链接和任何代理服务。iPad 可截图后用“照片”识别，也可以直接复制链接。
@@ -189,7 +190,24 @@ sudo neko
 
 端点刷新不会修改 DNS，而是重新读取当前已安装的域名。只有严格 DNS、对应默认路由和新地址确属本机全部通过后才会更新；地址没有变化时不会重写配置或重启服务。更新失败会恢复原状态、重新校验并确认四个服务；若自动恢复不完整，会保留状态备份并明确报告路径。
 
-## 从 1.0.x / 1.1.x / 1.2.x 升级
+### VPS 体检的范围与安全边界
+
+第 7 项提供一份默认只读的 VPS 体检，不会改 DNS、防火墙、Neko 配置或服务，也不会自动运行跑分。它分开检查：
+
+- 系统与硬件：系统、内核、架构、虚拟化提示、运行时间、负载、CPU 型号与可用 vCPU、AES/嵌套虚拟化指令、内存、Swap、根文件系统容量/Inode/格式、内核磁盘介质标记、TCP 拥塞控制和时间同步；
+- Neko：安装模式、状态文件权限、四个核心服务、证书续期定时器、证书签发者、到期时间及当前已安装域名的 SAN 覆盖；
+- 每个已安装地址族：严格 DNS、默认路由、本机地址归属、绑定源地址后的路由与 MTU、实际 HTTPS 出口、Cloudflare 位置/机房提示与 TCP 建连/首字节时间；
+- 线路注册：RIPEstat 提供的 BGP 前缀、源 ASN、网络名称、RIPE RIS 可见性、RPKI 状态，以及系统 DNS 可查询到的 PTR 反向解析。
+
+“原生 IP”“住宅 IP”“解锁 IP”没有统一且权威的公开字段，商业数据库之间也可能互相矛盾。因此报告只显示可以说明来源和含义的事实，不根据单个第三方标签武断地写“原生”或“广播”。Cloudflare 的位置是网络边缘观察结果，不等同于 VPS 商家的销售地区；延迟也只是这台 VPS 到该服务当时的一次样本。
+
+联网检查全部有秒级超时。Cloudflare、RIPEstat、DNS 或网络临时不可达时只会显示“提醒/未测”，面板仍然返回，代理服务不受影响。报告不会读取或输出订阅令牌、协议密码、证书私钥、Cloudflare Token；但公网 IP 本身仍属于隐私信息，分享截图前应遮挡。
+
+CPU 和磁盘轻量测试放在单独子菜单，必须输入 `BENCH` 才运行。CPU 默认只占一个线程约 3 秒；磁盘默认在 `/var/tmp` 写入 128 MiB 并执行 `fdatasync`，完成、失败或中断都会清理临时文件。默认体检不运行这两项，也不做容易消耗大量流量且受测试节点影响很大的公网带宽跑分。
+
+实现没有下载或执行 YABS、ECS、NextTrace 等第三方脚本，也没有增加新的常驻服务或外部二进制。它只借鉴这些工具把信息、线路和性能分层展示的思路，并使用 Neko 已安装的系统命令、Cloudflare 官方 trace 端点与 RIPEstat 官方 API，减少上游变化带来的维护成本。
+
+## 从旧版升级
 
 旧版均视为已经安装双栈，所以升级前仍需确保基础、`v4.`、`v6.` 三个名称符合双栈 DNS 表，然后在新版源码目录运行：
 
@@ -228,7 +246,7 @@ bash tests/fetch-pinned-tools.sh
 bash tests/run.sh
 ```
 
-测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego、Mihomo 和 qrc，分别验证 IPv4-only、IPv6-only、dual 三种服务端配置与 4/4/8 份订阅，覆盖 Remote Profile 真实核心解析、严格 DNS/CNAME 拒绝、Cloudflare/HTTP 两种 ACME 调度、证书从单栈扩展到双栈、API Token 权限与环境隔离、服务端出口阻断、升级迁移、按族令牌轮换、面板补装成功和失败回滚。二维码测试会把真实 qrc 的 Unicode 输出转换为图像，再独立解码并核对原 URL；同时验证链接只走标准输入，以及缺失、失败、窄终端和非交互输出都能安全降级。GitHub Actions 还在 8 个发行版镜像的 amd64/arm64 用户空间中实际执行对应架构的 qrc、语法、平台检测和三种模式渲染，共 16 个组合。
+测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego、Mihomo 和 qrc，分别验证 IPv4-only、IPv6-only、dual 三种服务端配置与 4/4/8 份订阅，覆盖 Remote Profile 真实核心解析、严格 DNS/CNAME 拒绝、Cloudflare/HTTP 两种 ACME 调度、证书从单栈扩展到双栈、API Token 权限与环境隔离、服务端出口阻断、升级迁移、按族令牌轮换、面板补装成功和失败回滚。二维码测试会把真实 qrc 的 Unicode 输出转换为图像，再独立解码并核对原 URL；体检测试会模拟服务、证书、严格双栈出口、RIPEstat/RPKI、外部服务失败降级和性能测试清理。GitHub Actions 还在 8 个发行版镜像的 amd64/arm64 用户空间中实际执行对应架构的 qrc、体检离线报告、语法、平台检测和三种模式渲染，共 16 个组合。
 
 容器用户空间不等同于完整 systemd VM。真实 ACME、公网 IPv4/IPv6、云安全组、重启/卸载循环以及 Stash/Shadowrocket 真机导入仍必须在你自己的可重装 VPS 上做最终验收。详细范围见 [TESTING.md](TESTING.md)。
 
@@ -243,6 +261,7 @@ lib/common.sh            系统、DNS、端口与状态逻辑
 lib/render.sh            服务端配置与当前 4/8 份客户端订阅
 lib/firewall.sh          firewalld/UFW 可逆规则
 runtime/panel.sh         neko 终端面板
+runtime/diagnostics.sh   只读硬件、服务、严格出口与线路体检
 runtime/renew.sh         当前地址族 SAN 证书续期
 runtime/hysteria-dual.sh Hysteria 单/双进程监管
 systemd/                 服务与定时器
@@ -263,3 +282,7 @@ tests/                   本地与 CI 测试
 - [lego CLI](https://go-acme.github.io/lego/usage/cli/) 与 [Cloudflare DNS provider](https://go-acme.github.io/lego/dns/cloudflare/)
 - [Let’s Encrypt Challenge Types](https://letsencrypt.org/docs/challenge-types/)
 - [qrc 官方仓库与命令行说明](https://github.com/fumiyas/qrc)
+- [Cloudflare `/cdn-cgi/trace` 官方说明](https://developers.cloudflare.com/fundamentals/reference/cdn-cgi-endpoint/)
+- [RIPEstat Network Info](https://stat.ripe.net/docs/data-api/api-endpoints/network-info)、[Prefix Overview](https://stat.ripe.net/docs/data-api/api-endpoints/prefix-overview) 与 [RPKI Validation](https://stat.ripe.net/docs/data-api/api-endpoints/rpki-validation)
+
+体检功能的范围设计还参考了 [YABS](https://github.com/masonr/yet-another-bench-script)、[ECS](https://github.com/oneclickvirt/ecs) 和 [NextTrace](https://github.com/nxtrace/NTrace-core) 的公开功能分类；Neko 没有复制、下载或执行它们的代码。

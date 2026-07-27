@@ -22,6 +22,13 @@ detect_platform
 [[ "$OS_FAMILY" == "$EXPECTED_FAMILY" ]]
 [[ "$ARCH" == "$EXPECTED_ARCH" ]]
 
+diagnostics_output="$(
+  NEKO_LIBEXEC="$ROOT" bash "$ROOT/runtime/diagnostics.sh" --system
+)"
+[[ "$diagnostics_output" == *'系统与硬件（只读）'* ]]
+[[ "$diagnostics_output" == *'根文件系统'* ]]
+[[ "$diagnostics_output" == *'体检小结'* ]]
+
 printf '通过：%s %s / %s（Bash %s）\n' \
   "$OS_ID" "$OS_VERSION" "$ARCH" "${BASH_VERSION}"
 

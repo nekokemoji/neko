@@ -1,6 +1,6 @@
-# Neko 1.3.1 测试范围
+# Neko 1.4.0 测试范围
 
-最近核对日期：2026-07-26（Asia/Tokyo）。
+最近核对日期：2026-07-27（Asia/Tokyo）。
 
 这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
@@ -20,7 +20,7 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
 - firewalld 只根据已安装地址族的默认路由网卡寻找实际 zone，而不是盲目使用 default zone；补装另一族时不会接管或回滚预先存在的区域规则。
-- Bootstrap 离线解压固定源码包、核对 1.3.1 标记并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.4.0 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
 - 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29 和可选 qrc 0.9.0 的版本身份与 CLI 参数。
@@ -42,10 +42,12 @@ bash tests/run.sh
 - IPv4/IPv6 订阅令牌可单独或同时轮换；未安装地址族为明确的无操作，另一族令牌与链接保持不变。
 - 面板为每个已安装地址族列出 Mihomo、Stash、Shadowrocket、sing-box 四个二维码选项；真实 qrc 的紧凑 Unicode 输出会转换为 PBM 并由 zbar 独立解码，确认内容与原 URL 完全一致。
 - 面板把 URL 只写入 qrc 标准输入，命令参数不含 URL；qrc 缺失、执行失败、终端太窄或输出不是交互终端时均返回文字链接而不终止面板。
+- VPS 体检的离线硬件报告、状态文件权限、四个服务、续期定时器、证书期限与 SAN 覆盖；模拟严格 IPv4/IPv6 源地址绑定后的 HTTPS 出口、Cloudflare 位置/时延、RIPEstat ASN/BGP/RPKI 和 PTR。
+- 体检在外部 HTTP 查询失败时返回“提醒/未测”并正常结束；测试状态中的订阅令牌和协议密码不会出现在报告。CPU 与磁盘测试只从明确入口运行，磁盘临时文件在成功、失败或中断路径都由统一清理函数保护。
 - 控制面板端点刷新在地址未变化时不重启；模拟新地址更新成功、服务失败后完整回滚，以及回滚服务仍失败时保留状态备份。
 - 控制面板从 IPv4-only 补装 IPv6 的成功、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
-- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.3.1，确认端口、协议凭据、REALITY 参数、已安装模式和现有订阅 URL 保持不变；schema 1/2 的旧共享令牌迁移为两族独立字段。
-- 模拟升级中 Caddy 重启失败，确认状态、配置、Hysteria systemd 单元与已有 qrc 恢复，新增监管脚本移除，二维码暂存目录和升级备份清理。
+- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.4.0，确认端口、协议凭据、REALITY 参数、已安装模式和现有订阅 URL 保持不变；schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
+- 模拟升级中 Caddy 重启失败，确认状态、配置、Hysteria systemd 单元与已有 qrc 恢复，新增监管脚本和体检组件移除，二维码暂存目录和升级备份清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
 本次修改在当前 Ubuntu 24.04 用户空间中完成；这里 PID 1 不是 systemd，也没有分配可用于 ACME 的公网测试域名。真实核心配置校验能够运行，但不能据此声称完成了一次真实 VPS 安装。
@@ -55,7 +57,7 @@ bash tests/run.sh
 `.github/workflows/ci.yml` 运行两个层次：
 
 1. Ubuntu 24.04 runner 下载真实冻结核心并执行完整 `tests/run.sh`。
-2. 8 个发行版镜像分别在 amd64 与 QEMU arm64 用户空间运行全部 Shell 语法解析、对应架构的真实 qrc、真实 `/etc/os-release` 平台检测，并实际渲染和结构化检查 IPv4-only、IPv6-only、dual 三种模式，共 16 个系统/架构组合；amd64 另外从缺少工具的镜像执行一次离线 Bootstrap，真实调用该发行版的包管理器。
+2. 8 个发行版镜像分别在 amd64 与 QEMU arm64 用户空间运行全部 Shell 语法解析、对应架构的真实 qrc、真实 `/etc/os-release` 平台检测、体检离线硬件报告，并实际渲染和结构化检查 IPv4-only、IPv6-only、dual 三种模式，共 16 个系统/架构组合；amd64 另外从缺少工具的镜像执行一次离线 Bootstrap，真实调用该发行版的包管理器。
 
 矩阵目标：
 
@@ -81,6 +83,7 @@ Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态�
 - Cloudflare 生产 API 对 Token 权限、TXT 传播和清理的真实端到端调用；
 - 云厂商安全组、firewalld/UFW 与 Hysteria 端口跳跃在真实内核上的联动；
 - 公网 IPv4/IPv6 路由、运营商 DNS64/NAT64、透明代理和地区性封锁行为；
+- 真实公网 IP 的 Cloudflare 边缘位置/时延、RIPE RIS 公告与 RPKI API 返回，以及不同时间的 CPU/磁盘性能波动；
 - Stash、Shadowrocket 与 sing-box 官方移动客户端真机导入，以及六种协议的延迟、吞吐、漫游和断线重连；
 - iPad SSH 终端的真实二维码尺寸、截图后由“照片”识别，以及各客户端扫描导入；
 - 非 443 REALITY 在具体网络中的可用性与封锁概率。

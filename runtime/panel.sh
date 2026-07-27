@@ -696,6 +696,17 @@ subscription_qr_menu() {
   done
 }
 
+open_diagnostics() {
+  local diagnostics="${NEKO_LIBEXEC}/diagnostics.sh"
+  if [[ ! -x "$diagnostics" ]]; then
+    warn "VPS 体检组件缺失；代理服务没有受到影响。请运行当前版本升级脚本修复。"
+    return 0
+  fi
+  if ! "$diagnostics"; then
+    warn "本次体检被中断或有检查未完成；它没有修改 Neko 配置或服务。"
+  fi
+}
+
 uninstall_neko() {
   local answer created_user service
   printf '\n这会删除全部协议、证书、订阅和本工具创建的防火墙规则。\n'
@@ -757,7 +768,8 @@ draw_menu() {
   printf '3. 按 IPv4/IPv6 重置订阅 URL\n'
   printf '4. 刷新已安装地址族端点\n'
   printf '5. IPv4/IPv6 安装管理\n'
-  printf '6. 卸载全部协议\n\n'
+  printf '6. 卸载全部协议\n'
+  printf '7. VPS 硬件、IP 与网络体检\n\n'
 }
 
 main() {
@@ -770,7 +782,7 @@ main() {
   [[ -r "$NEKO_STATE" ]] || die "Neko 尚未完整安装。"
   while true; do
     draw_menu
-    read -r -p "请选择 [0-6]：" choice
+    read -r -p "请选择 [0-7]：" choice
     case "$choice" in
       0) exit 0 ;;
       1)
@@ -782,7 +794,11 @@ main() {
       4) refresh_subscription_endpoints ;;
       5) manage_address_families ;;
       6) uninstall_neko ;;
-      *) warn "请输入 0 到 6。" ;;
+      7)
+        open_diagnostics
+        continue
+        ;;
+      *) warn "请输入 0 到 7。" ;;
     esac
     printf '\n'
     read -r -p "按 Enter 返回菜单……" _
