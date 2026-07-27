@@ -150,6 +150,8 @@ rollback_upgrade() {
   cp -a -- "$BACKUP_DIR/panel.sh" "$NEKO_LIBEXEC/panel.sh" || rollback_ok=0
   cp -a -- "$BACKUP_DIR/renew.sh" "$NEKO_LIBEXEC/renew.sh" || rollback_ok=0
   restore_optional_file \
+    "$BACKUP_DIR/diagnostics.sh" "$NEKO_LIBEXEC/diagnostics.sh" || rollback_ok=0
+  restore_optional_file \
     "$BACKUP_DIR/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh" || rollback_ok=0
   restore_optional_file \
     "$BACKUP_DIR/qrc" "$NEKO_LIBEXEC/qrc" || rollback_ok=0
@@ -277,6 +279,7 @@ main() {
   done
   [[ -r "$SCRIPT_DIR/lib/common.sh" && -r "$SCRIPT_DIR/lib/render.sh" \
     && -r "$SCRIPT_DIR/lib/firewall.sh" && -r "$SCRIPT_DIR/runtime/panel.sh" \
+    && -r "$SCRIPT_DIR/runtime/diagnostics.sh" \
     && -r "$SCRIPT_DIR/runtime/renew.sh" \
     && -r "$SCRIPT_DIR/runtime/hysteria-dual.sh" \
     && -r "$SCRIPT_DIR/systemd/neko-hysteria.service" ]] || die "升级包不完整。"
@@ -323,6 +326,8 @@ main() {
   cp -a -- "$NEKO_LIBEXEC/versions.env" "$BACKUP_DIR/versions.env"
   cp -a -- "$NEKO_LIBEXEC/panel.sh" "$BACKUP_DIR/panel.sh"
   cp -a -- "$NEKO_LIBEXEC/renew.sh" "$BACKUP_DIR/renew.sh"
+  [[ ! -e "$NEKO_LIBEXEC/diagnostics.sh" ]] \
+    || cp -a -- "$NEKO_LIBEXEC/diagnostics.sh" "$BACKUP_DIR/diagnostics.sh"
   [[ ! -e "$NEKO_LIBEXEC/hysteria-dual.sh" ]] \
     || cp -a -- "$NEKO_LIBEXEC/hysteria-dual.sh" "$BACKUP_DIR/hysteria-dual.sh"
   [[ ! -e "$NEKO_LIBEXEC/qrc" ]] \
@@ -337,6 +342,8 @@ main() {
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
+  install -m 0755 \
+    "$SCRIPT_DIR/runtime/diagnostics.sh" "$NEKO_LIBEXEC/diagnostics.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
   install -m 0755 \
     "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
