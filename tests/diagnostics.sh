@@ -14,7 +14,7 @@ mkdir -p \
   "$WORK/bench"
 cp -a -- "$ROOT/lib/common.sh" "$WORK/libexec/lib/common.sh"
 jq \
-  '.release = "1.5.0-test"
+  '.release = "1.5.1-test"
    | .subscription.ipv4_address = "192.0.2.44"
    | .subscription.ipv6_address = "2001:db8::44"' \
   "$ROOT/tests/fixtures/state.json" > "$WORK/etc/state.json"
@@ -270,22 +270,107 @@ grep -Fq 'ipwho.is：' <<< "$partial_output"
 route_output="$(
   env "${common_env[@]}" bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq 'VPS → 广东三网参考路径' <<< "$route_output"
-grep -Fq 'AS4809（CN2 相关；仅凭 ASN 不能区分 GT/GIA）' \
+grep -Fq '测试地区：广东' <<< "$route_output"
+grep -Fq '测试方向：回程（这台 VPS → 国内三网参考目标）' \
   <<< "$route_output"
-grep -Fq 'AS9929（联通 9929/CUII）' <<< "$route_output"
-grep -Fq 'AS58453（中国移动国际 CMI）' <<< "$route_output"
+grep -Fq '去程状态：未测试' <<< "$route_output"
+grep -Fq '【广东 · IPv4 回程】' <<< "$route_output"
+grep -Fq 'CN2（AS4809）' <<< "$route_output"
+grep -Fq '联通 9929/CUII（AS9929）' <<< "$route_output"
+grep -Fq '中国移动国际 CMI（AS58453）' <<< "$route_output"
+grep -Fq 'IPv4 电信：30.00 ms，CN2（AS4809）' <<< "$route_output"
+grep -Fq 'IPv6 移动：30.00 ms，中国移动国际 CMI（AS58453）' \
+  <<< "$route_output"
+grep -Fq '已完成 6 条，未完成 0 条' <<< "$route_output"
+if grep -Fq '【上海 ·' <<< "$route_output"; then
+  printf '默认 --routes 不应自动测试全部地区。\n' >&2
+  exit 1
+fi
 grep -Fq -- '--ipv4 --tcp --port 80 --source 192.0.2.44' \
   "$WORK/route-args.log"
 grep -Fq -- '--ipv6 --tcp --port 80 --source 2001:db8::44' \
   "$WORK/route-args.log"
 
+: > "$WORK/route-args.log"
+all_regions_output="$(
+  env "${common_env[@]}" bash "$ROOT/runtime/diagnostics.sh" --routes all
+)"
+for region_heading in \
+  '【广东 · IPv4 回程】' \
+  '【上海 · IPv4 回程】' \
+  '【北京 · IPv4 回程】' \
+  '【四川 · IPv4 回程】'; do
+  grep -Fq "$region_heading" <<< "$all_regions_output"
+done
+for target in \
+  gd-ct-v4.ip.zstaticcdn.com \
+  sh-cu-v6.ip.zstaticcdn.com \
+  bj-cm-v4.ip.zstaticcdn.com \
+  sc-ct-v6.ip.zstaticcdn.com; do
+  grep -Fq "$target" "$WORK/route-args.log"
+done
+[[ "$(wc -l < "$WORK/route-args.log")" -eq 24 ]]
+grep -Fq '已完成 24 条，未完成 0 条' <<< "$all_regions_output"
+
+classification_output="$(
+  env "${common_env[@]}" bash -c '
+    source "$1"
+    classify_carrier_route ct "AS64500 → AS4134"
+    printf "\n"
+    classify_carrier_route cm "AS64500 → AS58807 → AS9808"
+    printf "\n"
+    classify_carrier_route ct "AS64500 → AS48090"
+    printf "\n"
+  ' _ "$ROOT/runtime/diagnostics.sh"
+)"
+grep -Fxq '电信 163（AS4134）' <<< "$classification_output"
+grep -Fxq '移动 CMIN2（AS58807） → 移动 CMNET（AS9808）' \
+  <<< "$classification_output"
+grep -Fxq '未识别常见电信骨干' <<< "$classification_output"
+
+jq '.network.mode = "ipv4-only"' \
+  "$WORK/etc/state.json" > "$WORK/etc/state-ipv4.json"
+ipv4_only_route_output="$(
+  env "${common_env[@]}" NEKO_STATE="$WORK/etc/state-ipv4.json" \
+    bash "$ROOT/runtime/diagnostics.sh" --routes sh
+)"
+grep -Fq '【上海 · IPv4 回程】' <<< "$ipv4_only_route_output"
+grep -Fq '已完成 3 条，未完成 0 条' <<< "$ipv4_only_route_output"
+if grep -Fq 'IPv6 回程' <<< "$ipv4_only_route_output"; then
+  printf 'IPv4-only 线路测试不应运行 IPv6 探测。\n' >&2
+  exit 1
+fi
+
+jq '.network.mode = "ipv6-only"' \
+  "$WORK/etc/state.json" > "$WORK/etc/state-ipv6.json"
+ipv6_only_route_output="$(
+  env "${common_env[@]}" NEKO_STATE="$WORK/etc/state-ipv6.json" \
+    bash "$ROOT/runtime/diagnostics.sh" --routes bj
+)"
+grep -Fq '【北京 · IPv6 回程】' <<< "$ipv6_only_route_output"
+grep -Fq '已完成 3 条，未完成 0 条' <<< "$ipv6_only_route_output"
+if grep -Fq 'IPv4 回程' <<< "$ipv6_only_route_output"; then
+  printf 'IPv6-only 线路测试不应运行 IPv4 探测。\n' >&2
+  exit 1
+fi
+
+if env "${common_env[@]}" \
+    bash "$ROOT/runtime/diagnostics.sh" --routes invalid \
+    > "$WORK/invalid-route.log" 2>&1; then
+  printf '无效线路地区没有被拒绝。\n' >&2
+  exit 1
+fi
+grep -Fq '线路地区只能是 gd、sh、bj、sc 或 all' \
+  "$WORK/invalid-route.log"
+
 route_failed_output="$(
   env "${common_env[@]}" NEKO_DIAG_ROUTE_FAIL=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '参考路径失败或超时' <<< "$route_failed_output"
-grep -Fq '体检小结' <<< "$route_failed_output"
+grep -Fq '未完成（超时、无响应或线路元数据不可用）' \
+  <<< "$route_failed_output"
+grep -Fq '线路测试小结' <<< "$route_failed_output"
+grep -Fq '已完成 0 条，未完成 6 条' <<< "$route_failed_output"
 
 route_missing_output="$(
   env "${common_env[@]}" NEKO_DIAG_NEXTTRACE="$WORK/missing-nexttrace" \
