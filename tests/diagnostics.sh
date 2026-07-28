@@ -14,7 +14,7 @@ mkdir -p \
   "$WORK/bench"
 cp -a -- "$ROOT/lib/common.sh" "$WORK/libexec/lib/common.sh"
 jq \
-  '.release = "1.5.1-test"
+  '.release = "1.5.2-test"
    | .subscription.ipv4_address = "192.0.2.44"
    | .subscription.ipv6_address = "2001:db8::44"' \
   "$ROOT/tests/fixtures/state.json" > "$WORK/etc/state.json"
@@ -131,6 +131,18 @@ case "$*" in
         '{"success":true,"ip":"2001:db8::44","country_code":"HK","city":"Hong Kong","connection":{"asn":64501,"org":"TEST-IPWHO-V6"}}'
     fi
     ;;
+  *'api.ipquery.io/'*)
+    if [[ "${NEKO_DIAG_IPQUERY_MALFORMED:-0}" == 1 ]]; then
+      printf '%s\n' \
+        '{"ip":"198.51.100.99","risk":{"is_datacenter":true}}'
+    elif [[ "$family" == ipv4 ]]; then
+      printf '%s\n' \
+        '{"ip":"192.0.2.44","isp":{"asn":"AS64500","org":"TEST-IPQUERY-V4"},"location":{"country_code":"HK","city":"Hong Kong"},"risk":{"is_mobile":false,"is_vpn":false,"is_tor":false,"is_proxy":false,"is_datacenter":true,"risk_score":8}}'
+    else
+      printf '%s\n' \
+        '{"ip":"2001:db8::44","isp":{"asn":"AS64501","org":"TEST-IPQUERY-V6"},"location":{"country_code":"HK","city":"Hong Kong"},"risk":{"is_mobile":false,"is_vpn":false,"is_tor":false,"is_proxy":false,"is_datacenter":true,"risk_score":8}}'
+    fi
+    ;;
   *'/network-info/data.json'*)
     if [[ "$family" == ipv4 ]]; then
       printf '{"status":"ok","data":{"prefix":"192.0.2.0/24","asns":[64500]}}\n'
@@ -147,6 +159,16 @@ case "$*" in
     ;;
   *'/rpki-validation/data.json'*)
     printf '{"status":"ok","data":{"status":"valid"}}\n'
+    ;;
+  *'/whois/data.json'*)
+    [[ "${NEKO_DIAG_WHOIS_FAIL:-0}" != 1 ]] || exit 28
+    if [[ "$family" == ipv4 ]]; then
+      printf '%s\n' \
+        '{"status":"ok","data":{"authorities":["test-rir"],"records":[[{"key":"netname","value":"TEST-NET-V4"},{"key":"country","value":"HK"},{"key":"source","value":"TEST-RIR"}]]}}'
+    else
+      printf '%s\n' \
+        '{"status":"ok","data":{"authorities":["test-rir"],"records":[[{"key":"netname","value":"TEST-NET-V6"},{"key":"country","value":"HK"},{"key":"source","value":"TEST-RIR"}]]}}'
+    fi
     ;;
   *'/cdn-cgi/trace'*)
     if [[ "$family" == ipv4 ]]; then
@@ -225,17 +247,26 @@ grep -Fq '2001:db8::44' <<< "$network_output"
 grep -Fq 'AS64500' <<< "$network_output"
 grep -Fq 'AS64501' <<< "$network_output"
 grep -Fq 'RPKI ROA 匹配' <<< "$network_output"
-grep -Fq '小白结论 · 类型： 数据中心/托管 IP（2/2 个来源一致）' \
+grep -Fq '小白结论 · 类型： 数据中心/托管 IP（3/3 个来源一致）' \
   <<< "$network_output"
-grep -Fq '小白结论 · 位置： HK（3/3 个来源一致）' \
+grep -Fq '小白结论 · 位置： HK（4/4 个来源一致）' \
   <<< "$network_output"
 grep -Fq '当前未见明显代理/VPN/Tor/滥用标签' <<< "$network_output"
 grep -Fq '没有统一权威标准；不把单一数据库标签冒充原生结论' \
+  <<< "$network_output"
+grep -Fq 'ipquery.io：' <<< "$network_output"
+grep -Fq 'IPv4 RIR 登记： TEST-RIR；国家/地区 HK；登记名称 TEST-NET-V4' \
+  <<< "$network_output"
+grep -Fq 'IPv6 RIR 登记： TEST-RIR；国家/地区 HK；登记名称 TEST-NET-V6' \
+  <<< "$network_output"
+grep -Fq 'RIR 登记国家/地区是地址注册资料，不等于 VPS 机房位置' \
   <<< "$network_output"
 grep -Fq 'IPv4 BGP 注册（不是实际线路）' <<< "$network_output"
 grep -Fq 'IPv6 BGP 注册（不是实际线路）' <<< "$network_output"
 grep -Fq -- '--ipv4 --interface 192.0.2.44' "$WORK/curl-args.log"
 grep -Fq -- '--ipv6 --interface 2001:db8::44' "$WORK/curl-args.log"
+grep -Fq 'api.ipquery.io/192.0.2.44' "$WORK/curl-args.log"
+grep -Fq 'api.ipquery.io/2001:db8::44' "$WORK/curl-args.log"
 
 for secret in \
   test-subscription-token \
@@ -256,16 +287,36 @@ grep -Fq '无法在 2 秒内完成严格来源绑定的 HTTPS 检查' \
   <<< "$failed_output"
 grep -Fq 'RIPEstat 路由注册信息暂时不可用' <<< "$failed_output"
 grep -Fq '风控标签数据库暂时不可用' <<< "$failed_output"
+grep -Fq 'ipquery.io 数据暂时不可用' <<< "$failed_output"
 grep -Fq '体检小结' <<< "$failed_output"
 
 partial_output="$(
   env "${common_env[@]}" NEKO_DIAG_QUALITY_PARTIAL=1 \
     bash "$ROOT/runtime/diagnostics.sh" --network
 )"
-grep -Fq '数据中心/托管 IP（1/1 个来源一致）' <<< "$partial_output"
+grep -Fq '数据中心/托管 IP（2/2 个来源一致）' <<< "$partial_output"
 grep -Fq 'proxycheck.io 数据暂时不可用' <<< "$partial_output"
 grep -Fq 'ipapi.is：' <<< "$partial_output"
 grep -Fq 'ipwho.is：' <<< "$partial_output"
+grep -Fq 'ipquery.io：' <<< "$partial_output"
+
+malformed_output="$(
+  env "${common_env[@]}" NEKO_DIAG_IPQUERY_MALFORMED=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --network
+)"
+grep -Fq 'ipquery.io 数据暂时不可用' <<< "$malformed_output"
+grep -Fq '数据中心/托管 IP（2/2 个来源一致）' <<< "$malformed_output"
+grep -Fq 'HK（3/3 个来源一致）' <<< "$malformed_output"
+grep -Fq '体检小结' <<< "$malformed_output"
+
+whois_failed_output="$(
+  env "${common_env[@]}" NEKO_DIAG_WHOIS_FAIL=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --network
+)"
+grep -Fq 'RIR 地址登记资料暂时不可用' <<< "$whois_failed_output"
+grep -Fq 'BGP 前缀：' <<< "$whois_failed_output"
+grep -Fq 'RPKI ROA 匹配' <<< "$whois_failed_output"
+grep -Fq '体检小结' <<< "$whois_failed_output"
 
 route_output="$(
   env "${common_env[@]}" bash "$ROOT/runtime/diagnostics.sh" --routes
