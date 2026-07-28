@@ -12,6 +12,9 @@ CLOUDFLARE_DNS_TOKEN_FILE="${NEKO_VAR}/credentials/cloudflare-dns-api-token"
 
 ACME_METHOD_HTTP="http-01"
 ACME_METHOD_CLOUDFLARE="cloudflare-dns-01"
+ACME_RATE_LIMIT_EXIT=75
+ACME_TIMEOUT_EXIT=124
+ACME_DEFAULT_TIMEOUT_SECONDS=600
 NETWORK_MODE_IPV4="ipv4-only"
 NETWORK_MODE_IPV6="ipv6-only"
 NETWORK_MODE_DUAL="dual"
@@ -279,8 +282,88 @@ assert_cloudflare_dns_token_file() {
     || die "Cloudflare DNS API Token 文件内容无效。"
 }
 
+stop_acme_guard_process() {
+  local guard_pid="$1" child
+  local -a children=()
+
+  [[ "$guard_pid" =~ ^[0-9]+$ ]] || return 0
+  if [[ -r "/proc/${guard_pid}/task/${guard_pid}/children" ]]; then
+    read -r -a children \
+      < "/proc/${guard_pid}/task/${guard_pid}/children" || true
+  fi
+
+  for child in "${children[@]}"; do
+    [[ "$child" =~ ^[0-9]+$ ]] || continue
+    kill -TERM "$child" 2>/dev/null || true
+  done
+  kill -TERM "$guard_pid" 2>/dev/null || true
+}
+
+run_acme_command_guarded() (
+  local timeout_seconds="${NEKO_ACME_TIMEOUT_SECONDS:-$ACME_DEFAULT_TIMEOUT_SECONDS}"
+  local guard_pid output_fd line retry_after="" acme_rc=0
+  local rate_limited=0 exact_set_limited=0
+
+  command -v timeout >/dev/null 2>&1 \
+    || die "系统缺少证书申请超时保护命令：timeout"
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
+    || die "证书申请超时必须是正整数秒。"
+  (( timeout_seconds <= 3600 )) \
+    || die "证书申请超时不能超过 3600 秒。"
+
+  coproc NEKO_ACME_GUARD {
+    exec timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
+      "$@" 2>&1
+  }
+  guard_pid="$NEKO_ACME_GUARD_PID"
+  output_fd="${NEKO_ACME_GUARD[0]}"
+
+  trap 'stop_acme_guard_process "$guard_pid"; exit 130' INT
+  trap 'stop_acme_guard_process "$guard_pid"; exit 143' TERM
+
+  while IFS= read -r line <&"$output_fd"; do
+    printf '%s\n' "$line"
+    if (( rate_limited == 0 )) \
+      && [[ "$line" == *"urn:ietf:params:acme:error:rateLimited"* ]]; then
+      rate_limited=1
+      [[ "$line" != *"exact set of identifiers"* ]] || exact_set_limited=1
+      if [[ "$line" =~ retry[[:space:]]after[[:space:]]([0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]UTC) ]]; then
+        retry_after="${BASH_REMATCH[1]}"
+      fi
+      stop_acme_guard_process "$guard_pid"
+    fi
+  done
+
+  if wait "$guard_pid"; then
+    acme_rc=0
+  else
+    acme_rc=$?
+  fi
+  trap - INT TERM
+
+  if (( rate_limited == 1 )); then
+    if (( exact_set_limited == 1 )); then
+      warn "Let’s Encrypt 已限制这组完全相同的域名；脚本已停止长时间等待。"
+    else
+      warn "Let’s Encrypt 已触发证书签发额度；脚本已停止长时间等待。"
+    fi
+    if [[ -n "$retry_after" ]]; then
+      warn "官方允许再次尝试的时间：${retry_after}。"
+    fi
+    warn "请到恢复时间后再运行；不要连续重装或反复申请证书。"
+    return "$ACME_RATE_LIMIT_EXIT"
+  fi
+
+  if (( acme_rc == ACME_TIMEOUT_EXIT )); then
+    warn "证书申请超过 ${timeout_seconds} 秒，已主动停止；不会继续无限等待。"
+    warn "请检查上方 ACME 输出和网络/DNS 后再试。"
+  fi
+  return "$acme_rc"
+)
+
 run_lego_acme() {
   local lego_binary="$1" http_mode="$2"
+  local -a lego_command=()
   shift 2
   [[ -x "$lego_binary" ]] || die "lego 不可执行：${lego_binary}"
 
@@ -288,10 +371,12 @@ run_lego_acme() {
     "$ACME_METHOD_HTTP")
       case "$http_mode" in
         standalone)
-          "$lego_binary" "$@" --http
+          lego_command=("$lego_binary" "$@" --http)
           ;;
         webroot)
-          "$lego_binary" "$@" --http --http.webroot "$NEKO_VAR/acme"
+          lego_command=(
+            "$lego_binary" "$@" --http --http.webroot "$NEKO_VAR/acme"
+          )
           ;;
         *)
           die "未知的 HTTP-01 运行模式：${http_mode}"
@@ -300,7 +385,7 @@ run_lego_acme() {
       ;;
     "$ACME_METHOD_CLOUDFLARE")
       assert_cloudflare_dns_token_file
-      env \
+      lego_command=(env \
         -u CF_API_EMAIL \
         -u CF_API_KEY \
         -u CF_DNS_API_TOKEN \
@@ -322,12 +407,14 @@ run_lego_acme() {
         -u CLOUDFLARE_ZONE_API_TOKEN_FILE \
         -u CLOUDFLARE_BASE_URL_FILE \
         CF_DNS_API_TOKEN_FILE="$CLOUDFLARE_DNS_TOKEN_FILE" \
-        "$lego_binary" "$@" --dns cloudflare
+        "$lego_binary" "$@" --dns cloudflare)
       ;;
     *)
       die "不支持的 ACME 验证方式：${ACME_METHOD:-empty}"
       ;;
   esac
+
+  run_acme_command_guarded "${lego_command[@]}"
 }
 
 absolute_dns_name() {

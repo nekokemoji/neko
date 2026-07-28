@@ -22,6 +22,20 @@ detect_platform
 [[ "$OS_FAMILY" == "$EXPECTED_FAMILY" ]]
 [[ "$ARCH" == "$EXPECTED_ARCH" ]]
 
+ACME_METHOD=http-01
+rate_limit_started=$SECONDS
+set +e
+rate_limit_output="$(
+  NEKO_ACME_TIMEOUT_SECONDS=20 \
+    run_lego_acme "$ROOT/tests/fixtures/lego-rate-limited.sh" \
+      standalone run --domains example.com 2>&1
+)"
+rate_limit_rc=$?
+set -e
+(( rate_limit_rc == ACME_RATE_LIMIT_EXIT ))
+(( SECONDS - rate_limit_started < 5 ))
+[[ "$rate_limit_output" == *'脚本已停止长时间等待'* ]]
+
 diagnostics_output="$(
   NEKO_LIBEXEC="$ROOT" bash "$ROOT/runtime/diagnostics.sh" --system
 )"

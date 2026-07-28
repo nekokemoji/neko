@@ -323,7 +323,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.4.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.4.1"' "$ROOT/versions.env"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
@@ -512,6 +512,43 @@ NEKO_VAR="$ACME_WORK/var" NEKO_TEST_MODE=1 \
     grep -Fxq "$NEKO_VAR/acme" "$NEKO_TEST_ARGS_LOG"
     [[ "$(<"$NEKO_TEST_ENV_LOG")" == "" ]]
   ' _ "$ROOT/lib/common.sh"
+
+rate_limit_started=$SECONDS
+set +e
+rate_limit_output="$(
+  NEKO_TEST_MODE=1 NEKO_ACME_TIMEOUT_SECONDS=20 \
+    NEKO_TEST_ACME_FINISHED="$ACME_WORK/rate-limit-finished" \
+    bash -c '
+      set -Eeuo pipefail
+      source "$1"
+      ACME_METHOD=http-01
+      run_lego_acme "$2" standalone run --domains example.com
+    ' _ "$ROOT/lib/common.sh" \
+      "$ROOT/tests/fixtures/lego-rate-limited.sh" 2>&1
+)"
+rate_limit_rc=$?
+set -e
+rate_limit_elapsed=$((SECONDS - rate_limit_started))
+(( rate_limit_rc == 75 ))
+(( rate_limit_elapsed < 5 ))
+[[ ! -e "$ACME_WORK/rate-limit-finished" ]]
+grep -Fq '脚本已停止长时间等待' <<< "$rate_limit_output"
+grep -Fq '2026-07-29 03:47:06 UTC' <<< "$rate_limit_output"
+
+set +e
+acme_timeout_output="$(
+  NEKO_TEST_MODE=1 NEKO_ACME_TIMEOUT_SECONDS=1 \
+    bash -c '
+      set -Eeuo pipefail
+      source "$1"
+      ACME_METHOD=http-01
+      run_lego_acme "$2" standalone run --domains example.com
+    ' _ "$ROOT/lib/common.sh" "$ROOT/tests/fixtures/lego-timeout.sh" 2>&1
+)"
+acme_timeout_rc=$?
+set -e
+(( acme_timeout_rc == 124 ))
+grep -Fq '证书申请超过 1 秒' <<< "$acme_timeout_output"
 rm -rf -- "$ACME_WORK"
 
 printf '[4/9] 渲染服务端配置与客户端订阅……\n'
