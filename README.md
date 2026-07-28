@@ -128,7 +128,7 @@ sudo bash install.sh \
 
 非交互安装如果既没有 Token 文件也没有显式指定 `--acme-method`，安装器会停止并说明用法，不会悄悄选择更依赖公网网络的 HTTP-01。
 
-安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前 Neko 版本为 1.5.0，冻结核心见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2。Mihomo 1.19.29 只用于测试生成配置；qrc 0.9.0 和 NextTrace Tiny 1.7.1 是可选组件。
+安装器从精确 tag 下载并校验固定 SHA-256，不解析 `latest`。当前 Neko 版本为 1.5.1，冻结核心见 `versions.env`：Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2。Mihomo 1.19.29 只用于测试生成配置；qrc 0.9.0 和 NextTrace Tiny 1.7.1 是可选组件。
 
 qrc 也只从上游精确版本下载并校验对应 amd64/arm64 SHA-256，但它不属于代理运行链路。下载、解压或运行检查失败时，安装和升级仍会完成，面板保留全部文字订阅链接，只不显示二维码。
 
@@ -212,7 +212,11 @@ sudo neko
 
 联网检查全部有秒级超时。Cloudflare、RIPEstat、IP 数据库、DNS 或网络临时不可达时只会显示“提醒/未测”，面板仍然返回，代理服务不受影响。查询 IP 质量时会把对应公网 IP 发送给上述三个公开数据库；报告不会读取或输出订阅令牌、协议密码、证书私钥、Cloudflare Token。公网 IP 本身仍属于隐私信息，分享截图前应遮挡。
 
-“真实三网线路”放在独立子菜单，必须输入 `ROUTE` 才运行，不包含在默认完整体检中。它使用固定版本的 NextTrace Tiny，从当前已安装的精确 IPv4/IPv6 源地址向广东电信、联通、移动参考目标发送少量 TCP 探测，三条路径并行且每族都有总时限。报告用实际经过的 ASN 给出“电信 163、CN2 相关、联通 169/9929、移动 CMI/CMNET”等通俗提示；仅凭 ASN 不能可靠区分 CN2 GT/GIA，也不能证明晚高峰速度、拥塞或未来路由。目标或元数据服务拒绝探测时只显示“未测”。
+“真实三网线路”放在独立子菜单，必须输入 `ROUTE` 才运行，不包含在默认完整体检中。可以单独选择广东、上海、北京、四川，或依次测试全部四地；广东仍是默认项。四地目标来自固定核对过的 nt3 省级双栈注册表。脚本使用固定版本的 NextTrace Tiny，从当前已安装的精确 IPv4/IPv6 源地址向所选地区电信、联通、移动参考目标发送少量 TCP 探测，三条路径并行且每一条都有总时限。
+
+界面按地区和地址族给出每家运营商的“末个有响应节点”延迟、ASN 路径与最终通俗结论，并在地区末尾集中列出数字。它会根据实际 ASN 辅助识别电信 163/CN2、联通 169/9929、中国移动 CMI/CMNET/CMIN2。仅凭 AS4809 不能可靠区分 CN2 GT/GIA；末跳延迟也不能证明带宽、晚高峰速度、拥塞或未来路由。目标或元数据服务拒绝探测时只显示“未测”。
+
+按国内 VPS 行业的通常叫法，这台 VPS 主动发往国内目标属于“回程”；真正“去程”需要位于国内的探针主动访问 VPS。Neko 不会把同一条反向 traceroute 换个名字冒充双向结果，也不依赖无法保证可用性的匿名公共反向探针。命令行可用 `diagnostics.sh --routes gd|sh|bj|sc|all`，不带地区时仍只测广东。
 
 CPU 和磁盘轻量测试放在单独子菜单，必须输入 `BENCH` 才运行。CPU 默认只占一个线程约 3 秒；磁盘默认在 `/var/tmp` 写入 128 MiB 并执行 `fdatasync`，完成、失败或中断都会清理临时文件。默认体检不运行这两项，也不做容易消耗大量流量且受测试节点影响很大的公网带宽跑分。
 
@@ -294,6 +298,7 @@ tests/                   本地与 CI 测试
 - [Let’s Encrypt Challenge Types](https://letsencrypt.org/docs/challenge-types/)
 - [qrc 官方仓库与命令行说明](https://github.com/fumiyas/qrc)
 - [NextTrace 官方仓库与命令行说明](https://github.com/nxtrace/NTrace-core)
+- [PeeringDB 的 AS58807 / CMIN2 网络资料](https://www.peeringdb.com/net/22581)
 - [Cloudflare `/cdn-cgi/trace` 官方说明](https://developers.cloudflare.com/fundamentals/reference/cdn-cgi-endpoint/)
 - [RIPEstat Network Info](https://stat.ripe.net/docs/data-api/api-endpoints/network-info)、[Prefix Overview](https://stat.ripe.net/docs/data-api/api-endpoints/prefix-overview) 与 [RPKI Validation](https://stat.ripe.net/docs/data-api/api-endpoints/rpki-validation)
 - [ipapi.is API 文档](https://ipapi.is/developers.html)、[proxycheck.io v3 官方客户端](https://github.com/proxycheck/proxycheck-php) 与 [ipwho.is API 文档](https://ipwhois.io/documentation)
