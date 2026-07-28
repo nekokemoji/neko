@@ -62,9 +62,13 @@ fi
 
 if [[ -n "${NEKO_CONTAINER_NEXTTRACE:-}" ]]; then
   [[ -x "$NEKO_CONTAINER_NEXTTRACE" ]]
-  nexttrace_version="$("$NEKO_CONTAINER_NEXTTRACE" --version 2>&1)"
+  nexttrace_version="$(
+    NO_COLOR=1 "$NEKO_CONTAINER_NEXTTRACE" --version 2>&1
+  )"
   [[ "$nexttrace_version" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
-  nexttrace_help="$("$NEKO_CONTAINER_NEXTTRACE" --help 2>&1)"
+  nexttrace_help="$(
+    NO_COLOR=1 "$NEKO_CONTAINER_NEXTTRACE" --help 2>&1
+  )"
   [[ "$nexttrace_help" == *'--source'* ]]
   [[ "$nexttrace_help" == *'--json'* ]]
   [[ "$nexttrace_help" == *'--ipv4'* ]]

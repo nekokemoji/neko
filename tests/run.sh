@@ -314,9 +314,9 @@ printf '[3/9] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$LEGO" --version)" == *"$LEGO_VERSION"* ]]
 [[ "$("$MIHOMO" -v)" == *"${MIHOMO_VERSION}"* ]]
 [[ "$("$QRC" --help 2>&1)" == *'--output-format=<auto|ansi|sixel|unicode>'* ]]
-[[ "$("$NEXTTRACE" --version 2>&1)" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
-[[ "$("$NEXTTRACE" --help 2>&1)" == *'--source'* ]]
-[[ "$("$NEXTTRACE" --help 2>&1)" == *'--json'* ]]
+[[ "$(NO_COLOR=1 "$NEXTTRACE" --version 2>&1)" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
+[[ "$(NO_COLOR=1 "$NEXTTRACE" --help 2>&1)" == *'--source'* ]]
+[[ "$(NO_COLOR=1 "$NEXTTRACE" --help 2>&1)" == *'--json'* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--http.webroot"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--dns"* ]]
 if grep -R "releases/latest\|/latest/download" \

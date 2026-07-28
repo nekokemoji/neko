@@ -189,7 +189,9 @@ stage_optional_nexttrace() {
     fi
   fi
 
-  nexttrace_version="$("$NEXTTRACE_STAGED_BINARY" --version 2>&1 || true)"
+  nexttrace_version="$(
+    NO_COLOR=1 "$NEXTTRACE_STAGED_BINARY" --version 2>&1 || true
+  )"
   if ! grep -Fq "NextTrace v${NEXTTRACE_VERSION}" \
       <<< "$nexttrace_version"; then
     warn "NextTrace 运行检查失败；升级仍会继续，只跳过三网线路测试。"

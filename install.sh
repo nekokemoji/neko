@@ -370,7 +370,7 @@ download_release_binaries() {
     if install -m 0755 \
         "$WORKDIR/downloads/nexttrace-tiny" "$WORKDIR/bin/nexttrace-tiny" \
       && nexttrace_version="$(
-        "$WORKDIR/bin/nexttrace-tiny" --version 2>&1 || true
+        NO_COLOR=1 "$WORKDIR/bin/nexttrace-tiny" --version 2>&1 || true
       )" \
       && grep -Fq "NextTrace v${NEXTTRACE_VERSION}" \
         <<< "$nexttrace_version"; then
