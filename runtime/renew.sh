@@ -13,7 +13,7 @@ export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 source /usr/local/libexec/neko/lib/common.sh
 
 require_root
-require_commands flock sha256sum systemctl openssl find chown stat env
+require_commands flock sha256sum systemctl openssl find chown stat env timeout
 
 exec 9>/run/lock/neko-maintenance.lock
 flock -n 9 || exit 0

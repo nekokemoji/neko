@@ -258,7 +258,7 @@ main() {
   if (( EUID != 0 )) && [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     die "请使用 root 运行升级脚本。"
   fi
-  require_commands flock jq openssl find cp systemctl stat env ip awk sed
+  require_commands flock jq openssl find cp systemctl stat env ip awk sed timeout
 
   # Serialize before reading mutable state.  Panel address-family operations,
   # token rotation and certificate renewal use the same lock.

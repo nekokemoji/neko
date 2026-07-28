@@ -419,7 +419,9 @@ issue_initial_certificate() {
     set -e
     close_temporary_http_challenge_port
     if (( acme_rc != 0 )); then
-      explain_http01_failure "$acme_log"
+      if (( acme_rc != ACME_RATE_LIMIT_EXIT )); then
+        explain_http01_failure "$acme_log"
+      fi
       return "$acme_rc"
     fi
     rm -f -- "$acme_log"
@@ -738,7 +740,9 @@ main() {
   # Package setup is allowed to repair a minimal image, but no Neko state,
   # service, certificate or firewall rule is created before all preflights.
   install_dependencies
-  require_commands curl jq openssl tar unzip ss getent dig flock sha256sum systemctl find nft useradd df awk sed stat env ip tee
+  require_commands \
+    curl jq openssl tar unzip ss getent dig flock sha256sum systemctl \
+    find nft useradd df awk sed stat env ip tee timeout
   collect_identity
   assert_clean_target
 

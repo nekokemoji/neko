@@ -1,6 +1,6 @@
-# Neko 1.4.0 测试范围
+# Neko 1.4.1 测试范围
 
-最近核对日期：2026-07-27（Asia/Tokyo）。
+最近核对日期：2026-07-28（Asia/Tokyo）。
 
 这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
@@ -20,11 +20,12 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
 - firewalld 只根据已安装地址族的默认路由网卡寻找实际 zone，而不是盲目使用 default zone；补装另一族时不会接管或回滚预先存在的区域规则。
-- Bootstrap 离线解压固定源码包、核对 1.4.0 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.4.1 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
 - 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29 和可选 qrc 0.9.0 的版本身份与 CLI 参数。
 - Cloudflare DNS-01 与 HTTP-01 分别传递正确的 lego 参数；DNS-01 只暴露固定的 `_FILE` 凭据变量，清除原始 Token、旧式变量和外部文件变量。
+- 模拟 lego 收到 Let’s Encrypt `rateLimited` 后准备长时间等待，确认公共 ACME 保护在 5 秒内终止、保留并显示 `retry after`，返回临时失败；另模拟无输出挂起，确认 10 分钟总时限的可配置短时测试路径。发行版矩阵也会在全部 16 个系统/架构组合中执行快速限额终止路径。
 - Cloudflare Token 内容格式、凭据目录 `0700`、文件 `0600` 与非符号链接约束。
 - 真实 `sing-box check` 与 `xray run -test` 分别解析 IPv4-only、IPv6-only、dual 三种服务端配置；每个已启用 sing-box Remote Profile 也由真实核心解析。
 - Hysteria 的单栈或双栈配置分别读取并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。
@@ -46,7 +47,7 @@ bash tests/run.sh
 - 体检在外部 HTTP 查询失败时返回“提醒/未测”并正常结束；测试状态中的订阅令牌和协议密码不会出现在报告。CPU 与磁盘测试只从明确入口运行，磁盘临时文件在成功、失败或中断路径都由统一清理函数保护。
 - 控制面板端点刷新在地址未变化时不重启；模拟新地址更新成功、服务失败后完整回滚，以及回滚服务仍失败时保留状态备份。
 - 控制面板从 IPv4-only 补装 IPv6 的成功、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
-- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.4.0，确认端口、协议凭据、REALITY 参数、已安装模式和现有订阅 URL 保持不变；schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
+- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.4.1，确认端口、协议凭据、REALITY 参数、已安装模式和现有订阅 URL 保持不变；schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
 - 模拟升级中 Caddy 重启失败，确认状态、配置、Hysteria systemd 单元与已有 qrc 恢复，新增监管脚本和体检组件移除，二维码暂存目录和升级备份清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
