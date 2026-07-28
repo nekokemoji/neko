@@ -94,20 +94,26 @@ jobs:
           tar --exclude="${workspace_name}/.git" \
             -czf "$RUNNER_TEMP/neko-bootstrap-source.tar.gz" \
             -C "$workspace_parent" "$workspace_name"
-      - name: Fetch pinned QR binaries
+      - name: Fetch pinned optional diagnostics
         run: |
           bash tests/fetch-pinned-qrc.sh \
             amd64 "$RUNNER_TEMP/neko-qrc/amd64/qrc"
           bash tests/fetch-pinned-qrc.sh \
             arm64 "$RUNNER_TEMP/neko-qrc/arm64/qrc"
+          bash tests/fetch-pinned-nexttrace.sh \
+            amd64 "$RUNNER_TEMP/neko-nexttrace/amd64/nexttrace-tiny"
+          bash tests/fetch-pinned-nexttrace.sh \
+            arm64 "$RUNNER_TEMP/neko-nexttrace/arm64/nexttrace-tiny"
       - name: Test amd64 userland
         run: >-
           docker run --rm --platform linux/amd64
           -v "$PWD:/src:ro" -w /src
           -v "$RUNNER_TEMP/neko-bootstrap-source.tar.gz:/tmp/neko-bootstrap-source.tar.gz:ro"
           -v "$RUNNER_TEMP/neko-qrc:/tmp/neko-qrc:ro"
+          -v "$RUNNER_TEMP/neko-nexttrace:/tmp/neko-nexttrace:ro"
           -e NEKO_CONTAINER_BOOTSTRAP_ARCHIVE=/tmp/neko-bootstrap-source.tar.gz
           -e NEKO_CONTAINER_QRC=/tmp/neko-qrc/amd64/qrc
+          -e NEKO_CONTAINER_NEXTTRACE=/tmp/neko-nexttrace/amd64/nexttrace-tiny
           "${{ matrix.distro.image }}"
           bash tests/container-smoke.sh
           "${{ matrix.distro.id }}"
@@ -119,7 +125,9 @@ jobs:
           docker run --rm --platform linux/arm64
           -v "$PWD:/src:ro" -w /src
           -v "$RUNNER_TEMP/neko-qrc:/tmp/neko-qrc:ro"
+          -v "$RUNNER_TEMP/neko-nexttrace:/tmp/neko-nexttrace:ro"
           -e NEKO_CONTAINER_QRC=/tmp/neko-qrc/arm64/qrc
+          -e NEKO_CONTAINER_NEXTTRACE=/tmp/neko-nexttrace/arm64/nexttrace-tiny
           "${{ matrix.distro.image }}"
           bash tests/container-smoke.sh
           "${{ matrix.distro.id }}"

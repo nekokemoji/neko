@@ -12,6 +12,8 @@ shopt -s globstar nullglob
 shell_files=("$ROOT"/**/*.sh)
 bash -n "${shell_files[@]}"
 
+# shellcheck source=versions.env
+source "$ROOT/versions.env"
 # shellcheck source=lib/common.sh
 source "$ROOT/lib/common.sh"
 ARCH_OVERRIDE="$EXPECTED_ARCH"
@@ -56,6 +58,21 @@ if [[ -n "${NEKO_CONTAINER_QRC:-}" ]]; then
         --ec-level M --scale 1 --border 4
   )"
   [[ -n "$qrc_output" && "$qrc_output" == *'█'* ]]
+fi
+
+if [[ -n "${NEKO_CONTAINER_NEXTTRACE:-}" ]]; then
+  [[ -x "$NEKO_CONTAINER_NEXTTRACE" ]]
+  nexttrace_version="$(
+    NO_COLOR=1 "$NEKO_CONTAINER_NEXTTRACE" --version 2>&1
+  )"
+  [[ "$nexttrace_version" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
+  nexttrace_help="$(
+    NO_COLOR=1 "$NEKO_CONTAINER_NEXTTRACE" --help 2>&1
+  )"
+  [[ "$nexttrace_help" == *'--source'* ]]
+  [[ "$nexttrace_help" == *'--json'* ]]
+  [[ "$nexttrace_help" == *'--ipv4'* ]]
+  [[ "$nexttrace_help" == *'--ipv6'* ]]
 fi
 
 # Exercise each distro's real awk while mocking only the explicit DNS query,

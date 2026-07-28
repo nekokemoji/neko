@@ -19,10 +19,22 @@ NEKO_DIAG_ROOT_PATH="${NEKO_DIAG_ROOT_PATH:-/}"
 NEKO_DIAG_TMP_DIR="${NEKO_DIAG_TMP_DIR:-/var/tmp}"
 NEKO_DIAG_TRACE_URL="${NEKO_DIAG_TRACE_URL:-https://cloudflare.com/cdn-cgi/trace}"
 NEKO_DIAG_RIPE_BASE="${NEKO_DIAG_RIPE_BASE:-https://stat.ripe.net/data}"
+NEKO_DIAG_IPAPI_URL="${NEKO_DIAG_IPAPI_URL:-https://api.ipapi.is/}"
+NEKO_DIAG_PROXYCHECK_URL="${NEKO_DIAG_PROXYCHECK_URL:-https://proxycheck.io/v3/}"
+NEKO_DIAG_IPWHO_URL="${NEKO_DIAG_IPWHO_URL:-https://ipwho.is}"
+NEKO_DIAG_NEXTTRACE="${NEKO_DIAG_NEXTTRACE:-${NEKO_LIBEXEC}/nexttrace-tiny}"
 NEKO_DIAG_CPU_SECONDS="${NEKO_DIAG_CPU_SECONDS:-3}"
 NEKO_DIAG_DISK_MIB="${NEKO_DIAG_DISK_MIB:-128}"
 NEKO_DIAG_DNS_TIMEOUT="${NEKO_DIAG_DNS_TIMEOUT:-12}"
 NEKO_DIAG_NETWORK_TIMEOUT="${NEKO_DIAG_NETWORK_TIMEOUT:-5}"
+NEKO_DIAG_ROUTE_TIMEOUT="${NEKO_DIAG_ROUTE_TIMEOUT:-35}"
+NEKO_DIAG_ROUTE_PROVIDER="${NEKO_DIAG_ROUTE_PROVIDER:-LeoMoeAPI}"
+NEKO_DIAG_ROUTE_V4_CT="${NEKO_DIAG_ROUTE_V4_CT:-gd-ct-v4.ip.zstaticcdn.com}"
+NEKO_DIAG_ROUTE_V4_CU="${NEKO_DIAG_ROUTE_V4_CU:-gd-cu-v4.ip.zstaticcdn.com}"
+NEKO_DIAG_ROUTE_V4_CM="${NEKO_DIAG_ROUTE_V4_CM:-gd-cm-v4.ip.zstaticcdn.com}"
+NEKO_DIAG_ROUTE_V6_CT="${NEKO_DIAG_ROUTE_V6_CT:-gd-ct-v6.ip.zstaticcdn.com}"
+NEKO_DIAG_ROUTE_V6_CU="${NEKO_DIAG_ROUTE_V6_CU:-gd-cu-v6.ip.zstaticcdn.com}"
+NEKO_DIAG_ROUTE_V6_CM="${NEKO_DIAG_ROUTE_V6_CM:-gd-cm-v6.ip.zstaticcdn.com}"
 
 # shellcheck source=lib/common.sh
 source "${NEKO_LIBEXEC}/lib/common.sh"
@@ -31,6 +43,8 @@ DIAG_OK_COUNT=0
 DIAG_WARN_COUNT=0
 DIAG_SKIP_COUNT=0
 DIAG_BENCH_FILE=""
+DIAG_QUALITY_DIR=""
+DIAG_ROUTE_DIR=""
 
 diag_cleanup() {
   local base="${NEKO_DIAG_TMP_DIR%/}"
@@ -39,6 +53,16 @@ diag_cleanup() {
     rm -f -- "$DIAG_BENCH_FILE"
   fi
   DIAG_BENCH_FILE=""
+  if [[ -n "$DIAG_QUALITY_DIR" && -n "$base" \
+    && "$DIAG_QUALITY_DIR" == "$base"/.neko-ip-quality.* ]]; then
+    rm -rf -- "$DIAG_QUALITY_DIR"
+  fi
+  DIAG_QUALITY_DIR=""
+  if [[ -n "$DIAG_ROUTE_DIR" && -n "$base" \
+    && "$DIAG_ROUTE_DIR" == "$base"/.neko-route.* ]]; then
+    rm -rf -- "$DIAG_ROUTE_DIR"
+  fi
+  DIAG_ROUTE_DIR=""
 }
 
 trap diag_cleanup EXIT
@@ -547,6 +571,325 @@ ripe_request() {
     "${NEKO_DIAG_RIPE_BASE}/${endpoint}/data.json" 2>/dev/null
 }
 
+quality_request() {
+  local provider="$1" family="$2" source_address="$3"
+  local timeout_seconds="$NEKO_DIAG_NETWORK_TIMEOUT"
+  local -a family_args=()
+
+  [[ "$timeout_seconds" =~ ^[0-9]+$ ]] \
+    && (( timeout_seconds >= 2 && timeout_seconds <= 30 )) \
+    || timeout_seconds=5
+  mapfile -d '' -t family_args < <(curl_family_args "$family" "$source_address")
+  case "$provider" in
+    ipapi)
+      curl --fail --silent --show-error --location --max-redirs 1 \
+        --connect-timeout 3 --max-time "$timeout_seconds" \
+        --max-filesize 524288 --header 'Accept: application/json' \
+        "${family_args[@]}" --get --data-urlencode "q=${source_address}" \
+        "$NEKO_DIAG_IPAPI_URL" 2>/dev/null
+      ;;
+    proxycheck)
+      curl --fail --silent --show-error --location --max-redirs 1 \
+        --connect-timeout 3 --max-time "$timeout_seconds" \
+        --max-filesize 524288 --header 'Accept: application/json' \
+        "${family_args[@]}" --request POST \
+        --data-urlencode "ips=${source_address}" \
+        "$NEKO_DIAG_PROXYCHECK_URL" 2>/dev/null
+      ;;
+    ipwho)
+      curl --fail --silent --show-error --location --max-redirs 1 \
+        --connect-timeout 3 --max-time "$timeout_seconds" \
+        --max-filesize 524288 --header 'Accept: application/json' \
+        "${family_args[@]}" \
+        "${NEKO_DIAG_IPWHO_URL%/}/${source_address}" 2>/dev/null
+      ;;
+    *) return 2 ;;
+  esac
+}
+
+quality_response_valid() {
+  local provider="$1" address="$2" file="$3"
+  [[ -s "$file" ]] || return 1
+  case "$provider" in
+    ipapi)
+      jq -e --arg ip "$address" \
+        '(.error? == null) and (.ip == $ip)' "$file" >/dev/null 2>&1
+      ;;
+    proxycheck)
+      jq -e --arg ip "$address" \
+        '(.status == "ok") and (.[ $ip ] | type == "object")' \
+        "$file" >/dev/null 2>&1
+      ;;
+    ipwho)
+      jq -e --arg ip "$address" \
+        '(.success == true) and (.ip == $ip)' "$file" >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_asn_label() {
+  local value="${1:-}"
+  value="${value^^}"
+  case "$value" in
+    AS[0-9]*) [[ "${value#AS}" =~ ^[0-9]+$ ]] && printf '%s' "$value" ;;
+    [0-9]*) [[ "$value" =~ ^[0-9]+$ ]] && printf 'AS%s' "$value" ;;
+  esac
+}
+
+show_ip_quality() {
+  local family="$1" source_address="$2"
+  local ipapi_file proxycheck_file ipwho_file provider file pid
+  local ipapi_ok=0 proxycheck_ok=0 ipwho_ok=0
+  local ipapi_host="" ipapi_type="" ipapi_country="" ipapi_city=""
+  local ipapi_asn="" ipapi_org="" ipapi_flags=""
+  local proxy_host="" proxy_type="" proxy_country="" proxy_city=""
+  local proxy_asn="" proxy_org="" proxy_flags="" proxy_risk=""
+  local ipwho_country="" ipwho_city="" ipwho_asn="" ipwho_org=""
+  local hosting_yes=0 hosting_no=0 hosting_total=0
+  local security_sources=0 security_detail="" country_detail_text=""
+  local majority_count=0 majority_code="" total_countries=0
+  local type_summary="" location_summary="" detail=""
+  local -a providers=(ipapi proxycheck ipwho)
+  local -a pids=() ipapi_fields=() proxy_fields=() ipwho_fields=()
+  local -a country_codes=() country_details=()
+
+  diag_section "${family/ipv/IPv} IP 质量（数据库参考）"
+  if [[ ! -d "$NEKO_DIAG_TMP_DIR" || ! -w "$NEKO_DIAG_TMP_DIR" ]]; then
+    diag_skip "临时目录不可写，未查询 ${family/ipv/IPv} IP 质量。"
+    return 0
+  fi
+  DIAG_QUALITY_DIR="$(
+    mktemp -d "${NEKO_DIAG_TMP_DIR%/}/.neko-ip-quality.XXXXXX"
+  )" || {
+    DIAG_QUALITY_DIR=""
+    diag_skip "无法创建临时目录，未查询 ${family/ipv/IPv} IP 质量。"
+    return 0
+  }
+  ipapi_file="${DIAG_QUALITY_DIR}/ipapi.json"
+  proxycheck_file="${DIAG_QUALITY_DIR}/proxycheck.json"
+  ipwho_file="${DIAG_QUALITY_DIR}/ipwho.json"
+  for provider in "${providers[@]}"; do
+    case "$provider" in
+      ipapi) file="$ipapi_file" ;;
+      proxycheck) file="$proxycheck_file" ;;
+      ipwho) file="$ipwho_file" ;;
+    esac
+    (
+      quality_request "$provider" "$family" "$source_address" > "$file" \
+        && quality_response_valid "$provider" "$source_address" "$file"
+    ) &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  if quality_response_valid ipapi "$source_address" "$ipapi_file"; then
+    ipapi_ok=1
+    mapfile -t ipapi_fields < <(
+      jq -r '
+        def clean:
+          tostring
+          | gsub("[[:cntrl:]]"; " ")
+          | .[0:160];
+        [
+          (if .is_datacenter == true then "yes"
+           elif .is_datacenter == false then "no" else "" end),
+          (.company.type // "" | clean),
+          (.location.country_code // "" | clean),
+          (.location.city // "" | clean),
+          (.asn.asn // "" | clean),
+          (.asn.org // .company.name // "" | clean),
+          ([
+            if .is_proxy == true then "代理" else empty end,
+            if .is_vpn == true then "VPN" else empty end,
+            if .is_tor == true then "Tor" else empty end,
+            if .is_abuser == true then "滥用记录" else empty end
+          ] | join("、"))
+        ] | .[]' "$ipapi_file"
+    )
+    ipapi_host="${ipapi_fields[0]:-}"
+    ipapi_type="${ipapi_fields[1]:-}"
+    ipapi_country="${ipapi_fields[2]:-}"
+    ipapi_city="${ipapi_fields[3]:-}"
+    ipapi_asn="$(normalize_asn_label "${ipapi_fields[4]:-}")"
+    ipapi_org="${ipapi_fields[5]:-}"
+    ipapi_flags="${ipapi_fields[6]:-}"
+  fi
+
+  if quality_response_valid proxycheck "$source_address" "$proxycheck_file"; then
+    proxycheck_ok=1
+    mapfile -t proxy_fields < <(
+      jq -r --arg ip "$source_address" '
+        def clean:
+          tostring
+          | gsub("[[:cntrl:]]"; " ")
+          | .[0:160];
+        .[$ip] as $r
+        | [
+          (if (($r.detections.hosting? == true)
+                or (($r.network.type? // "" | ascii_downcase) == "hosting"))
+           then "yes"
+           elif (($r.detections.hosting? == false)
+                 or ($r.network.type? != null))
+           then "no" else "" end),
+          ($r.network.type // "" | clean),
+          ($r.location.country_code // "" | clean),
+          ($r.location.city_name // "" | clean),
+          ($r.network.asn // "" | clean),
+          ($r.network.organisation // $r.network.provider // "" | clean),
+          ([
+            if $r.detections.proxy? == true then "代理" else empty end,
+            if $r.detections.vpn? == true then "VPN" else empty end,
+            if $r.detections.tor? == true then "Tor" else empty end,
+            if $r.detections.compromised? == true then "被入侵" else empty end,
+            if $r.detections.scraper? == true then "爬虫" else empty end,
+            if $r.detections.anonymous? == true then "匿名网络" else empty end
+          ] | join("、")),
+          ($r.detections.risk // "" | clean)
+        ] | .[]' "$proxycheck_file"
+    )
+    proxy_host="${proxy_fields[0]:-}"
+    proxy_type="${proxy_fields[1]:-}"
+    proxy_country="${proxy_fields[2]:-}"
+    proxy_city="${proxy_fields[3]:-}"
+    proxy_asn="$(normalize_asn_label "${proxy_fields[4]:-}")"
+    proxy_org="${proxy_fields[5]:-}"
+    proxy_flags="${proxy_fields[6]:-}"
+    proxy_risk="${proxy_fields[7]:-}"
+  fi
+
+  if quality_response_valid ipwho "$source_address" "$ipwho_file"; then
+    ipwho_ok=1
+    mapfile -t ipwho_fields < <(
+      jq -r '
+        def clean:
+          tostring
+          | gsub("[[:cntrl:]]"; " ")
+          | .[0:160];
+        [
+          (.country_code // "" | clean),
+          (.city // "" | clean),
+          (.connection.asn // "" | clean),
+          (.connection.org // .connection.isp // "" | clean)
+        ] | .[]' "$ipwho_file"
+    )
+    ipwho_country="${ipwho_fields[0]:-}"
+    ipwho_city="${ipwho_fields[1]:-}"
+    ipwho_asn="$(normalize_asn_label "${ipwho_fields[2]:-}")"
+    ipwho_org="${ipwho_fields[3]:-}"
+  fi
+
+  for detail in "$ipapi_host" "$proxy_host"; do
+    case "$detail" in
+      yes) ((hosting_yes += 1, hosting_total += 1)) ;;
+      no) ((hosting_no += 1, hosting_total += 1)) ;;
+    esac
+  done
+  if (( hosting_total == 0 )); then
+    type_summary="相关数据库未返回可用的网络类型"
+  elif (( hosting_yes == hosting_total )); then
+    type_summary="数据中心/托管 IP（${hosting_yes}/${hosting_total} 个来源一致）"
+  elif (( hosting_no == hosting_total )); then
+    type_summary="未被这 ${hosting_total} 个来源标为托管；不能据此认定住宅或原生"
+  else
+    type_summary="数据库意见不一致（托管 ${hosting_yes}，非托管 ${hosting_no}）"
+  fi
+  diag_fact "小白结论 · 类型" "$type_summary"
+
+  if (( ipapi_ok == 1 )); then
+    ((security_sources += 1))
+    [[ -z "$ipapi_flags" ]] \
+      || security_detail="ipapi.is：${ipapi_flags}"
+  fi
+  if (( proxycheck_ok == 1 )); then
+    ((security_sources += 1))
+    if [[ -n "$proxy_flags" ]]; then
+      [[ -z "$security_detail" ]] \
+        || security_detail+="；"
+      security_detail+="proxycheck.io：${proxy_flags}"
+    fi
+  fi
+  if [[ -n "$security_detail" ]]; then
+    diag_warn "${family/ipv/IPv} 风控数据库检测到：${security_detail}。"
+  elif (( security_sources > 0 )); then
+    diag_fact "小白结论 · 风控" \
+      "当前未见明显代理/VPN/Tor/滥用标签（不等于永久干净）"
+  else
+    diag_skip "${family/ipv/IPv} 风控标签数据库暂时不可用。"
+  fi
+
+  for detail in \
+    "ipapi.is:${ipapi_country}" \
+    "proxycheck.io:${proxy_country}" \
+    "ipwho.is:${ipwho_country}"; do
+    provider="${detail%%:*}"
+    detail="${detail#*:}"
+    detail="${detail^^}"
+    if [[ "$detail" =~ ^[A-Z]{2}$ ]]; then
+      country_codes+=("$detail")
+      country_details+=("${provider}=${detail}")
+    fi
+  done
+  total_countries="${#country_codes[@]}"
+  if (( total_countries > 0 )); then
+    read -r majority_count majority_code < <(
+      printf '%s\n' "${country_codes[@]}" \
+        | sort | uniq -c | sort -nr \
+        | awk 'NR == 1 {print $1, $2}'
+    )
+    for detail in "${country_details[@]}"; do
+      [[ -z "$country_detail_text" ]] \
+        || country_detail_text+="；"
+      country_detail_text+="$detail"
+    done
+    if (( total_countries == 1 )); then
+      location_summary="${majority_code}（仅 1 个来源返回）"
+    elif (( majority_count * 2 > total_countries )); then
+      location_summary="${majority_code}（${majority_count}/${total_countries} 个来源一致）"
+    else
+      location_summary="数据库不一致（${country_detail_text}）"
+    fi
+    diag_fact "小白结论 · 位置" "$location_summary"
+  else
+    diag_skip "${family/ipv/IPv} 位置数据库暂时不可用。"
+  fi
+  diag_fact "原生 IP 结论" \
+    "没有统一权威标准；不把单一数据库标签冒充原生结论"
+
+  if (( ipapi_ok == 1 )); then
+    detail="${ipapi_asn:-ASN 未知} ${ipapi_org:-机构未知}；${ipapi_country:-位置未知}"
+    [[ -z "$ipapi_city" ]] || detail+="/${ipapi_city}"
+    detail+="；类型 ${ipapi_type:-未知}"
+    [[ -z "$ipapi_flags" ]] || detail+="；标签 ${ipapi_flags}"
+    diag_fact "ipapi.is" "$detail"
+  else
+    diag_skip "${family/ipv/IPv} ipapi.is 数据暂时不可用。"
+  fi
+  if (( proxycheck_ok == 1 )); then
+    detail="${proxy_asn:-ASN 未知} ${proxy_org:-机构未知}；${proxy_country:-位置未知}"
+    [[ -z "$proxy_city" ]] || detail+="/${proxy_city}"
+    detail+="；类型 ${proxy_type:-未知}"
+    [[ -z "$proxy_flags" ]] || detail+="；标签 ${proxy_flags}"
+    [[ -z "$proxy_risk" ]] || detail+="；风险分 ${proxy_risk}/100"
+    diag_fact "proxycheck.io" "$detail"
+  else
+    diag_skip "${family/ipv/IPv} proxycheck.io 数据暂时不可用。"
+  fi
+  if (( ipwho_ok == 1 )); then
+    detail="${ipwho_asn:-ASN 未知} ${ipwho_org:-机构未知}；${ipwho_country:-位置未知}"
+    [[ -z "$ipwho_city" ]] || detail+="/${ipwho_city}"
+    diag_fact "ipwho.is" "$detail"
+  else
+    diag_skip "${family/ipv/IPv} ipwho.is 数据暂时不可用。"
+  fi
+  printf '  注：数据库会更新，也可能误判；类型和位置只作选购/排障参考。\n'
+
+  rm -rf -- "$DIAG_QUALITY_DIR"
+  DIAG_QUALITY_DIR=""
+}
+
 show_routing_registration() {
   local family="$1" source_address="$2"
   local network_json prefix asns prefix_json holders announced
@@ -634,6 +977,13 @@ show_family_network() {
   diag_section "${family/ipv/IPv} 网络"
   diag_fact "严格订阅域名" "$domain"
   diag_fact "配置地址" "$address"
+  if [[ "$family" == ipv4 ]] && ! is_ipv4_literal "$address"; then
+    diag_warn "安装状态中的 IPv4 地址无效，停止这个地址族的联网检查。"
+    return 0
+  elif [[ "$family" == ipv6 ]] && ! is_ipv6_literal "$address"; then
+    diag_warn "安装状态中的 IPv6 地址无效，停止这个地址族的联网检查。"
+    return 0
+  fi
   route="$(default_route_for_family "$family")"
   if [[ -n "$route" ]]; then
     diag_ok "${family/ipv/IPv} 默认路由存在。"
@@ -668,12 +1018,14 @@ show_family_network() {
   fi
 
   trace_family "$family" "$address"
+  show_ip_quality "$family" "$address"
+  diag_section "${family/ipv/IPv} BGP 注册（不是实际线路）"
   show_routing_registration "$family" "$address"
 }
 
 show_network_report() {
   local resolvers=""
-  diag_section "严格网络、IP 与线路"
+  diag_section "严格网络、IP 质量与 BGP"
   if ! load_diag_state; then
     diag_skip "没有可用的 Neko 安装状态，无法按已安装地址族检查。"
     return 0
@@ -694,14 +1046,253 @@ show_network_report() {
     diag_warn "当前 DNS 已不符合安装模式；可先核对 Cloudflare 灰云记录。"
   fi
 
-  printf '\n  说明：“原生 IP”没有统一、权威的公开字段。这里报告可核验的\n'
-  printf '  出口 IP、ASN、BGP 前缀、PTR 与 RPKI，不用单一数据库硬下结论。\n'
+  printf '\n  说明：IP 类型、位置和风控会交叉查询多个数据库，但都可能误判。\n'
+  printf '  BGP 注册只能说明地址归属；真实三网路径请在菜单中单独运行。\n'
   if network_mode_has_ipv4 "$NETWORK_MODE"; then
     show_family_network ipv4
   fi
   if network_mode_has_ipv6 "$NETWORK_MODE"; then
     show_family_network ipv6
   fi
+}
+
+run_nexttrace_probe() {
+  local family="$1" source_address="$2" target="$3" output_file="$4"
+  local family_flag timeout_seconds="$NEKO_DIAG_ROUTE_TIMEOUT"
+
+  [[ "$timeout_seconds" =~ ^[0-9]+$ ]] \
+    && (( timeout_seconds >= 10 && timeout_seconds <= 90 )) \
+    || timeout_seconds=35
+  if [[ "$family" == ipv4 ]]; then
+    family_flag=--ipv4
+  else
+    family_flag=--ipv6
+  fi
+  timeout --kill-after=2 "$timeout_seconds" \
+    "$NEKO_DIAG_NEXTTRACE" \
+    "$family_flag" --tcp --port 80 \
+    --source "$source_address" \
+    --queries 1 --max-attempts 2 --parallel-requests 6 \
+    --max-hops 30 --timeout 1000 --send-time 50 --ttl-time 100 \
+    --no-rdns --data-provider "$NEKO_DIAG_ROUTE_PROVIDER" \
+    --json --map --no-color "$target" \
+    > "$output_file" 2> "${output_file}.err"
+}
+
+route_result_valid() {
+  local file="$1"
+  [[ -s "$file" ]] \
+    && jq -e '.Hops | type == "array"' "$file" >/dev/null 2>&1
+}
+
+route_asn_path() {
+  local file="$1"
+  jq -r '
+    def asn:
+      tostring
+      | ascii_upcase
+      | sub("^AS"; "")
+      | select(test("^[0-9]+$"))
+      | "AS" + .;
+    reduce (
+      .Hops[][]?
+      | select(.Success == true)
+      | .Geo.asnumber?
+      | select(. != null and . != "")
+      | asn
+    ) as $item (
+      [];
+      if index($item) == null then . + [$item] else . end
+    )
+    | join(" → ")' "$file" 2>/dev/null
+}
+
+route_hop_count() {
+  local file="$1"
+  jq -r '
+    [
+      .Hops[]?
+      | [.[]? | select(.Success == true)]
+      | length
+      | select(. > 0)
+    ] | length' "$file" 2>/dev/null
+}
+
+route_last_response() {
+  local file="$1"
+  jq -r '
+    [
+      .Hops[][]?
+      | select(.Success == true)
+      | {
+          ip: (.Geo.ip // .Address.IP // .Address.ip // ""),
+          rtt: (
+            if (.RTT | type) == "number"
+            then ((.RTT / 1000000) | tostring)
+            else "" end
+          )
+        }
+    ]
+    | last // {}
+    | if .ip == "" and .rtt == "" then ""
+      elif .rtt == "" then .ip
+      elif .ip == "" then "\(.rtt) ms"
+      else "\(.ip) / \(.rtt) ms" end' "$file" 2>/dev/null
+}
+
+classify_carrier_route() {
+  local carrier="$1" asn_path="$2"
+  case "$carrier" in
+    ct)
+      if [[ "$asn_path" == *AS4809* ]]; then
+        printf '检测到 AS4809（CN2 相关；仅凭 ASN 不能区分 GT/GIA）'
+      elif [[ "$asn_path" == *AS4134* ]]; then
+        printf '检测到 AS4134（电信 163 骨干）'
+      else
+        printf '未识别到常见电信骨干 ASN'
+      fi
+      ;;
+    cu)
+      if [[ "$asn_path" == *AS9929* ]]; then
+        printf '检测到 AS9929（联通 9929/CUII）'
+      elif [[ "$asn_path" == *AS4837* ]]; then
+        printf '检测到 AS4837（联通 169 骨干）'
+      elif [[ "$asn_path" == *AS10099* ]]; then
+        printf '检测到 AS10099（中国联通国际）'
+      else
+        printf '未识别到常见联通骨干 ASN'
+      fi
+      ;;
+    cm)
+      if [[ "$asn_path" == *AS58807* ]]; then
+        printf '检测到 AS58807（移动国际/N2 相关路径）'
+      elif [[ "$asn_path" == *AS58453* ]]; then
+        printf '检测到 AS58453（中国移动国际 CMI）'
+      elif [[ "$asn_path" == *AS9808* ]]; then
+        printf '检测到 AS9808（移动 CMNET 骨干）'
+      else
+        printf '未识别到常见移动骨干 ASN'
+      fi
+      ;;
+  esac
+}
+
+show_carrier_route_result() {
+  local family="$1" carrier="$2" label="$3" target="$4" file="$5"
+  local asn_path hop_count last_response judgment
+
+  if ! route_result_valid "$file"; then
+    diag_skip "${family/ipv/IPv} ${label}参考路径失败或超时（目标 ${target}）。"
+    return 0
+  fi
+  hop_count="$(route_hop_count "$file")"
+  if [[ ! "$hop_count" =~ ^[0-9]+$ ]] || (( hop_count == 0 )); then
+    diag_skip "${family/ipv/IPv} ${label}参考路径没有收到有效响应。"
+    return 0
+  fi
+  asn_path="$(route_asn_path "$file")"
+  last_response="$(route_last_response "$file")"
+  if [[ -n "$asn_path" ]]; then
+    judgment="$(classify_carrier_route "$carrier" "$asn_path")"
+  else
+    judgment="路径已测到，但 ASN 数据源暂时没有返回，无法判断线路类型"
+  fi
+  diag_fact "${label} · 判断" "$judgment"
+  diag_fact "${label} · ASN 证据" "${asn_path:-无 ASN 数据}"
+  diag_fact "${label} · 响应" \
+    "${hop_count} 跳有回应；末个回应 ${last_response:-未知}"
+}
+
+show_carrier_routes_for_family() {
+  local family="$1" source_address="$2"
+  local pid
+  local -a carriers=(ct cu cm) labels=(电信 联通 移动)
+  local -a targets=() files=() pids=()
+  local index
+
+  if [[ "$family" == ipv4 ]]; then
+    targets=(
+      "$NEKO_DIAG_ROUTE_V4_CT"
+      "$NEKO_DIAG_ROUTE_V4_CU"
+      "$NEKO_DIAG_ROUTE_V4_CM"
+    )
+  else
+    targets=(
+      "$NEKO_DIAG_ROUTE_V6_CT"
+      "$NEKO_DIAG_ROUTE_V6_CU"
+      "$NEKO_DIAG_ROUTE_V6_CM"
+    )
+  fi
+  files=(
+    "${DIAG_ROUTE_DIR}/${family}-ct.json"
+    "${DIAG_ROUTE_DIR}/${family}-cu.json"
+    "${DIAG_ROUTE_DIR}/${family}-cm.json"
+  )
+
+  diag_section "${family/ipv/IPv} · VPS → 广东三网参考路径"
+  for index in 0 1 2; do
+    (
+      run_nexttrace_probe \
+        "$family" "$source_address" "${targets[$index]}" "${files[$index]}"
+    ) &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  for index in 0 1 2; do
+    show_carrier_route_result \
+      "$family" "${carriers[$index]}" "${labels[$index]}" \
+      "${targets[$index]}" "${files[$index]}"
+  done
+}
+
+show_route_report() {
+  diag_section "真实三网线路（明确触发、只读）"
+  if ! load_diag_state; then
+    diag_skip "没有可用的 Neko 安装状态，无法绑定已安装地址族。"
+    return 0
+  fi
+  if [[ ! -x "$NEKO_DIAG_NEXTTRACE" ]]; then
+    diag_skip "可选 NextTrace 组件不可用；安装与代理服务不受影响。"
+    return 0
+  fi
+  if ! command -v timeout >/dev/null 2>&1; then
+    diag_skip "系统缺少 timeout，未运行有严格时限的线路测试。"
+    return 0
+  fi
+  if [[ ! -d "$NEKO_DIAG_TMP_DIR" || ! -w "$NEKO_DIAG_TMP_DIR" ]]; then
+    diag_skip "临时目录不可写，未运行线路测试。"
+    return 0
+  fi
+  DIAG_ROUTE_DIR="$(
+    mktemp -d "${NEKO_DIAG_TMP_DIR%/}/.neko-route.XXXXXX"
+  )" || {
+    DIAG_ROUTE_DIR=""
+    diag_skip "无法创建线路测试临时目录。"
+    return 0
+  }
+
+  printf '  方向：从这台 VPS 发往广东电信、联通、移动参考目标。\n'
+  printf '  结果只证明本次实际路径，不保证拥塞、晚高峰速度或未来路由。\n'
+  if network_mode_has_ipv4 "$NETWORK_MODE"; then
+    if is_ipv4_literal "$SUBSCRIPTION_IPV4_ADDRESS" \
+      && address_is_local ipv4 "$SUBSCRIPTION_IPV4_ADDRESS"; then
+      show_carrier_routes_for_family ipv4 "$SUBSCRIPTION_IPV4_ADDRESS"
+    else
+      diag_skip "IPv4 配置地址无效或已不属于本机，未运行 IPv4 线路测试。"
+    fi
+  fi
+  if network_mode_has_ipv6 "$NETWORK_MODE"; then
+    if is_ipv6_literal "$SUBSCRIPTION_IPV6_ADDRESS" \
+      && address_is_local ipv6 "$SUBSCRIPTION_IPV6_ADDRESS"; then
+      show_carrier_routes_for_family ipv6 "$SUBSCRIPTION_IPV6_ADDRESS"
+    else
+      diag_skip "IPv6 配置地址无效或已不属于本机，未运行 IPv6 线路测试。"
+    fi
+  fi
+  rm -rf -- "$DIAG_ROUTE_DIR"
+  DIAG_ROUTE_DIR=""
 }
 
 run_cpu_benchmark() {
@@ -830,6 +1421,9 @@ run_report() {
     network)
       show_network_report
       ;;
+    routes)
+      show_route_report
+      ;;
     full)
       show_system_report
       show_neko_report
@@ -840,17 +1434,18 @@ run_report() {
 }
 
 interactive_menu() {
-  local choice
+  local choice answer
   while true; do
     clear 2>/dev/null || true
     printf 'VPS 硬件、IP 与网络体检\n'
     printf '========================\n'
     printf '1. 一键完整体检（推荐，只读）\n'
     printf '2. 只看系统与硬件（离线、只读）\n'
-    printf '3. 只查 Neko、IPv4/IPv6、IP 与线路（联网、只读）\n'
-    printf '4. 轻量性能测试（明确确认后才运行）\n'
+    printf '3. 只查 Neko、IP 质量与 BGP（联网、只读）\n'
+    printf '4. 真实三网线路（约几十秒，明确确认后运行）\n'
+    printf '5. 轻量性能测试（明确确认后才运行）\n'
     printf '0. 返回\n\n'
-    read -r -p "请选择 [0-4]：" choice
+    read -r -p "请选择 [0-5]：" choice
     case "$choice" in
       0|"") return 0 ;;
       1) run_report full ;;
@@ -862,11 +1457,17 @@ interactive_menu() {
         diag_summary
         ;;
       4)
+        warn "将从 VPS 向广东三网目标发送少量 TCP 探测包，不会修改服务。"
+        read -r -p "输入 ROUTE 确认运行：" answer
+        [[ "$answer" == ROUTE ]] || continue
+        run_report routes
+        ;;
+      5)
         run_benchmark_menu
         continue
         ;;
       *)
-        warn "请输入 0 到 4。"
+        warn "请输入 0 到 5。"
         sleep 1
         continue
         ;;
@@ -882,13 +1483,14 @@ usage() {
 
   --system          只显示离线系统与硬件信息
   --neko            只检查 Neko 服务与证书
-  --network         检查已安装地址族、出口与路由注册
+  --network         检查已安装地址族、IP 质量与 BGP 注册
+  --routes          运行有超时保护的广东三网参考路径测试
   --full            完整只读体检（不运行性能测试）
   --benchmark-cpu   运行明确请求的轻量 CPU 测试
   --benchmark-disk  运行明确请求的轻量磁盘测试
   -h, --help        显示帮助
 
-不提供选项时打开交互菜单。性能测试永远不会包含在 --full 中。
+不提供选项时打开交互菜单。三网线路和性能测试都不会包含在 --full 中。
 EOF
 }
 
@@ -898,6 +1500,7 @@ main() {
     --system) run_report system ;;
     --neko) run_report neko ;;
     --network) run_report network ;;
+    --routes) run_report routes ;;
     --full) run_report full ;;
     --benchmark-cpu)
       diag_reset_counts

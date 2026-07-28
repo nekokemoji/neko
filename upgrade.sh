@@ -19,6 +19,8 @@ NEKO_UPDATE_LOCK_FILE="${NEKO_UPDATE_LOCK_FILE:-/run/lock/neko-maintenance.lock}
 BACKUP_DIR=""
 QRC_STAGE_DIR=""
 QRC_STAGED_BINARY=""
+NEXTTRACE_STAGE_DIR=""
+NEXTTRACE_STAGED_BINARY=""
 ROLLBACK_READY=0
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
@@ -41,6 +43,17 @@ cleanup_qrc_stage() {
     rm -rf -- "$QRC_STAGE_DIR"
     QRC_STAGE_DIR=""
     QRC_STAGED_BINARY=""
+  fi
+}
+
+cleanup_nexttrace_stage() {
+  local base="${NEKO_UPDATE_TMP_DIR%/}"
+  [[ -n "$NEXTTRACE_STAGE_DIR" ]] || return 0
+  if [[ -n "$base" \
+    && "$NEXTTRACE_STAGE_DIR" == "$base"/neko-nexttrace-stage.* ]]; then
+    rm -rf -- "$NEXTTRACE_STAGE_DIR"
+    NEXTTRACE_STAGE_DIR=""
+    NEXTTRACE_STAGED_BINARY=""
   fi
 }
 
@@ -123,6 +136,87 @@ install_staged_qrc() {
   ok "终端二维码组件已更新。"
 }
 
+stage_optional_nexttrace() {
+  local nexttrace_source="${NEKO_UPDATE_NEXTTRACE_BINARY:-}"
+  local nexttrace_asset nexttrace_version
+
+  case "${ARCH_OVERRIDE:-$(uname -m)}" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *)
+      warn "当前 CPU 没有匹配的 NextTrace；升级仍会继续，只跳过三网线路测试。"
+      return 0
+      ;;
+  esac
+  export ARCH
+
+  if ! NEXTTRACE_STAGE_DIR="$(
+      mktemp -d "${NEKO_UPDATE_TMP_DIR%/}/neko-nexttrace-stage.XXXXXX"
+    )"; then
+    NEXTTRACE_STAGE_DIR=""
+    warn "无法创建 NextTrace 临时目录；升级仍会继续，只跳过三网线路测试。"
+    return 0
+  fi
+  NEXTTRACE_STAGED_BINARY="${NEXTTRACE_STAGE_DIR}/nexttrace-tiny"
+
+  if [[ -n "$nexttrace_source" ]]; then
+    if [[ ! -x "$nexttrace_source" ]] \
+      || ! install -m 0755 \
+        "$nexttrace_source" "$NEXTTRACE_STAGED_BINARY"; then
+      warn "测试提供的 NextTrace 不可用；升级仍会继续，只跳过三网线路测试。"
+      cleanup_nexttrace_stage
+      return 0
+    fi
+  else
+    for nexttrace_source in curl sha256sum install; do
+      if ! command -v "$nexttrace_source" >/dev/null 2>&1; then
+        warn "缺少 ${nexttrace_source}，无法更新可选 NextTrace；只跳过三网线路测试。"
+        cleanup_nexttrace_stage
+        return 0
+      fi
+    done
+    nexttrace_asset="nexttrace-tiny_linux_${ARCH}"
+    if ! download_optional_verified "NextTrace Tiny ${NEXTTRACE_VERSION}" \
+        "https://github.com/nxtrace/NTrace-core/releases/download/v${NEXTTRACE_VERSION}/${nexttrace_asset}" \
+        "$(sha_for_arch NEXTTRACE)" "$NEXTTRACE_STAGED_BINARY"; then
+      cleanup_nexttrace_stage
+      return 0
+    fi
+    if ! chmod 0755 "$NEXTTRACE_STAGED_BINARY"; then
+      warn "NextTrace 准备失败；升级仍会继续，只跳过三网线路测试。"
+      cleanup_nexttrace_stage
+      return 0
+    fi
+  fi
+
+  nexttrace_version="$(
+    NO_COLOR=1 "$NEXTTRACE_STAGED_BINARY" --version 2>&1 || true
+  )"
+  if ! grep -Fq "NextTrace v${NEXTTRACE_VERSION}" \
+      <<< "$nexttrace_version"; then
+    warn "NextTrace 运行检查失败；升级仍会继续，只跳过三网线路测试。"
+    cleanup_nexttrace_stage
+    return 0
+  fi
+  ok "可选三网线路组件 NextTrace Tiny ${NEXTTRACE_VERSION} 已校验。"
+}
+
+install_staged_nexttrace() {
+  local nexttrace_tmp=""
+  [[ -n "$NEXTTRACE_STAGED_BINARY" \
+    && -x "$NEXTTRACE_STAGED_BINARY" ]] || return 0
+  if ! nexttrace_tmp="$(
+      mktemp "${NEKO_LIBEXEC}/.nexttrace-tiny.tmp.XXXXXX"
+    )" \
+    || ! install -m 0755 "$NEXTTRACE_STAGED_BINARY" "$nexttrace_tmp" \
+    || ! mv -f -- "$nexttrace_tmp" "$NEKO_LIBEXEC/nexttrace-tiny"; then
+    [[ -z "$nexttrace_tmp" ]] || rm -f -- "$nexttrace_tmp"
+    warn "NextTrace 安装失败；已保留原状态，只跳过三网线路测试。"
+    return 0
+  fi
+  ok "三网线路检测组件已更新。"
+}
+
 restore_tree() {
   local backup="$1" target="$2"
   [[ -e "$backup" ]] || return 0
@@ -156,6 +250,9 @@ rollback_upgrade() {
   restore_optional_file \
     "$BACKUP_DIR/qrc" "$NEKO_LIBEXEC/qrc" || rollback_ok=0
   restore_optional_file \
+    "$BACKUP_DIR/nexttrace-tiny" \
+    "$NEKO_LIBEXEC/nexttrace-tiny" || rollback_ok=0
+  restore_optional_file \
     "$BACKUP_DIR/neko-hysteria.service" \
     "$NEKO_SYSTEMD/neko-hysteria.service" || rollback_ok=0
   systemctl daemon-reload >/dev/null 2>&1 || rollback_ok=0
@@ -164,6 +261,7 @@ rollback_upgrade() {
     >/dev/null 2>&1 || rollback_ok=0
   if (( rollback_ok == 1 )); then
     cleanup_qrc_stage
+    cleanup_nexttrace_stage
     cleanup_backup
   else
     warn "自动恢复未完全成功；为防止数据丢失，备份保留在 ${BACKUP_DIR}。"
@@ -178,6 +276,7 @@ finish_upgrade() {
     rollback_upgrade "$rc"
   fi
   cleanup_qrc_stage
+  cleanup_nexttrace_stage
   cleanup_backup
   exit "$rc"
 }
@@ -288,6 +387,7 @@ main() {
   [[ -d "$NEKO_UPDATE_TMP_DIR" && -w "$NEKO_UPDATE_TMP_DIR" ]] \
     || die "升级临时目录不可写：${NEKO_UPDATE_TMP_DIR}"
   stage_optional_qrc
+  stage_optional_nexttrace
 
   current_schema="$(jq -er '.schema // 1 | select(type == "number")' "$NEKO_STATE")" \
     || die "state.json 缺少有效 schema。"
@@ -332,6 +432,9 @@ main() {
     || cp -a -- "$NEKO_LIBEXEC/hysteria-dual.sh" "$BACKUP_DIR/hysteria-dual.sh"
   [[ ! -e "$NEKO_LIBEXEC/qrc" ]] \
     || cp -a -- "$NEKO_LIBEXEC/qrc" "$BACKUP_DIR/qrc"
+  [[ ! -e "$NEKO_LIBEXEC/nexttrace-tiny" ]] \
+    || cp -a -- \
+      "$NEKO_LIBEXEC/nexttrace-tiny" "$BACKUP_DIR/nexttrace-tiny"
   [[ ! -e "$NEKO_SYSTEMD/neko-hysteria.service" ]] \
     || cp -a -- \
       "$NEKO_SYSTEMD/neko-hysteria.service" "$BACKUP_DIR/neko-hysteria.service"
@@ -348,6 +451,7 @@ main() {
   install -m 0755 \
     "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
   install_staged_qrc
+  install_staged_nexttrace
   install -m 0644 \
     "$SCRIPT_DIR/systemd/neko-hysteria.service" \
     "$NEKO_SYSTEMD/neko-hysteria.service"
@@ -463,6 +567,7 @@ main() {
 
   ROLLBACK_READY=0
   cleanup_qrc_stage
+  cleanup_nexttrace_stage
   cleanup_backup
   ok "已从 Neko ${current_release} 升级到 ${NEKO_RELEASE}。"
   show_subscription_links
