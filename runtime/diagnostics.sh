@@ -22,6 +22,7 @@ NEKO_DIAG_RIPE_BASE="${NEKO_DIAG_RIPE_BASE:-https://stat.ripe.net/data}"
 NEKO_DIAG_IPAPI_URL="${NEKO_DIAG_IPAPI_URL:-https://api.ipapi.is/}"
 NEKO_DIAG_PROXYCHECK_URL="${NEKO_DIAG_PROXYCHECK_URL:-https://proxycheck.io/v3/}"
 NEKO_DIAG_IPWHO_URL="${NEKO_DIAG_IPWHO_URL:-https://ipwho.is}"
+NEKO_DIAG_IPQUERY_URL="${NEKO_DIAG_IPQUERY_URL:-https://api.ipquery.io}"
 NEKO_DIAG_NEXTTRACE="${NEKO_DIAG_NEXTTRACE:-${NEKO_LIBEXEC}/nexttrace-tiny}"
 NEKO_DIAG_CPU_SECONDS="${NEKO_DIAG_CPU_SECONDS:-3}"
 NEKO_DIAG_DISK_MIB="${NEKO_DIAG_DISK_MIB:-128}"
@@ -610,6 +611,13 @@ quality_request() {
         "${family_args[@]}" \
         "${NEKO_DIAG_IPWHO_URL%/}/${source_address}" 2>/dev/null
       ;;
+    ipquery)
+      curl --fail --silent --show-error --location --max-redirs 1 \
+        --connect-timeout 3 --max-time "$timeout_seconds" \
+        --max-filesize 524288 --header 'Accept: application/json' \
+        "${family_args[@]}" \
+        "${NEKO_DIAG_IPQUERY_URL%/}/${source_address}" 2>/dev/null
+      ;;
     *) return 2 ;;
   esac
 }
@@ -631,6 +639,11 @@ quality_response_valid() {
       jq -e --arg ip "$address" \
         '(.success == true) and (.ip == $ip)' "$file" >/dev/null 2>&1
       ;;
+    ipquery)
+      jq -e --arg ip "$address" \
+        '(.ip == $ip) and (.risk | type == "object")' \
+        "$file" >/dev/null 2>&1
+      ;;
     *) return 1 ;;
   esac
 }
@@ -646,19 +659,22 @@ normalize_asn_label() {
 
 show_ip_quality() {
   local family="$1" source_address="$2"
-  local ipapi_file proxycheck_file ipwho_file provider file pid
-  local ipapi_ok=0 proxycheck_ok=0 ipwho_ok=0
+  local ipapi_file proxycheck_file ipwho_file ipquery_file provider file pid
+  local ipapi_ok=0 proxycheck_ok=0 ipwho_ok=0 ipquery_ok=0
   local ipapi_host="" ipapi_type="" ipapi_country="" ipapi_city=""
   local ipapi_asn="" ipapi_org="" ipapi_flags=""
   local proxy_host="" proxy_type="" proxy_country="" proxy_city=""
   local proxy_asn="" proxy_org="" proxy_flags="" proxy_risk=""
   local ipwho_country="" ipwho_city="" ipwho_asn="" ipwho_org=""
+  local ipquery_host="" ipquery_type="" ipquery_country="" ipquery_city=""
+  local ipquery_asn="" ipquery_org="" ipquery_flags="" ipquery_risk=""
   local hosting_yes=0 hosting_no=0 hosting_total=0
   local security_sources=0 security_detail="" country_detail_text=""
   local majority_count=0 majority_code="" total_countries=0
   local type_summary="" location_summary="" detail=""
-  local -a providers=(ipapi proxycheck ipwho)
+  local -a providers=(ipapi proxycheck ipwho ipquery)
   local -a pids=() ipapi_fields=() proxy_fields=() ipwho_fields=()
+  local -a ipquery_fields=()
   local -a country_codes=() country_details=()
 
   diag_section "${family/ipv/IPv} IP 质量（数据库参考）"
@@ -676,11 +692,13 @@ show_ip_quality() {
   ipapi_file="${DIAG_QUALITY_DIR}/ipapi.json"
   proxycheck_file="${DIAG_QUALITY_DIR}/proxycheck.json"
   ipwho_file="${DIAG_QUALITY_DIR}/ipwho.json"
+  ipquery_file="${DIAG_QUALITY_DIR}/ipquery.json"
   for provider in "${providers[@]}"; do
     case "$provider" in
       ipapi) file="$ipapi_file" ;;
       proxycheck) file="$proxycheck_file" ;;
       ipwho) file="$ipwho_file" ;;
+      ipquery) file="$ipquery_file" ;;
     esac
     (
       quality_request "$provider" "$family" "$source_address" > "$file" \
@@ -788,7 +806,43 @@ show_ip_quality() {
     ipwho_org="${ipwho_fields[3]:-}"
   fi
 
-  for detail in "$ipapi_host" "$proxy_host"; do
+  if quality_response_valid ipquery "$source_address" "$ipquery_file"; then
+    ipquery_ok=1
+    mapfile -t ipquery_fields < <(
+      jq -r '
+        def clean:
+          tostring
+          | gsub("[[:cntrl:]]"; " ")
+          | .[0:160];
+        [
+          (if .risk.is_datacenter == true then "yes"
+           elif .risk.is_datacenter == false then "no" else "" end),
+          (if .risk.is_datacenter == true then "datacenter"
+           elif .risk.is_mobile == true then "mobile" else "" end),
+          (.location.country_code // "" | clean),
+          (.location.city // "" | clean),
+          (.isp.asn // "" | clean),
+          (.isp.org // .isp.isp // "" | clean),
+          ([
+            if .risk.is_proxy == true then "代理" else empty end,
+            if .risk.is_vpn == true then "VPN" else empty end,
+            if .risk.is_tor == true then "Tor" else empty end,
+            if .risk.is_mobile == true then "移动网络" else empty end
+          ] | join("、")),
+          (.risk.risk_score // "" | clean)
+        ] | .[]' "$ipquery_file"
+    )
+    ipquery_host="${ipquery_fields[0]:-}"
+    ipquery_type="${ipquery_fields[1]:-}"
+    ipquery_country="${ipquery_fields[2]:-}"
+    ipquery_city="${ipquery_fields[3]:-}"
+    ipquery_asn="$(normalize_asn_label "${ipquery_fields[4]:-}")"
+    ipquery_org="${ipquery_fields[5]:-}"
+    ipquery_flags="${ipquery_fields[6]:-}"
+    ipquery_risk="${ipquery_fields[7]:-}"
+  fi
+
+  for detail in "$ipapi_host" "$proxy_host" "$ipquery_host"; do
     case "$detail" in
       yes) ((hosting_yes += 1, hosting_total += 1)) ;;
       no) ((hosting_no += 1, hosting_total += 1)) ;;
@@ -818,6 +872,14 @@ show_ip_quality() {
       security_detail+="proxycheck.io：${proxy_flags}"
     fi
   fi
+  if (( ipquery_ok == 1 )); then
+    ((security_sources += 1))
+    if [[ -n "$ipquery_flags" ]]; then
+      [[ -z "$security_detail" ]] \
+        || security_detail+="；"
+      security_detail+="ipquery.io：${ipquery_flags}"
+    fi
+  fi
   if [[ -n "$security_detail" ]]; then
     diag_warn "${family/ipv/IPv} 风控数据库检测到：${security_detail}。"
   elif (( security_sources > 0 )); then
@@ -830,7 +892,8 @@ show_ip_quality() {
   for detail in \
     "ipapi.is:${ipapi_country}" \
     "proxycheck.io:${proxy_country}" \
-    "ipwho.is:${ipwho_country}"; do
+    "ipwho.is:${ipwho_country}" \
+    "ipquery.io:${ipquery_country}"; do
     provider="${detail%%:*}"
     detail="${detail#*:}"
     detail="${detail^^}"
@@ -891,6 +954,16 @@ show_ip_quality() {
   else
     diag_skip "${family/ipv/IPv} ipwho.is 数据暂时不可用。"
   fi
+  if (( ipquery_ok == 1 )); then
+    detail="${ipquery_asn:-ASN 未知} ${ipquery_org:-机构未知}；${ipquery_country:-位置未知}"
+    [[ -z "$ipquery_city" ]] || detail+="/${ipquery_city}"
+    detail+="；类型 ${ipquery_type:-未知}"
+    [[ -z "$ipquery_flags" ]] || detail+="；标签 ${ipquery_flags}"
+    [[ -z "$ipquery_risk" ]] || detail+="；风险分 ${ipquery_risk}/100"
+    diag_fact "ipquery.io" "$detail"
+  else
+    diag_skip "${family/ipv/IPv} ipquery.io 数据暂时不可用。"
+  fi
   printf '  注：数据库会更新，也可能误判；类型和位置只作选购/排障参考。\n'
 
   rm -rf -- "$DIAG_QUALITY_DIR"
@@ -901,6 +974,7 @@ show_routing_registration() {
   local family="$1" source_address="$2"
   local network_json prefix asns prefix_json holders announced
   local rpki_json rpki_status ptr observed_ip="$source_address"
+  local whois_json registry_country registry_name registry_source registry_detail
   local -a asn_list=()
 
   network_json="$(ripe_request "$family" "$source_address" \
@@ -960,6 +1034,51 @@ show_routing_registration() {
     esac
   else
     diag_skip "${family/ipv/IPv} 是多源 ASN 公告，未用单一 ASN 简化判断 RPKI。"
+  fi
+
+  whois_json="$(ripe_request "$family" "$source_address" \
+    whois "resource=${observed_ip}")" || whois_json=""
+  if jq -e '.status == "ok" and (.data.records | type == "array")' \
+      <<< "$whois_json" >/dev/null 2>&1; then
+    registry_country="$(
+      jq -r '
+        [
+          .data.records[]?[]?
+          | select((.key // "" | tostring | ascii_downcase) == "country")
+          | (.value // "" | tostring | ascii_upcase)
+          | select(test("^[A-Z]{2}$"))
+        ]
+        | unique
+        | join("/")' <<< "$whois_json" 2>/dev/null
+    )"
+    registry_name="$(
+      jq -r '
+        def clean:
+          tostring
+          | gsub("[[:cntrl:]]"; " ")
+          | .[0:120];
+        first(
+          .data.records[]?[]?
+          | select(
+              ((.key // "" | tostring | ascii_downcase) == "netname")
+              or ((.key // "" | tostring | ascii_downcase) == "organization")
+            )
+          | (.value // "" | clean)
+        ) // ""' <<< "$whois_json" 2>/dev/null
+    )"
+    registry_source="$(
+      jq -r '
+        [.data.authorities[]? | tostring | ascii_upcase]
+        | unique
+        | join("/")' <<< "$whois_json" 2>/dev/null
+    )"
+    registry_detail="${registry_source:-来源未知}"
+    registry_detail+="；国家/地区 ${registry_country:-未提供}"
+    [[ -z "$registry_name" ]] || registry_detail+="；登记名称 ${registry_name}"
+    diag_fact "${family/ipv/IPv} RIR 登记" "$registry_detail"
+    printf '  注：RIR 登记国家/地区是地址注册资料，不等于 VPS 机房位置。\n'
+  else
+    diag_skip "${family/ipv/IPv} 的 RIR 地址登记资料暂时不可用。"
   fi
 
   if command -v dig >/dev/null 2>&1; then
