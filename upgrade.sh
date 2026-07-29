@@ -574,7 +574,7 @@ main() {
   if (( current_schema == 1 )); then
     warn "旧的单域名订阅 URL 已停用；请在客户端导入新的严格 IPv4/IPv6 链接。"
   else
-    info "原有严格订阅 URL 与已安装地址族均已保留。"
+    info "旧版地址族专用 URL 继续可用；面板已显示兼容性更好的通用下载 URL。"
   fi
 }
 

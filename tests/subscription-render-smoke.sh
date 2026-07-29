@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/neko-subscription-smoke.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-subscription-smoke.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
 command -v jq >/dev/null 2>&1 \
@@ -110,6 +110,9 @@ check_profile v6 ::1 2606:4700:4700::1111 ipv6_only 4
 caddy="$WORK/etc/config/Caddyfile"
 grep -Fq 'rewrite * /sing-box-v4.json' "$caddy"
 grep -Fq 'rewrite * /sing-box-v6.json' "$caddy"
-[[ "$(grep -Fc 'header Content-Type "application/json; charset=utf-8"' "$caddy")" == 2 ]]
+grep -Fq 'handle /test-subscription-token/v4/sing-box.json' "$caddy"
+grep -Fq 'handle /test-subscription-token/v6/sing-box.json' "$caddy"
+grep -Fq 'handle /test-subscription-token/sing-box.json' "$caddy"
+[[ "$(grep -Fc 'header Content-Type "application/json; charset=utf-8"' "$caddy")" == 4 ]]
 
 printf '八份订阅跨发行版渲染测试通过。\n'

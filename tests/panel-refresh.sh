@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/neko-panel-refresh.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-panel-refresh.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
 prepare_case() {

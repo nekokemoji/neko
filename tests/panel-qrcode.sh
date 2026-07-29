@@ -37,7 +37,7 @@ panel_output="$(
       bash -c 'source "$1"; draw_menu; subscription_qr_menu' \
         _ "$WORK/libexec/panel.sh" 2>&1
 )"
-expected_url='https://v4.example.com/test-subscription-token/mihomo.yaml'
+expected_url='https://example.com/test-subscription-token/v4/mihomo.yaml'
 [[ "$(< "$WORK/qrc.stdin")" == "$expected_url" ]]
 grep -Fxq -- '--output-format' "$WORK/qrc.args"
 grep -Fxq -- 'unicode' "$WORK/qrc.args"
