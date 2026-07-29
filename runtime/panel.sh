@@ -19,6 +19,8 @@ SYSCTL_FILE="/etc/sysctl.d/99-neko-bbr.conf"
 FAMILY_BACKUP_DIR=""
 FAMILY_TRANSACTION_ACTIVE=0
 declare -a FAMILY_FIREWALL_ADDED_ZONES=()
+ACCESS_BACKUP_DIR=""
+ACCESS_TRANSACTION_ACTIVE=0
 
 family_restore_paths_are_safe() {
   local target
@@ -65,6 +67,90 @@ acquire_maintenance_lock() {
 release_maintenance_lock() {
   flock -u "$MAINTENANCE_LOCK_FD" 2>/dev/null || true
   exec {MAINTENANCE_LOCK_FD}>&-
+}
+
+access_backup_path_is_safe() {
+  local base="${NEKO_PANEL_TMP_DIR%/}"
+  [[ -n "$base" && "$base" != "/" ]] || return 1
+  [[ -n "$ACCESS_BACKUP_DIR" \
+    && "$ACCESS_BACKUP_DIR" == "$base"/neko-access-backup.* \
+    && -d "$ACCESS_BACKUP_DIR" \
+    && ! -L "$ACCESS_BACKUP_DIR" ]]
+}
+
+cleanup_access_backup() {
+  [[ -n "$ACCESS_BACKUP_DIR" ]] || return 0
+  if access_backup_path_is_safe && rm -rf -- "$ACCESS_BACKUP_DIR"; then
+    ACCESS_BACKUP_DIR=""
+    return 0
+  fi
+  return 1
+}
+
+assert_access_source_tree() {
+  local temp_base="${NEKO_PANEL_TMP_DIR%/}"
+  [[ "$NEKO_ETC" == /* ]] \
+    || die "订阅与节点凭据的配置路径不安全；没有修改任何内容。"
+  case "$NEKO_ETC" in
+    ""|/|/etc|*"/../"*|*"/.."|*"/./"*|*"/."|*"//"*)
+      die "订阅与节点凭据的配置路径不安全；没有修改任何内容。"
+      ;;
+  esac
+  [[ -d "$NEKO_ETC" && ! -L "$NEKO_ETC" ]] \
+    || die "Neko 配置目录缺失或是符号链接；没有修改任何内容。"
+  [[ -f "$NEKO_STATE" && ! -L "$NEKO_STATE" ]] \
+    || die "Neko 安装状态缺失或是符号链接；没有修改任何内容。"
+  [[ -d "$NEKO_CONFIG_DIR" && ! -L "$NEKO_CONFIG_DIR" ]] \
+    || die "Neko 运行配置目录缺失或是符号链接；没有修改任何内容。"
+  [[ -d "$NEKO_SUB_DIR" && ! -L "$NEKO_SUB_DIR" ]] \
+    || die "Neko 订阅目录缺失或是符号链接；没有修改任何内容。"
+  [[ "$temp_base" == /* && "$temp_base" != "/" ]] \
+    || die "维护操作临时目录路径不安全；没有修改任何内容。"
+  case "$temp_base" in
+    *"/../"*|*"/.."|*"/./"*|*"/."|*"//"*)
+      die "维护操作临时目录路径不安全；没有修改任何内容。"
+      ;;
+  esac
+  [[ -d "$NEKO_PANEL_TMP_DIR" && -w "$NEKO_PANEL_TMP_DIR" ]] \
+    || die "维护操作临时目录不可写：${NEKO_PANEL_TMP_DIR}"
+}
+
+rollback_access_transaction() {
+  local rollback_ok=1
+  set +e
+  trap - EXIT INT TERM
+  warn "订阅或节点凭据更新未完成，正在恢复原来的配置和服务……"
+
+  if access_backup_path_is_safe; then
+    cp -a -- "$ACCESS_BACKUP_DIR/etc/." "$NEKO_ETC/" || rollback_ok=0
+  else
+    rollback_ok=0
+  fi
+  validate_runtime_configs || rollback_ok=0
+  restart_runtime_services || rollback_ok=0
+
+  ACCESS_TRANSACTION_ACTIVE=0
+  release_maintenance_lock
+  if (( rollback_ok == 1 )); then
+    if cleanup_access_backup; then
+      warn "已恢复原来的订阅、节点凭据、配置和服务。"
+    else
+      rollback_ok=0
+      warn "运行内容已恢复，但临时备份无法清理：${ACCESS_BACKUP_DIR}"
+    fi
+  else
+    warn "自动恢复未完全成功；备份保留在 ${ACCESS_BACKUP_DIR}，请不要再次操作面板。"
+  fi
+  return "$((1 - rollback_ok))"
+}
+
+finish_access_transaction() {
+  local rc=$?
+  trap - EXIT INT TERM
+  if (( ACCESS_TRANSACTION_ACTIVE == 1 )); then
+    rollback_access_transaction || true
+  fi
+  exit "$rc"
 }
 
 validate_runtime_configs() {
@@ -229,6 +315,167 @@ rotate_subscription() {
     release_maintenance_lock
     die "订阅重置失败，已恢复旧链接。"
   fi
+}
+
+rotate_node_credentials() {
+  local rotate_urls="${1:-false}" confirmation
+  local has_ipv4=false has_ipv6=false
+  local new_hy2_password new_hy2_obfs_password
+  local new_tuic_uuid new_tuic_password new_ss_password
+  local new_anytls_password new_vision_uuid new_xhttp_uuid
+  local new_ipv4_token="" new_ipv6_token=""
+
+  case "$rotate_urls" in
+    true|false) ;;
+    *) die "内部节点凭据重置模式无效；没有修改任何内容。" ;;
+  esac
+
+  load_state
+  if [[ "$rotate_urls" == true ]]; then
+    warn "紧急全部换新会让旧订阅 URL 和全部已导入节点立即失效。"
+    printf '完成后必须使用新链接重新添加或刷新所有客户端。\n'
+    read -r -p "输入 REVOKE 确认紧急全部换新：" confirmation
+    [[ "$confirmation" == REVOKE ]] || return 0
+  else
+    warn "此操作会重置六种协议的全部节点凭据，并短暂重启代理服务。"
+    printf '当前订阅 URL 保持不变；完成后必须在所有客户端刷新订阅。\n'
+    read -r -p "输入 ROTATE 确认重置全部节点凭据：" confirmation
+    [[ "$confirmation" == ROTATE ]] || return 0
+  fi
+
+  acquire_maintenance_lock
+  load_state
+  assert_access_source_tree
+  network_mode_has_ipv4 && has_ipv4=true
+  network_mode_has_ipv6 && has_ipv6=true
+
+  new_hy2_password="$(random_urlsafe 24)"
+  new_hy2_obfs_password="$(random_urlsafe 24)"
+  new_tuic_uuid="$(new_uuid)"
+  new_tuic_password="$(random_urlsafe 24)"
+  new_ss_password="$(random_base64 16)"
+  new_anytls_password="$(random_urlsafe 24)"
+  new_vision_uuid="$(new_uuid)"
+  new_xhttp_uuid="$(new_uuid)"
+  if [[ "$rotate_urls" == true ]]; then
+    [[ "$has_ipv4" != true ]] || new_ipv4_token="$(random_urlsafe 24)"
+    [[ "$has_ipv6" != true ]] || new_ipv6_token="$(random_urlsafe 24)"
+  fi
+  if [[ "$new_hy2_password" == "$HY2_PASSWORD" \
+    || "$new_hy2_obfs_password" == "$HY2_OBFS_PASSWORD" \
+    || "$new_tuic_uuid" == "$TUIC_UUID" \
+    || "$new_tuic_password" == "$TUIC_PASSWORD" \
+    || "$new_ss_password" == "$SS_PASSWORD" \
+    || "$new_anytls_password" == "$ANYTLS_PASSWORD" \
+    || "$new_vision_uuid" == "$VISION_UUID" \
+    || "$new_xhttp_uuid" == "$XHTTP_UUID" \
+    || ( "$rotate_urls" == true \
+      && "$has_ipv4" == true \
+      && "$new_ipv4_token" == "$SUB_TOKEN_IPV4" ) \
+    || ( "$rotate_urls" == true \
+      && "$has_ipv6" == true \
+      && "$new_ipv6_token" == "$SUB_TOKEN_IPV6" ) ]]; then
+    release_maintenance_lock
+    die "随机生成的新值与旧值意外相同；没有修改订阅或节点凭据，请重新运行。"
+  fi
+
+  if ! ACCESS_BACKUP_DIR="$(
+      mktemp -d "${NEKO_PANEL_TMP_DIR%/}/neko-access-backup.XXXXXX"
+    )"; then
+    ACCESS_BACKUP_DIR=""
+    release_maintenance_lock
+    die "无法创建维护备份；没有修改订阅或节点凭据。"
+  fi
+  if ! cp -a -- "$NEKO_ETC" "$ACCESS_BACKUP_DIR/etc"; then
+    cleanup_access_backup || true
+    release_maintenance_lock
+    die "无法完整备份当前配置；没有修改订阅或节点凭据。"
+  fi
+
+  ACCESS_TRANSACTION_ACTIVE=1
+  trap finish_access_transaction EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  if ! atomic_json_update \
+      '.credentials.hysteria2_password = $hy2_password
+       | .credentials.hysteria2_obfs_password = $hy2_obfs_password
+       | .credentials.tuic_uuid = $tuic_uuid
+       | .credentials.tuic_password = $tuic_password
+       | .credentials.ss2022_password = $ss_password
+       | .credentials.anytls_password = $anytls_password
+       | .credentials.vision_uuid = $vision_uuid
+       | .credentials.xhttp_uuid = $xhttp_uuid
+       | if ($rotate_urls and $has_ipv4) then
+           .subscription.ipv4_token = $ipv4_token
+         else . end
+       | if ($rotate_urls and $has_ipv6) then
+           .subscription.ipv6_token = $ipv6_token
+         else . end' \
+      --arg hy2_password "$new_hy2_password" \
+      --arg hy2_obfs_password "$new_hy2_obfs_password" \
+      --arg tuic_uuid "$new_tuic_uuid" \
+      --arg tuic_password "$new_tuic_password" \
+      --arg ss_password "$new_ss_password" \
+      --arg anytls_password "$new_anytls_password" \
+      --arg vision_uuid "$new_vision_uuid" \
+      --arg xhttp_uuid "$new_xhttp_uuid" \
+      --argjson rotate_urls "$rotate_urls" \
+      --argjson has_ipv4 "$has_ipv4" \
+      --argjson has_ipv6 "$has_ipv6" \
+      --arg ipv4_token "$new_ipv4_token" \
+      --arg ipv6_token "$new_ipv6_token"; then
+    ACCESS_TRANSACTION_ACTIVE=0
+    trap - EXIT INT TERM
+    cleanup_access_backup || true
+    release_maintenance_lock
+    die "无法写入新节点凭据；原状态和运行服务均未修改。"
+  fi
+
+  if render_all \
+    && validate_runtime_configs \
+    && restart_runtime_services; then
+    ACCESS_TRANSACTION_ACTIVE=0
+    trap - EXIT INT TERM
+    cleanup_access_backup \
+      || warn "节点已换新，但临时备份无法清理：${ACCESS_BACKUP_DIR}"
+    release_maintenance_lock
+    if [[ "$rotate_urls" == true ]]; then
+      ok "旧订阅 URL 与旧节点凭据已全部失效。"
+      warn "请删除客户端中的旧订阅，并使用下方新链接或二维码重新添加。"
+    else
+      ok "六种协议的全部节点凭据已换新；订阅 URL 保持不变。"
+      warn "请立即在所有客户端刷新订阅；手工导入的旧节点需要重新导入。"
+    fi
+    show_subscription_links
+    return 0
+  fi
+
+  if rollback_access_transaction; then
+    die "节点凭据更新失败，已恢复原订阅、原节点和服务。"
+  fi
+  die "节点凭据更新失败，且自动恢复未完全成功；请保留上方备份并停止继续操作。"
+}
+
+manage_subscription_access() {
+  local choice
+  load_state
+  printf '当前网络：%s\n\n' "$(network_mode_label)"
+  printf '1. 重置订阅 URL\n'
+  printf '   旧链接失效，但已经导入的节点仍可使用。\n'
+  printf '2. 重置全部节点凭据\n'
+  printf '   旧节点失效，当前订阅 URL 保持不变。\n'
+  printf '3. 紧急全部换新\n'
+  printf '   旧订阅 URL 和旧节点全部失效。\n'
+  printf '0. 返回\n'
+  read -r -p "请选择 [0-3]：" choice
+  case "$choice" in
+    0|"") return 0 ;;
+    1) rotate_subscription ;;
+    2) rotate_node_credentials false ;;
+    3) rotate_node_credentials true ;;
+    *) warn "请输入 0 到 3。" ;;
+  esac
 }
 
 refresh_subscription_endpoints() {
@@ -765,7 +1012,7 @@ draw_menu() {
   printf '0. 退出\n'
   printf '1. 查看当前严格订阅链接与二维码\n'
   printf '2. 开启 BBRv1\n'
-  printf '3. 按 IPv4/IPv6 重置订阅 URL\n'
+  printf '3. 订阅与节点访问管理\n'
   printf '4. 刷新已安装地址族端点\n'
   printf '5. IPv4/IPv6 安装管理\n'
   printf '6. 卸载全部协议\n'
@@ -790,7 +1037,7 @@ main() {
         continue
         ;;
       2) enable_bbr ;;
-      3) rotate_subscription ;;
+      3) manage_subscription_access ;;
       4) refresh_subscription_endpoints ;;
       5) manage_address_families ;;
       6) uninstall_neko ;;
