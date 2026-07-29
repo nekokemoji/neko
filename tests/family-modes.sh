@@ -9,7 +9,7 @@ SING_BOX="$TOOLS/sing-box"
 HYSTERIA="$TOOLS/hysteria"
 CADDY="$TOOLS/caddy"
 MIHOMO="${MIHOMO_BIN:-$TOOLS/mihomo}"
-WORK="$(mktemp -d /tmp/neko-family-modes.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-family-modes.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
 for binary in "$XRAY" "$SING_BOX" "$HYSTERIA" "$CADDY" "$MIHOMO"; do

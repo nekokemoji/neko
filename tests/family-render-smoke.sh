@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d /tmp/neko-family-render.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-family-render.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
 command -v jq >/dev/null 2>&1 \
@@ -98,6 +98,10 @@ for mode in ipv4-only ipv6-only dual; do
       ' "$target/etc/config/xray.json" >/dev/null
       grep -Fq 'https://v4.example.com {' "$target/etc/config/Caddyfile"
       ! grep -Fq 'https://v6.example.com {' "$target/etc/config/Caddyfile"
+      grep -Fq '/test-subscription-token/v4/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
+      ! grep -Fq '/test-subscription-token/v6/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
       ;;
     ipv6-only)
       expected=(
@@ -120,6 +124,10 @@ for mode in ipv4-only ipv6-only dual; do
       ' "$target/etc/config/xray.json" >/dev/null
       ! grep -Fq 'https://v4.example.com {' "$target/etc/config/Caddyfile"
       grep -Fq 'https://v6.example.com {' "$target/etc/config/Caddyfile"
+      ! grep -Fq '/test-subscription-token/v4/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
+      grep -Fq '/test-subscription-token/v6/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
       ;;
     dual)
       [[ "${#files[@]}" == 8 ]]
@@ -133,6 +141,10 @@ for mode in ipv4-only ipv6-only dual; do
         (.inbounds | length) == 4
         and [.outbounds[].tag] == ["direct-v4", "direct-v6", "blocked"]
       ' "$target/etc/config/xray.json" >/dev/null
+      grep -Fq '/test-subscription-token/v4/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
+      grep -Fq '/test-subscription-token/v6/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
       ;;
   esac
 done

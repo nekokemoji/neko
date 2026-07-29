@@ -198,7 +198,7 @@ bash -c '
   [[ "$zones" == $'"'"'public\npublic6'"'"' ]]
 ' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"
 
-DNS_TEST_WORK="$(mktemp -d /tmp/neko-dns-test.XXXXXX)"
+DNS_TEST_WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-dns-test.XXXXXX")"
 mkdir -p "$DNS_TEST_WORK/bin"
 cat > "$DNS_TEST_WORK/bin/dig" <<'EOF'
 #!/usr/bin/env bash
@@ -237,7 +237,7 @@ if ! NEKO_DNS_QUERY_LOG="$DNS_TEST_WORK/queries" \
 fi
 rm -rf -- "$DNS_TEST_WORK"
 
-FIREWALL_TEST_WORK="$(mktemp -d /tmp/neko-firewall-test.XXXXXX)"
+FIREWALL_TEST_WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-firewall-test.XXXXXX")"
 if ! NEKO_FIREWALL_CALLS="$FIREWALL_TEST_WORK/firewalld-calls" bash -c '
   set -Eeuo pipefail
   source "$1"
@@ -331,7 +331,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.6.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.6.1"' "$ROOT/versions.env"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
@@ -560,7 +560,7 @@ grep -Fq '证书申请超过 1 秒' <<< "$acme_timeout_output"
 rm -rf -- "$ACME_WORK"
 
 printf '[4/9] 渲染服务端配置与客户端订阅……\n'
-WORK="$(mktemp -d /tmp/neko-tests.XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-tests.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 mkdir -p "$WORK/etc" "$WORK/var/lego/certificates" "$WORK/var/acme"
 cp "$ROOT/tests/fixtures/state.json" "$WORK/etc/state.json"
@@ -948,21 +948,32 @@ assert "protocols h1 h2" in caddy
 assert "mihomo-v4.yaml" in caddy and "mihomo-v6.yaml" in caddy
 assert "sing-box-v4.json" in caddy and "sing-box-v6.json" in caddy
 assert "https://v4.example.com" in caddy and "https://v6.example.com" in caddy
+assert "handle /test-subscription-token/v4/mihomo.yaml" in caddy
+assert "handle /test-subscription-token/v6/mihomo.yaml" in caddy
+assert caddy.count("handle /test-subscription-token/mihomo.yaml") == 2
+assert (
+    "handle /test-subscription-token/v4/mihomo.yaml {\n"
+    "\t\trewrite * /mihomo-v4.yaml"
+) in caddy
+assert (
+    "handle /test-subscription-token/v6/mihomo.yaml {\n"
+    "\t\trewrite * /mihomo-v6.yaml"
+) in caddy
 assert 'header Content-Type "text/yaml; charset=utf-8"' in caddy
-assert caddy.count('header Content-Type "application/json; charset=utf-8"') == 2
+assert caddy.count('header Content-Type "application/json; charset=utf-8"') == 4
 PY
 
 links="$(
   NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO_USER=root \
     bash -c 'source "$1"; show_subscription_links' _ "$ROOT/lib/common.sh"
 )"
-[[ "$links" == *'https://v4.example.com/test-subscription-token/mihomo.yaml'* ]]
-[[ "$links" == *'https://v6.example.com/test-subscription-token/mihomo.yaml'* ]]
-[[ "$links" == *'https://v4.example.com/test-subscription-token/sing-box.json'* ]]
-[[ "$links" == *'https://v6.example.com/test-subscription-token/sing-box.json'* ]]
+[[ "$links" == *'https://example.com/test-subscription-token/v4/mihomo.yaml'* ]]
+[[ "$links" == *'https://example.com/test-subscription-token/v6/mihomo.yaml'* ]]
+[[ "$links" == *'https://example.com/test-subscription-token/v4/sing-box.json'* ]]
+[[ "$links" == *'https://example.com/test-subscription-token/v6/sing-box.json'* ]]
 [[ "$(grep -c '（严格）' <<< "$links")" == 8 ]]
 
-qr_url='https://v4.example.com/test-subscription-token/mihomo.yaml'
+qr_url='https://example.com/test-subscription-token/v4/mihomo.yaml'
 printf '%s' "$qr_url" \
   | "$QRC" --output-format unicode --invert \
     --ec-level M --scale 1 --border 4 > "$WORK/subscription-qr.unicode"
@@ -984,13 +995,14 @@ NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
 grep -Fq '/replacement-ipv4-token/mihomo.yaml' "$WORK/etc/config/Caddyfile"
 grep -Fq '/replacement-ipv4-token/sing-box.json' "$WORK/etc/config/Caddyfile"
-[[ "$(grep -Fc '/test-subscription-token/' "$WORK/etc/config/Caddyfile")" == 4 ]]
-if awk '
-    /^https:\/\/v4\.example\.com \{/ {inside=1}
-    inside {print}
-    inside && /^}/ {exit}
-  ' "$WORK/etc/config/Caddyfile" | grep -Fq '/test-subscription-token/'; then
-  printf 'IPv4 的旧订阅令牌仍出现在 IPv4 Caddy 站点中。\n' >&2
+grep -Fq '/replacement-ipv4-token/v4/mihomo.yaml' \
+  "$WORK/etc/config/Caddyfile"
+grep -Fq '/replacement-ipv4-token/v4/sing-box.json' \
+  "$WORK/etc/config/Caddyfile"
+[[ "$(grep -Fc '/test-subscription-token/' "$WORK/etc/config/Caddyfile")" == 8 ]]
+if grep -Fq '/test-subscription-token/v4/' \
+    "$WORK/etc/config/Caddyfile"; then
+  printf 'IPv4 的旧订阅令牌仍出现在通用 Caddy 下载入口中。\n' >&2
   exit 1
 fi
 grep -Fq 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' "$ROOT/systemd/neko-sing-box.service"

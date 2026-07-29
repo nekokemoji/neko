@@ -347,6 +347,40 @@ render_hysteria() {
   fi
 }
 
+render_caddy_subscription_handlers() {
+  local token="$1" family="$2" family_path="${3:-}"
+  local url_prefix="/${token}"
+  if [[ -n "$family_path" ]]; then
+    url_prefix+="/${family_path}"
+  fi
+  cat <<EOF
+	handle ${url_prefix}/mihomo.yaml {
+		rewrite * /mihomo-${family}.yaml
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle ${url_prefix}/stash.yaml {
+		rewrite * /stash-${family}.yaml
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle ${url_prefix}/shadowrocket.txt {
+		rewrite * /shadowrocket-${family}.txt
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "text/yaml; charset=utf-8"
+		file_server
+	}
+	handle ${url_prefix}/sing-box.json {
+		rewrite * /sing-box-${family}.json
+		root * ${NEKO_SUB_DIR}
+		header Content-Type "application/json; charset=utf-8"
+		file_server
+	}
+EOF
+}
+
 render_caddy_subscription_site() {
   local domain="$1" token="$2" family="$3"
   cat <<EOF
@@ -358,31 +392,9 @@ https://${domain} {
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
 	}
-
-	handle /${token}/mihomo.yaml {
-		rewrite * /mihomo-${family}.yaml
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${token}/stash.yaml {
-		rewrite * /stash-${family}.yaml
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${token}/shadowrocket.txt {
-		rewrite * /shadowrocket-${family}.txt
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "text/yaml; charset=utf-8"
-		file_server
-	}
-	handle /${token}/sing-box.json {
-		rewrite * /sing-box-${family}.json
-		root * ${NEKO_SUB_DIR}
-		header Content-Type "application/json; charset=utf-8"
-		file_server
-	}
+EOF
+  render_caddy_subscription_handlers "$token" "$family"
+  cat <<EOF
 	handle {
 		respond "Not Found" 404
 	}
@@ -430,6 +442,18 @@ https://${DOMAIN} {
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
 	}
+EOF
+    # The base hostname is the canonical subscription download endpoint.  In
+    # dual-stack mode it can be reached over either family, while every node
+    # inside the selected profile still uses an exact same-family IP literal.
+    # Family-specific sites below remain available for existing installations.
+    if network_mode_has_ipv4; then
+      render_caddy_subscription_handlers "$SUB_TOKEN_IPV4" v4 v4
+    fi
+    if network_mode_has_ipv6; then
+      render_caddy_subscription_handlers "$SUB_TOKEN_IPV6" v6 v6
+    fi
+    cat <<EOF
 	handle {
 		respond "Welcome" 200
 	}

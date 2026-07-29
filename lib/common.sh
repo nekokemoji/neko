@@ -977,31 +977,33 @@ subscription_client_filename() {
 }
 
 subscription_url() {
-  local family="$1" client="$2" domain token filename
+  local family="$1" client="$2" family_path token filename
   filename="$(subscription_client_filename "$client")" || return 1
   case "$family" in
     ipv4)
       network_mode_has_ipv4 || return 1
-      domain="$SUBSCRIPTION_DOMAIN_IPV4"
       token="$SUB_TOKEN_IPV4"
+      family_path=v4
       ;;
     ipv6)
       network_mode_has_ipv6 || return 1
-      domain="$SUBSCRIPTION_DOMAIN_IPV6"
       token="$SUB_TOKEN_IPV6"
+      family_path=v6
       ;;
     *)
       return 1
       ;;
   esac
-  [[ -n "$domain" && -n "$token" ]] || return 1
-  printf 'https://%s/%s/%s' "$domain" "$token" "$filename"
+  [[ -n "$DOMAIN" && -n "$token" ]] || return 1
+  printf 'https://%s/%s/%s/%s' \
+    "$DOMAIN" "$token" "$family_path" "$filename"
 }
 
 show_subscription_links() {
   local family client family_label client_label url
   load_state
   printf '\n当前模式：%s\n' "$(network_mode_label)"
+  printf '下载入口：基础域名（只负责取回配置，节点连接与出口仍严格分族）\n'
   for family in ipv4 ipv6; do
     if [[ "$family" == ipv4 ]]; then
       network_mode_has_ipv4 || continue
