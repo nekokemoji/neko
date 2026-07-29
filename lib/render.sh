@@ -40,6 +40,8 @@ render_sing_box() {
     --arg ss_password "$SS_PASSWORD" \
     --argjson anytls_port "$ANYTLS_PORT" \
     --arg anytls_password "$ANYTLS_PASSWORD" \
+    --argjson trojan_port "$TROJAN_PORT" \
+    --arg trojan_password "$TROJAN_PASSWORD" \
     'def family_inbounds($suffix; $listen): [
         {
           type: "tuic",
@@ -78,12 +80,29 @@ render_sing_box() {
             certificate_path: $cert,
             key_path: $key
           }
+        },
+        {
+          type: "trojan",
+          tag: ("trojan-" + $suffix + "-in"),
+          listen: $listen,
+          listen_port: $trojan_port,
+          users: [{password: $trojan_password}],
+          tls: {
+            enabled: true,
+            server_name: $domain,
+            certificate_path: $cert,
+            key_path: $key
+          }
         }
       ];
     def has_v4: ($mode == "ipv4-only" or $mode == "dual");
     def has_v6: ($mode == "ipv6-only" or $mode == "dual");
-    def v4_inbound_tags: ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"];
-    def v6_inbound_tags: ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"];
+    def v4_inbound_tags: [
+      "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"
+    ];
+    def v6_inbound_tags: [
+      "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"
+    ];
     {
       log: {level: "info", timestamp: true},
       dns: {
@@ -500,6 +519,8 @@ render_sing_box_client() {
     --arg ss_password "$SS_PASSWORD" \
     --argjson anytls_port "$ANYTLS_PORT" \
     --arg anytls_password "$ANYTLS_PASSWORD" \
+    --argjson trojan_port "$TROJAN_PORT" \
+    --arg trojan_password "$TROJAN_PASSWORD" \
     --argjson vision_port "$VISION_PORT" \
     --arg vision_uuid "$VISION_UUID" \
     --arg vision_public_key "$VISION_PUBLIC_KEY" \
@@ -550,6 +571,7 @@ render_sing_box_client() {
             "TUIC-v5",
             "SS2022",
             "AnyTLS",
+            "Trojan-TLS",
             "VLESS-Reality-Vision"
           ],
           default: "HY2"
@@ -607,6 +629,18 @@ render_sing_box_client() {
             server_name: $domain,
             insecure: false,
             alpn: ["h2", "http/1.1"]
+          }
+        },
+        {
+          type: "trojan",
+          tag: "Trojan-TLS",
+          server: $server,
+          server_port: $trojan_port,
+          password: $trojan_password,
+          tls: {
+            enabled: true,
+            server_name: $domain,
+            insecure: false
           }
         },
         {
@@ -704,6 +738,15 @@ render_proxy_nodes() {
     client-fingerprint: chrome
     udp: true
     skip-cert-verify: false
+  - name: "Trojan-TLS"
+    type: trojan
+    server: "${server}"
+    ip-version: ${ip_version}
+    port: ${TROJAN_PORT}
+    password: "${TROJAN_PASSWORD}"
+    sni: "${DOMAIN}"
+    udp: true
+    skip-cert-verify: false
   - name: "VLESS-Reality-Vision"
     type: vless
     server: "${server}"
@@ -798,6 +841,14 @@ proxies:
     sni: "${DOMAIN}"
     alpn: [h2, http/1.1]
     skip-cert-verify: false
+  - name: "Trojan-TLS"
+    type: trojan
+    server: "${server}"
+    port: ${TROJAN_PORT}
+    password: "${TROJAN_PASSWORD}"
+    sni: "${DOMAIN}"
+    udp: true
+    skip-cert-verify: false
   - name: "VLESS-Reality-Vision"
     type: vless
     server: "${server}"
@@ -817,7 +868,7 @@ proxies:
 proxy-groups:
   - name: "PROXY"
     type: select
-    proxies: [HY2, TUIC-v5, SS2022, AnyTLS, VLESS-Reality-Vision]
+    proxies: [HY2, TUIC-v5, SS2022, AnyTLS, Trojan-TLS, VLESS-Reality-Vision]
 
 rules:
   - MATCH,PROXY
@@ -827,9 +878,9 @@ EOF
 render_client_yaml() {
   local target="$1" include_xhttp="$2" server="$3" ip_version="$4" names
   if [[ "$include_xhttp" == "yes" ]]; then
-    names='[HY2, TUIC-v5, SS2022, AnyTLS, VLESS-Reality-Vision, VLESS-Reality-XHTTP]'
+    names='[HY2, TUIC-v5, SS2022, AnyTLS, Trojan-TLS, VLESS-Reality-Vision, VLESS-Reality-XHTTP]'
   else
-    names='[HY2, TUIC-v5, SS2022, AnyTLS, VLESS-Reality-Vision]'
+    names='[HY2, TUIC-v5, SS2022, AnyTLS, Trojan-TLS, VLESS-Reality-Vision]'
   fi
 
   {
@@ -905,6 +956,14 @@ proxies:
     alpn: [h2, http/1.1]
     client-fingerprint: chrome
     skip-cert-verify: false
+  - name: "Trojan-TLS"
+    type: trojan
+    server: "${server}"
+    port: ${TROJAN_PORT}
+    password: "${TROJAN_PASSWORD}"
+    sni: "${DOMAIN}"
+    udp: true
+    skip-cert-verify: false
   - name: "VLESS-Reality-Vision"
     type: vless
     server: "${server}"
@@ -958,7 +1017,7 @@ render_subscriptions() {
   if network_mode_has_ipv4; then
     render_client_yaml "${NEKO_SUB_DIR}/mihomo-v4.yaml" yes \
       "$SUBSCRIPTION_IPV4_ADDRESS" ipv4
-    # Stash does not implement XHTTP; each strict subscription has five nodes.
+    # Stash does not implement XHTTP; each strict subscription has six nodes.
     render_stash_yaml "${NEKO_SUB_DIR}/stash-v4.yaml" "$SUBSCRIPTION_IPV4_ADDRESS"
     render_shadowrocket \
       "${NEKO_SUB_DIR}/shadowrocket-v4.txt" "$SUBSCRIPTION_IPV4_ADDRESS"

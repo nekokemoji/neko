@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+if [[ -n "${NEKO_TEST_FIREWALL_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$NEKO_TEST_FIREWALL_LOG"
+fi
+
+if [[ "$*" == "--state" && "${NEKO_TEST_FIREWALL_INACTIVE:-0}" == "1" ]]; then
+  exit 1
+fi
+
+if [[ "$*" == "--state" ]]; then
+  printf 'running\n'
+fi
+
+exit 0

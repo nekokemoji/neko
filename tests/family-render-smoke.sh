@@ -60,7 +60,7 @@ assert_family() {
     "$target/etc/subscriptions/mihomo-${family}.yaml"
   jq -e --arg address "$address" '
     [.outbounds[] | select(.tag != "PROXY") | .server]
-    | length == 5 and all(. == $address)
+    | length == 6 and all(. == $address)
   ' "$target/etc/subscriptions/sing-box-${family}.json" >/dev/null
   if grep -R -Fq -- "server: \"${opposite}\"" "$target/etc/subscriptions"; then
     printf '%s 模式订阅泄漏了未启用地址：%s\n' "$family" "$opposite" >&2
@@ -86,7 +86,7 @@ for mode in ipv4-only ipv6-only dual; do
       [[ -s "$target/etc/config/hysteria-v4.yaml" ]]
       [[ ! -e "$target/etc/config/hysteria-v6.yaml" ]]
       jq -e '
-        (.inbounds | length) == 3
+        (.inbounds | length) == 4
         and ([.inbounds[].tag] | all(endswith("-v4-in")))
         and [.outbounds[].tag] == ["direct-v4"]
         and .route.final == "direct-v4"
@@ -112,7 +112,7 @@ for mode in ipv4-only ipv6-only dual; do
       [[ ! -e "$target/etc/config/hysteria-v4.yaml" ]]
       [[ -s "$target/etc/config/hysteria-v6.yaml" ]]
       jq -e '
-        (.inbounds | length) == 3
+        (.inbounds | length) == 4
         and ([.inbounds[].tag] | all(endswith("-v6-in")))
         and [.outbounds[].tag] == ["direct-v6"]
         and .route.final == "direct-v6"
@@ -134,7 +134,7 @@ for mode in ipv4-only ipv6-only dual; do
       [[ -s "$target/etc/config/hysteria-v4.yaml" ]]
       [[ -s "$target/etc/config/hysteria-v6.yaml" ]]
       jq -e '
-        (.inbounds | length) == 6
+        (.inbounds | length) == 8
         and [.outbounds[].tag] == ["direct-v4", "direct-v6"]
       ' "$target/etc/config/sing-box.json" >/dev/null
       jq -e '

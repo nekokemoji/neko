@@ -176,15 +176,9 @@ close_temporary_http_challenge_port() {
   return 0
 }
 
-configure_firewalld() {
-  local zone
-  local -a zones=()
-  mapfile -t zones < <(firewalld_target_zones)
-  (( ${#zones[@]} > 0 )) || die "无法确定公网默认路由使用的 firewalld 区域。"
-  [[ ! -e "$FIREWALLD_SERVICE_FILE" ]] || die "防火墙服务文件已存在：${FIREWALLD_SERVICE_FILE}"
-  set_firewall_manager firewalld "${zones[@]}"
-  mkdir -p "$(dirname -- "$FIREWALLD_SERVICE_FILE")"
+write_firewalld_service_file() {
   local tmp
+  mkdir -p "$(dirname -- "$FIREWALLD_SERVICE_FILE")"
   tmp="$(mktemp "${FIREWALLD_SERVICE_FILE}.tmp.XXXXXX")"
   cat > "$tmp" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
@@ -196,6 +190,7 @@ configure_firewalld() {
   <port protocol="tcp" port="${SS_PORT}"/>
   <port protocol="udp" port="${SS_PORT}"/>
   <port protocol="tcp" port="${ANYTLS_PORT}"/>
+  <port protocol="tcp" port="${TROJAN_PORT}"/>
   <port protocol="tcp" port="${VISION_PORT}"/>
   <port protocol="tcp" port="${XHTTP_PORT}"/>
   <port protocol="udp" port="${TUIC_PORT}"/>
@@ -204,6 +199,30 @@ configure_firewalld() {
 EOF
   chmod 0644 "$tmp"
   mv -f "$tmp" "$FIREWALLD_SERVICE_FILE"
+}
+
+write_ufw_profile_file() {
+  local tmp
+  mkdir -p "$(dirname -- "$UFW_PROFILE_FILE")"
+  tmp="$(mktemp "${UFW_PROFILE_FILE}.tmp.XXXXXX")"
+  cat > "$tmp" <<EOF
+[NekoProxy]
+title=Neko Proxy
+description=Neko managed proxy listeners and HTTPS subscriptions
+ports=80,443,${SS_PORT},${ANYTLS_PORT},${TROJAN_PORT},${VISION_PORT},${XHTTP_PORT}/tcp|${SS_PORT},${TUIC_PORT},${HY2_START}:${HY2_END}/udp
+EOF
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$UFW_PROFILE_FILE"
+}
+
+configure_firewalld() {
+  local zone
+  local -a zones=()
+  mapfile -t zones < <(firewalld_target_zones)
+  (( ${#zones[@]} > 0 )) || die "无法确定公网默认路由使用的 firewalld 区域。"
+  [[ ! -e "$FIREWALLD_SERVICE_FILE" ]] || die "防火墙服务文件已存在：${FIREWALLD_SERVICE_FILE}"
+  set_firewall_manager firewalld "${zones[@]}"
+  write_firewalld_service_file
 
   firewall-cmd --reload >/dev/null
   for zone in "${zones[@]}"; do
@@ -226,23 +245,55 @@ configure_ufw() {
   fi
   [[ ! -e "$UFW_PROFILE_FILE" ]] || die "UFW 应用配置已存在：${UFW_PROFILE_FILE}"
   set_firewall_manager ufw
-  mkdir -p "$(dirname -- "$UFW_PROFILE_FILE")"
-  local tmp
-  tmp="$(mktemp "${UFW_PROFILE_FILE}.tmp.XXXXXX")"
-  cat > "$tmp" <<EOF
-[NekoProxy]
-title=Neko Proxy
-description=Neko managed proxy listeners and HTTPS subscriptions
-ports=80,443,${SS_PORT},${ANYTLS_PORT},${VISION_PORT},${XHTTP_PORT}/tcp|${SS_PORT},${TUIC_PORT},${HY2_START}:${HY2_END}/udp
-EOF
-  chmod 0644 "$tmp"
-  mv -f "$tmp" "$UFW_PROFILE_FILE"
+  write_ufw_profile_file
 
   ufw app update NekoProxy >/dev/null
   ufw allow NekoProxy >/dev/null
   ufw_status="$(ufw status 2>/dev/null || true)"
   grep -Fq NekoProxy <<< "$ufw_status" || die "UFW 的 NekoProxy 规则未生效。"
   ok "已添加 UFW 的 NekoProxy 专用应用规则。"
+}
+
+sync_managed_firewall_profile() {
+  local manager zone old_zone ufw_status
+  local -a zones=()
+
+  load_state
+  manager="$(jq -r '.firewall.manager // "none"' "$NEKO_STATE")"
+  case "$manager" in
+    firewalld)
+      firewalld_is_active \
+        || die "原安装由 firewalld 管理，但 firewalld 当前未运行。"
+      [[ -f "$FIREWALLD_SERVICE_FILE" && ! -L "$FIREWALLD_SERVICE_FILE" ]] \
+        || die "Neko 的 firewalld 服务文件缺失或类型异常。"
+      mapfile -t zones < <(jq -r '.firewall.zones[]? // empty' "$NEKO_STATE")
+      if (( ${#zones[@]} == 0 )); then
+        old_zone="$(jq -r '.firewall.zone // empty' "$NEKO_STATE")"
+        [[ -z "$old_zone" ]] || zones=("$old_zone")
+      fi
+      (( ${#zones[@]} > 0 )) || die "state.json 未记录 Neko 使用的 firewalld 区域。"
+      write_firewalld_service_file
+      firewall-cmd --reload >/dev/null || die "firewalld 重载失败。"
+      for zone in "${zones[@]}"; do
+        firewall-cmd --zone="$zone" --query-service=neko-proxy >/dev/null \
+          || die "firewalld 区域 ${zone} 的 Neko 规则未生效。"
+      done
+      ;;
+    ufw)
+      ufw_is_active || die "原安装由 UFW 管理，但 UFW 当前未运行。"
+      [[ -f "$UFW_PROFILE_FILE" && ! -L "$UFW_PROFILE_FILE" ]] \
+        || die "Neko 的 UFW 应用配置缺失或类型异常。"
+      write_ufw_profile_file
+      ufw app update NekoProxy >/dev/null || die "UFW 应用规则更新失败。"
+      ufw_status="$(ufw status 2>/dev/null || true)"
+      grep -Fq NekoProxy <<< "$ufw_status" || die "UFW 的 NekoProxy 规则未生效。"
+      ;;
+    none)
+      ;;
+    *)
+      die "state.json 记录了未知防火墙管理器：${manager}"
+      ;;
+  esac
 }
 
 configure_firewall() {

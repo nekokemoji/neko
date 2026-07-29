@@ -14,7 +14,7 @@ mkdir -p \
   "$WORK/bench"
 cp -a -- "$ROOT/lib/common.sh" "$WORK/libexec/lib/common.sh"
 jq \
-  '.release = "1.6.1-test"
+  '.release = "1.7.0-test"
    | .subscription.ipv4_address = "192.0.2.44"
    | .subscription.ipv6_address = "2001:db8::44"' \
   "$ROOT/tests/fixtures/state.json" > "$WORK/etc/state.json"

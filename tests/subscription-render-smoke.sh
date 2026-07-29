@@ -71,7 +71,7 @@ check_profile() {
       and .inbounds[0].type == "tun"
       and .inbounds[0].auto_route
       and .inbounds[0].strict_route
-      and (.outbounds | length == 6)
+      and (.outbounds | length == 7)
       and .outbounds[0].type == "selector"
       and .outbounds[0].tag == "PROXY"
       and .outbounds[0].outbounds == [
@@ -79,9 +79,10 @@ check_profile() {
         "TUIC-v5",
         "SS2022",
         "AnyTLS",
+        "Trojan-TLS",
         "VLESS-Reality-Vision"
       ]
-      and ([.outbounds[] | select(.tag != "PROXY") | .server] | length == 5)
+      and ([.outbounds[] | select(.tag != "PROXY") | .server] | length == 6)
       and ([.outbounds[] | select(.tag != "PROXY") | .server] | all(. == $address))
       and ([.outbounds[] | .type] | index("direct") == null)
       and .route.final == "PROXY"
@@ -93,14 +94,15 @@ check_profile() {
         | select(.tag == "HY2"
           or .tag == "TUIC-v5"
           or .tag == "AnyTLS"
+          or .tag == "Trojan-TLS"
           or .tag == "VLESS-Reality-Vision")
         | .tls.server_name] | all(. == "example.com"))
       and ([.outbounds[]
         | select(.tls != null)
         | .tls.insecure] | all(. == false))
       and .outbounds[1].server_ports == ["21000:21127"]
-      and .outbounds[5].tls.reality.public_key == $vision_public_key
-      and .outbounds[5].tls.reality.short_id == $vision_short_id
+      and .outbounds[6].tls.reality.public_key == $vision_public_key
+      and .outbounds[6].tls.reality.short_id == $vision_short_id
     ' "$WORK/etc/subscriptions/sing-box-${family}.json" >/dev/null
 }
 
