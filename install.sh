@@ -573,16 +573,18 @@ generate_reality_pair() {
 
 write_initial_state() {
   local hy2_password hy2_obfs_password tuic_uuid tuic_password ss_password
-  local anytls_password vision_uuid xhttp_uuid vision_pair xhttp_pair
+  local anytls_password trojan_password vision_uuid xhttp_uuid vision_pair xhttp_pair
   local vision_private vision_public xhttp_private xhttp_public
   local vision_sid xhttp_sid xhttp_path sub_token_ipv4 sub_token_ipv6 installed_at
-  local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT VISION_PORT XHTTP_PORT
+  local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT TROJAN_PORT
+  local VISION_PORT XHTTP_PORT
 
   initialize_port_reservations
   reserve_random_range 128 HY2_START HY2_END
   reserve_random_port TUIC_PORT
   reserve_random_port SS_PORT
   reserve_random_port ANYTLS_PORT
+  reserve_random_port TROJAN_PORT
   reserve_random_port VISION_PORT
   reserve_random_port XHTTP_PORT
 
@@ -592,6 +594,7 @@ write_initial_state() {
   tuic_password="$(random_urlsafe 24)"
   ss_password="$(random_base64 16)"
   anytls_password="$(random_urlsafe 24)"
+  trojan_password="$(random_urlsafe 24)"
   vision_uuid="$(new_uuid)"
   xhttp_uuid="$(new_uuid)"
   vision_pair="$(generate_reality_pair)"
@@ -622,11 +625,13 @@ write_initial_state() {
     --arg acme_method "$ACME_METHOD" \
     --argjson hy2_start "$HY2_START" --argjson hy2_end "$HY2_END" \
     --argjson tuic_port "$TUIC_PORT" --argjson ss_port "$SS_PORT" \
-    --argjson anytls_port "$ANYTLS_PORT" --argjson vision_port "$VISION_PORT" \
+    --argjson anytls_port "$ANYTLS_PORT" --argjson trojan_port "$TROJAN_PORT" \
+    --argjson vision_port "$VISION_PORT" \
     --argjson xhttp_port "$XHTTP_PORT" \
     --arg hy2_password "$hy2_password" --arg hy2_obfs "$hy2_obfs_password" \
     --arg tuic_uuid "$tuic_uuid" --arg tuic_password "$tuic_password" \
     --arg ss_password "$ss_password" --arg anytls_password "$anytls_password" \
+    --arg trojan_password "$trojan_password" \
     --arg vision_uuid "$vision_uuid" --arg xhttp_uuid "$xhttp_uuid" \
     --arg vision_private "$vision_private" --arg vision_public "$vision_public" \
     --arg vision_sid "$vision_sid" --arg xhttp_private "$xhttp_private" \
@@ -661,6 +666,7 @@ write_initial_state() {
         tuic: $tuic_port,
         ss2022: $ss_port,
         anytls: $anytls_port,
+        trojan: $trojan_port,
         vless_reality_vision: $vision_port,
         vless_reality_xhttp: $xhttp_port
       },
@@ -671,6 +677,7 @@ write_initial_state() {
         tuic_password: $tuic_password,
         ss2022_password: $ss_password,
         anytls_password: $anytls_password,
+        trojan_password: $trojan_password,
         vision_uuid: $vision_uuid,
         xhttp_uuid: $xhttp_uuid
       },

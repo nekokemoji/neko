@@ -22,12 +22,15 @@ QRC_STAGED_BINARY=""
 NEXTTRACE_STAGE_DIR=""
 NEXTTRACE_STAGED_BINARY=""
 ROLLBACK_READY=0
+UPGRADE_FIREWALL_MANAGER="none"
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
 # shellcheck source=versions.env
 source "$SCRIPT_DIR/versions.env"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/firewall.sh
+source "$SCRIPT_DIR/lib/firewall.sh"
 
 cleanup_backup() {
   local base="${NEKO_UPDATE_TMP_DIR%/}"
@@ -255,6 +258,25 @@ rollback_upgrade() {
   restore_optional_file \
     "$BACKUP_DIR/neko-hysteria.service" \
     "$NEKO_SYSTEMD/neko-hysteria.service" || rollback_ok=0
+  case "$UPGRADE_FIREWALL_MANAGER" in
+    firewalld)
+      restore_optional_file \
+        "$BACKUP_DIR/neko-proxy-firewalld.xml" \
+        "$FIREWALLD_SERVICE_FILE" || rollback_ok=0
+      firewall-cmd --reload >/dev/null 2>&1 || rollback_ok=0
+      ;;
+    ufw)
+      restore_optional_file \
+        "$BACKUP_DIR/neko-proxy-ufw" \
+        "$UFW_PROFILE_FILE" || rollback_ok=0
+      ufw app update NekoProxy >/dev/null 2>&1 || rollback_ok=0
+      ;;
+    none)
+      ;;
+    *)
+      rollback_ok=0
+      ;;
+  esac
   systemctl daemon-reload >/dev/null 2>&1 || rollback_ok=0
   systemctl restart \
     neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service \
@@ -351,13 +373,13 @@ resolve_strict_endpoints() {
 
 main() {
   local current_schema current_release certificate_domain service state_tmp
-  local legacy_token
+  local legacy_token trojan_port trojan_password hy2_start hy2_end port
   local -a domain_args=()
 
   if (( EUID != 0 )) && [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     die "请使用 root 运行升级脚本。"
   fi
-  require_commands flock jq openssl find cp systemctl stat env ip awk sed timeout
+  require_commands flock jq openssl find cp systemctl stat env ip awk sed timeout ss
 
   # Serialize before reading mutable state.  Panel address-family operations,
   # token rotation and certificate renewal use the same lock.
@@ -413,6 +435,45 @@ main() {
   if [[ "$ACME_METHOD" == "$ACME_METHOD_CLOUDFLARE" ]]; then
     assert_cloudflare_dns_token_file
   fi
+  trojan_port="$(jq -r '.ports.trojan // empty' "$NEKO_STATE")"
+  if [[ -n "$trojan_port" ]]; then
+    if [[ ! "$trojan_port" =~ ^[0-9]+$ ]] \
+      || (( trojan_port < 10000 || trojan_port > 60000 )); then
+      die "state.json 中的 Trojan 端口无效。"
+    fi
+  else
+    initialize_port_reservations
+    hy2_start="$(jq -er '.ports.hysteria2_start | numbers' "$NEKO_STATE")" \
+      || die "state.json 中的 Hysteria2 起始端口无效。"
+    hy2_end="$(jq -er '.ports.hysteria2_end | numbers' "$NEKO_STATE")" \
+      || die "state.json 中的 Hysteria2 结束端口无效。"
+    (( hy2_start >= 1 && hy2_end >= hy2_start && hy2_end <= 65535 )) \
+      || die "state.json 中的 Hysteria2 端口范围无效。"
+    for ((port = hy2_start; port <= hy2_end; port++)); do
+      NEKO_RESERVED_PORTS["$port"]=1
+    done
+    while IFS= read -r port; do
+      [[ "$port" =~ ^[0-9]+$ ]] || die "state.json 中存在无效端口。"
+      NEKO_RESERVED_PORTS["$port"]=1
+    done < <(
+      jq -r '
+        .ports
+        | [
+            .tuic, .ss2022, .anytls,
+            .vless_reality_vision, .vless_reality_xhttp
+          ]
+        | .[]
+      ' "$NEKO_STATE"
+    )
+    reserve_random_port trojan_port
+  fi
+  trojan_password="$(jq -r '.credentials.trojan_password // empty' "$NEKO_STATE")"
+  if [[ -n "$trojan_password" ]]; then
+    [[ "$trojan_password" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+      || die "state.json 中的 Trojan 密码格式无效。"
+  else
+    trojan_password="$(random_urlsafe 24)"
+  fi
   resolve_strict_endpoints
   if [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     assert_network_mode_kernel "$NETWORK_MODE"
@@ -420,6 +481,31 @@ main() {
   fi
 
   BACKUP_DIR="$(mktemp -d "${NEKO_UPDATE_TMP_DIR%/}/neko-upgrade-backup.XXXXXX")"
+  UPGRADE_FIREWALL_MANAGER="$(
+    jq -r '.firewall.manager // "none"' "$NEKO_STATE"
+  )"
+  case "$UPGRADE_FIREWALL_MANAGER" in
+    firewalld)
+      firewalld_is_active \
+        || die "原安装由 firewalld 管理，但 firewalld 当前未运行；未开始升级。"
+      [[ -f "$FIREWALLD_SERVICE_FILE" && ! -L "$FIREWALLD_SERVICE_FILE" ]] \
+        || die "现有 Neko firewalld 服务文件缺失或类型异常；未开始升级。"
+      cp -a -- \
+        "$FIREWALLD_SERVICE_FILE" "$BACKUP_DIR/neko-proxy-firewalld.xml"
+      ;;
+    ufw)
+      ufw_is_active \
+        || die "原安装由 UFW 管理，但 UFW 当前未运行；未开始升级。"
+      [[ -f "$UFW_PROFILE_FILE" && ! -L "$UFW_PROFILE_FILE" ]] \
+        || die "现有 Neko UFW 应用配置缺失或类型异常；未开始升级。"
+      cp -a -- "$UFW_PROFILE_FILE" "$BACKUP_DIR/neko-proxy-ufw"
+      ;;
+    none)
+      ;;
+    *)
+      die "state.json 记录了未知防火墙管理器：${UPGRADE_FIREWALL_MANAGER}"
+      ;;
+  esac
   cp -a -- "$NEKO_ETC" "$BACKUP_DIR/etc"
   cp -a -- "$NEKO_VAR/lego" "$BACKUP_DIR/lego"
   cp -a -- "$NEKO_LIBEXEC/lib" "$BACKUP_DIR/lib"
@@ -467,9 +553,13 @@ main() {
     --arg v4_address "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg v6_address "$SUBSCRIPTION_IPV6_ADDRESS" \
     --arg acme_method "$ACME_METHOD" \
+    --argjson trojan_port "$trojan_port" \
+    --arg trojan_password "$trojan_password" \
     --arg legacy_token "$legacy_token" \
     '.schema = 3
      | .release = $release
+     | .ports.trojan = $trojan_port
+     | .credentials.trojan_password = $trojan_password
      | .network = {mode: $network_mode}
      | .subscription.ipv4_token = (
          if $network_mode == "ipv4-only" or $network_mode == "dual"
@@ -556,6 +646,7 @@ main() {
 
   render_all
   validate_installed_configs
+  sync_managed_firewall_profile
   systemctl restart \
     neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service
   if [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then

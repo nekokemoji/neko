@@ -304,6 +304,34 @@ if ! NEKO_UFW_CALLS="$FIREWALL_TEST_WORK/ufw-calls" \
   printf 'UFW 的 HTTP-01 临时规则没有正确创建和清理。\n' >&2
   exit 1
 fi
+mkdir -p "$FIREWALL_TEST_WORK/etc"
+jq '.firewall = {manager: "ufw", zone: "", zones: []}' \
+  "$ROOT/tests/fixtures/state.json" \
+  > "$FIREWALL_TEST_WORK/etc/state.json"
+printf '%s\n' '[NekoProxy]' 'ports=443/tcp' \
+  > "$FIREWALL_TEST_WORK/neko-proxy"
+if ! NEKO_ETC="$FIREWALL_TEST_WORK/etc" \
+  NEKO_VAR="$FIREWALL_TEST_WORK/var" \
+  NEKO_STATE="$FIREWALL_TEST_WORK/etc/state.json" \
+  NEKO_USER=root \
+  UFW_PROFILE_FILE="$FIREWALL_TEST_WORK/neko-proxy" \
+  NEKO_UFW_CALLS="$FIREWALL_TEST_WORK/ufw-sync-calls" bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    source "$2"
+    ufw_is_active() { return 0; }
+    ufw() {
+      printf "%s\n" "$*" >> "$NEKO_UFW_CALLS"
+      [[ "$1" != status ]] || printf "Status: active\nNekoProxy ALLOW Anywhere\n"
+    }
+    sync_managed_firewall_profile
+    grep -Fq "24500" "$UFW_PROFILE_FILE"
+    grep -Fxq "app update NekoProxy" "$NEKO_UFW_CALLS"
+  ' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"; then
+  rm -rf -- "$FIREWALL_TEST_WORK"
+  printf '升级时没有正确更新 Neko 的 UFW 应用规则。\n' >&2
+  exit 1
+fi
 rm -rf -- "$FIREWALL_TEST_WORK"
 
 printf '[3/9] 冻结版本身份与 lego v5 CLI……\n'
@@ -331,7 +359,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.6.1"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.7.0"' "$ROOT/versions.env"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
@@ -663,11 +691,12 @@ bash -c '
     reserve_random_port tuic
     reserve_random_port ss
     reserve_random_port anytls
+    reserve_random_port trojan
     reserve_random_port vision
     reserve_random_port xhttp
     declare -A seen=()
     for ((port = range_start; port <= range_end; port++)); do seen[$port]=1; done
-    for port in "$tuic" "$ss" "$anytls" "$vision" "$xhttp"; do
+    for port in "$tuic" "$ss" "$anytls" "$trojan" "$vision" "$xhttp"; do
       [[ -z "${seen[$port]+x}" ]]
       seen[$port]=1
     done
@@ -708,31 +737,52 @@ for family, address, ip_version in (
         (root / f"etc/subscriptions/sing-box-{family}.json").read_text()
     )
 
-    assert len(mihomo["proxies"]) == 6
+    assert len(mihomo["proxies"]) == 7
     assert all(p["server"] == address for p in mihomo["proxies"])
     assert all(p["ip-version"] == ip_version for p in mihomo["proxies"])
     mihomo_tuic = next(p for p in mihomo["proxies"] if p["type"] == "tuic")
     assert mihomo_tuic["sni"] == "example.com"
     assert mihomo_tuic["disable-sni"] is False
-    assert len(stash["proxies"]) == 5
+    mihomo_trojan = next(p for p in mihomo["proxies"] if p["type"] == "trojan")
+    assert mihomo_trojan == {
+        "name": "Trojan-TLS",
+        "type": "trojan",
+        "server": address,
+        "ip-version": ip_version,
+        "port": state["ports"]["trojan"],
+        "password": state["credentials"]["trojan_password"],
+        "sni": "example.com",
+        "udp": True,
+        "skip-cert-verify": False,
+    }
+    assert len(stash["proxies"]) == 6
     assert all(p["server"] == address for p in stash["proxies"])
     assert all(p["network"] != "xhttp" for p in stash["proxies"] if p["type"] == "vless")
     stash_hy2 = next(p for p in stash["proxies"] if p["type"] == "hysteria2")
     stash_tuic = next(p for p in stash["proxies"] if p["type"] == "tuic")
+    stash_trojan = next(p for p in stash["proxies"] if p["type"] == "trojan")
     stash_vision = next(p for p in stash["proxies"] if p["type"] == "vless")
     assert stash_hy2["auth"] == "test-hy2-password" and "password" not in stash_hy2
     assert stash_tuic["version"] == 5
+    assert stash_trojan["port"] == state["ports"]["trojan"]
+    assert stash_trojan["password"] == state["credentials"]["trojan_password"]
+    assert stash_trojan["sni"] == "example.com"
+    assert stash_trojan["skip-cert-verify"] is False
     assert stash_vision["sni"] == "example.com" and "servername" not in stash_vision
 
     shadow_proxies = shadow["proxies"]
     assert [p["type"] for p in shadow_proxies] == [
-        "hysteria2", "tuic", "ss", "anytls", "vless", "vless"
+        "hysteria2", "tuic", "ss", "anytls", "trojan", "vless", "vless"
     ]
     assert all(p["server"] == address for p in shadow_proxies)
-    shadow_hy2, shadow_tuic, _, _, shadow_vision, shadow_xhttp = shadow_proxies
+    shadow_hy2, shadow_tuic, _, _, shadow_trojan, shadow_vision, shadow_xhttp = shadow_proxies
     assert shadow_hy2["port-range"] == "21000-21127"
     assert shadow_hy2["ports"] == "21000-21127"
     assert shadow_tuic["version"] == 5
+    assert shadow_trojan["port"] == state["ports"]["trojan"]
+    assert shadow_trojan["password"] == state["credentials"]["trojan_password"]
+    assert shadow_trojan["sni"] == "example.com"
+    assert shadow_trojan["skip-cert-verify"] is False
     assert shadow_vision["network"] == "tcp"
     assert shadow_vision["reality-opts"]["public-key"] == state["reality"]["vision_public_key"]
     assert shadow_xhttp["network"] == "xhttp"
@@ -740,7 +790,8 @@ for family, address, ip_version in (
     assert shadow_xhttp["xhttp-opts"]["path"] == state["reality"]["xhttp_path"]
 
     expected_selector = [
-        "HY2", "TUIC-v5", "SS2022", "AnyTLS", "VLESS-Reality-Vision"
+        "HY2", "TUIC-v5", "SS2022", "AnyTLS", "Trojan-TLS",
+        "VLESS-Reality-Vision"
     ]
     expected_dns_strategy = "ipv4_only" if family == "v4" else "ipv6_only"
     expected_dns_server = "1.1.1.1" if family == "v4" else "2606:4700:4700::1111"
@@ -770,9 +821,21 @@ for family, address, ip_version in (
         "public_key": state["reality"]["vision_public_key"],
         "short_id": state["reality"]["vision_short_id"],
     }
-    for tag in ("HY2", "TUIC-v5", "AnyTLS", "VLESS-Reality-Vision"):
+    for tag in ("HY2", "TUIC-v5", "AnyTLS", "Trojan-TLS", "VLESS-Reality-Vision"):
         assert client_outbounds[tag]["tls"]["server_name"] == "example.com"
         assert client_outbounds[tag]["tls"]["insecure"] is False
+    assert client_outbounds["Trojan-TLS"] == {
+        "type": "trojan",
+        "tag": "Trojan-TLS",
+        "server": address,
+        "server_port": state["ports"]["trojan"],
+        "password": state["credentials"]["trojan_password"],
+        "tls": {
+            "enabled": True,
+            "server_name": "example.com",
+            "insecure": False,
+        },
+    }
     assert sing_client["dns"] == {
         "servers": [{
             "type": "https",
@@ -809,7 +872,12 @@ for family, address, ip_version in (
     assert sing_client["experimental"] == {"cache_file": {"enabled": True}}
 
 ports = state["ports"]
-singles = [ports[k] for k in ("tuic", "ss2022", "anytls", "vless_reality_vision", "vless_reality_xhttp")]
+singles = [
+    ports[k] for k in (
+        "tuic", "ss2022", "anytls", "trojan",
+        "vless_reality_vision", "vless_reality_xhttp",
+    )
+]
 assert len(set(singles)) == len(singles)
 assert all(not (ports["hysteria2_start"] <= p <= ports["hysteria2_end"]) for p in singles)
 assert ports["hysteria2_end"] - ports["hysteria2_start"] + 1 == 128
@@ -817,13 +885,13 @@ assert ports["hysteria2_end"] - ports["hysteria2_start"] + 1 == 128
 v4_address = state["subscription"]["ipv4_address"]
 v6_address = state["subscription"]["ipv6_address"]
 
-assert len(sing["inbounds"]) == 6
+assert len(sing["inbounds"]) == 8
 sing_inbounds = {inbound["tag"]: inbound for inbound in sing["inbounds"]}
 assert {tag for tag in sing_inbounds if "-v4-" in tag} == {
-    "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"
+    "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"
 }
 assert {tag for tag in sing_inbounds if "-v6-" in tag} == {
-    "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"
+    "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"
 }
 assert all(inbound["listen"] == v4_address for tag, inbound in sing_inbounds.items() if "-v4-" in tag)
 assert all(inbound["listen"] == v6_address for tag, inbound in sing_inbounds.items() if "-v6-" in tag)
@@ -844,40 +912,53 @@ for inbound in xray["inbounds"]:
     assert reality["serverNames"] == ["example.com"]
 cert_path = str(root / "var/lego/certificates/example.com.crt")
 key_path = str(root / "var/lego/certificates/example.com.key")
+for suffix, address in (("v4", v4_address), ("v6", v6_address)):
+    trojan = sing_inbounds[f"trojan-{suffix}-in"]
+    assert trojan["listen"] == address
+    assert trojan["listen_port"] == ports["trojan"]
+    assert trojan["users"] == [
+        {"password": state["credentials"]["trojan_password"]}
+    ]
+    assert trojan["tls"] == {
+        "enabled": True,
+        "server_name": "example.com",
+        "certificate_path": cert_path,
+        "key_path": key_path,
+    }
 tls_inbounds = [i for i in sing["inbounds"] if "tls" in i]
 assert all(i["tls"]["certificate_path"] == cert_path for i in tls_inbounds)
 assert all(i["tls"]["key_path"] == key_path for i in tls_inbounds)
 assert sing["route"]["rules"][0] == {"network": "tcp", "port": 25, "action": "reject"}
 assert sing["route"]["rules"][1] == {
-    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"],
     "action": "resolve",
     "server": "local",
     "strategy": "ipv4_only",
 }
 assert sing["route"]["rules"][2] == {
-    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"],
     "action": "resolve",
     "server": "local",
     "strategy": "ipv6_only",
 }
 assert sing["route"]["rules"][3] == {"ip_is_private": True, "action": "reject"}
 assert sing["route"]["rules"][4] == {
-    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"],
     "ip_version": 6,
     "action": "reject",
 }
 assert sing["route"]["rules"][5] == {
-    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"],
     "ip_version": 4,
     "action": "reject",
 }
 assert sing["route"]["rules"][6] == {
-    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in"],
+    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"],
     "action": "route",
     "outbound": "direct-v4",
 }
 assert sing["route"]["rules"][7] == {
-    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in"],
+    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"],
     "action": "route",
     "outbound": "direct-v6",
 }
@@ -1080,9 +1161,11 @@ printf '[9/9] 模拟旧版本原地升级成功与失败回滚……\n'
 prepare_upgrade_install() {
   local target="$1" schema="${2:-1}" source_release="${3:-}"
   local source_mode="${4:-dual}"
+  local source_has_trojan="${5:-false}" state_tmp
   mkdir -p \
     "$target/etc/config" "$target/etc/subscriptions" \
-    "$target/var/acme" "$target/libexec/lib" "$target/systemd" "$target/tmp"
+    "$target/var/acme" "$target/libexec/lib" "$target/systemd" "$target/tmp" \
+    "$target/firewall"
   cp -a -- "$WORK/etc/config/." "$target/etc/config/"
   if [[ "$source_release" == "1.2.3-test" ]]; then
     cp -a -- \
@@ -1142,6 +1225,12 @@ prepare_upgrade_install() {
       | .firewall = {manager: "none", zone: "", zones: []}
     ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
   fi
+  if [[ "$source_has_trojan" != true ]]; then
+    state_tmp="$(mktemp "$target/etc/state.json.tmp.XXXXXX")"
+    jq 'del(.ports.trojan, .credentials.trojan_password)' \
+      "$target/etc/state.json" > "$state_tmp"
+    mv -f -- "$state_tmp" "$target/etc/state.json"
+  fi
   cp -a -- "$WORK/var/lego" "$target/var/lego"
   cp -a -- "$ROOT/lib/." "$target/libexec/lib/"
   cp -a -- "$ROOT/versions.env" "$target/libexec/versions.env"
@@ -1165,12 +1254,35 @@ run_upgrade() {
     NEKO_STATE="$target/etc/state.json" \
     NEKO_USER=root NEKO_UPDATE_TMP_DIR="$target/tmp" \
     NEKO_UPDATE_LOCK_FILE="$target/upgrade.lock" \
+    FIREWALLD_SERVICE_FILE="$target/firewall/neko-proxy.xml" \
+    UFW_PROFILE_FILE="$target/firewall/neko-proxy.ufw" \
+    NEKO_TEST_FIREWALL_LOG="$target/firewall/commands.log" \
     NEKO_UPDATE_TEST_MODE=1 NEKO_UPDATE_SKIP_ACME=1 \
     NEKO_UPDATE_QRC_BINARY="$QRC" \
     NEKO_UPDATE_NEXTTRACE_BINARY="$NEXTTRACE" \
     NEKO_UPDATE_IPV4_OVERRIDE=192.0.2.10 \
     NEKO_UPDATE_IPV6_OVERRIDE=2001:db8::10 \
     "$@" bash "$ROOT/upgrade.sh"
+}
+
+assert_trojan_migrated() {
+  local target="$1" trojan_port expected_inbounds=1
+  trojan_port="$(jq -r '.ports.trojan' "$target/etc/state.json")"
+  [[ "$trojan_port" =~ ^[0-9]+$ ]]
+  (( trojan_port >= 10000 && trojan_port <= 60000 ))
+  jq -e '
+    (.credentials.trojan_password | test("^[A-Za-z0-9_-]{16,128}$"))
+    and ([.ports.hysteria2_start, .ports.hysteria2_end] as $range
+      | (.ports.trojan < $range[0] or .ports.trojan > $range[1]))
+    and ([.ports.tuic, .ports.ss2022, .ports.anytls,
+          .ports.trojan, .ports.vless_reality_vision,
+          .ports.vless_reality_xhttp] | length == (unique | length))
+  ' "$target/etc/state.json" >/dev/null
+  [[ "$(jq -r '.network.mode' "$target/etc/state.json")" != dual ]] \
+    || expected_inbounds=2
+  jq -e --argjson expected "$expected_inbounds" '
+    [.inbounds[] | select(.type == "trojan")] | length == $expected
+  ' "$target/etc/config/sing-box.json" >/dev/null
 }
 
 UPGRADE_OK="$WORK/upgrade-ok"
@@ -1185,7 +1297,12 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ "$(jq -r '.subscription.ipv6_domain' "$UPGRADE_OK/etc/state.json")" == v6.example.com ]]
 [[ "$(jq -r '.subscription.shadowrocket_server // empty' "$UPGRADE_OK/etc/state.json")" == "" ]]
 [[ "$(jq -r '.acme.method' "$UPGRADE_OK/etc/state.json")" == http-01 ]]
-[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.ipv4_token}' \
+[[ "$(jq -cS '{
+    ports: (.ports | del(.trojan)),
+    credentials: (.credentials | del(.trojan_password)),
+    reality,
+    token: .subscription.ipv4_token
+  }' \
   "$UPGRADE_OK/etc/state.json")" == "$upgrade_identity_before" ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_OK/etc/state.json")" \
   == "$(jq -r '.token' <<< "$upgrade_identity_before")" ]]
@@ -1199,6 +1316,7 @@ grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
 [[ -s "$UPGRADE_OK/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_OK/etc/config/hysteria-v6.yaml" ]]
 [[ ! -e "$UPGRADE_OK/etc/config/hysteria.yaml" ]]
+assert_trojan_migrated "$UPGRADE_OK"
 if find "$UPGRADE_OK/tmp" -maxdepth 1 \
     \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \
        -o -name 'neko-nexttrace-stage.*' \) \
@@ -1220,6 +1338,7 @@ run_upgrade "$UPGRADE_OPTIONAL_FAIL" \
   > "$UPGRADE_OPTIONAL_FAIL/upgrade.log" 2>&1
 [[ "$(jq -r '.release' "$UPGRADE_OPTIONAL_FAIL/etc/state.json")" \
   == "$NEKO_RELEASE" ]]
+assert_trojan_migrated "$UPGRADE_OPTIONAL_FAIL"
 [[ "$(
   sha256sum "$UPGRADE_OPTIONAL_FAIL/libexec/nexttrace-tiny" \
     | awk '{print $1}'
@@ -1241,7 +1360,12 @@ schema2_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscri
 run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ "$(jq -r '.schema' "$UPGRADE_SCHEMA2/etc/state.json")" == 3 ]]
 [[ "$(jq -r '.release' "$UPGRADE_SCHEMA2/etc/state.json")" == "$NEKO_RELEASE" ]]
-[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.ipv4_token}' \
+[[ "$(jq -cS '{
+    ports: (.ports | del(.trojan)),
+    credentials: (.credentials | del(.trojan_password)),
+    reality,
+    token: .subscription.ipv4_token
+  }' \
   "$UPGRADE_SCHEMA2/etc/state.json")" == "$schema2_identity_before" ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_SCHEMA2/etc/state.json")" \
   == "$(jq -r '.token' <<< "$schema2_identity_before")" ]]
@@ -1250,6 +1374,7 @@ run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
 [[ ! -e "$UPGRADE_SCHEMA2/etc/config/hysteria.yaml" ]]
+assert_trojan_migrated "$UPGRADE_SCHEMA2"
 
 UPGRADE_123="$WORK/upgrade-1.2.3"
 prepare_upgrade_install "$UPGRADE_123" 2 1.2.3-test
@@ -1258,13 +1383,87 @@ release_123_identity_before="$(jq -cS '{ports, credentials, reality, token: .sub
 [[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 6 ]]
 run_upgrade "$UPGRADE_123" > "$UPGRADE_123/upgrade.log"
 [[ "$(jq -r '.release' "$UPGRADE_123/etc/state.json")" == "$NEKO_RELEASE" ]]
-[[ "$(jq -cS '{ports, credentials, reality, token: .subscription.ipv4_token}' \
+[[ "$(jq -cS '{
+    ports: (.ports | del(.trojan)),
+    credentials: (.credentials | del(.trojan_password)),
+    reality,
+    token: .subscription.ipv4_token
+  }' \
   "$UPGRADE_123/etc/state.json")" == "$release_123_identity_before" ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_123/etc/state.json")" \
   == "$(jq -r '.token' <<< "$release_123_identity_before")" ]]
 [[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
 [[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v4.json" ]]
 [[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v6.json" ]]
+assert_trojan_migrated "$UPGRADE_123"
+
+UPGRADE_CURRENT="$WORK/upgrade-current"
+prepare_upgrade_install "$UPGRADE_CURRENT" 3 1.7.0-test dual true
+current_trojan_before="$(
+  jq -cS '{port: .ports.trojan, password: .credentials.trojan_password}' \
+    "$UPGRADE_CURRENT/etc/state.json"
+)"
+run_upgrade "$UPGRADE_CURRENT" > "$UPGRADE_CURRENT/upgrade.log"
+[[ "$(jq -cS '{port: .ports.trojan, password: .credentials.trojan_password}' \
+  "$UPGRADE_CURRENT/etc/state.json")" == "$current_trojan_before" ]]
+assert_trojan_migrated "$UPGRADE_CURRENT"
+
+UPGRADE_FIREWALL="$WORK/upgrade-firewall"
+prepare_upgrade_install "$UPGRADE_FIREWALL" 3 1.6.1-test dual false
+printf '%s\n' '<service><port protocol="tcp" port="23000"/></service>' \
+  > "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
+jq '
+  .firewall = {manager: "firewalld", zone: "public", zones: ["public"]}
+' "$UPGRADE_FIREWALL/etc/state.json" \
+  > "$UPGRADE_FIREWALL/etc/state.firewall.json"
+mv -f -- \
+  "$UPGRADE_FIREWALL/etc/state.firewall.json" \
+  "$UPGRADE_FIREWALL/etc/state.json"
+run_upgrade "$UPGRADE_FIREWALL" > "$UPGRADE_FIREWALL/upgrade.log"
+firewall_trojan_port="$(
+  jq -r '.ports.trojan' "$UPGRADE_FIREWALL/etc/state.json"
+)"
+grep -Fq "protocol=\"tcp\" port=\"${firewall_trojan_port}\"" \
+  "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
+grep -Fxq -- '--reload' "$UPGRADE_FIREWALL/firewall/commands.log"
+grep -Fxq -- '--zone=public --query-service=neko-proxy' \
+  "$UPGRADE_FIREWALL/firewall/commands.log"
+assert_trojan_migrated "$UPGRADE_FIREWALL"
+
+UPGRADE_FIREWALL_INACTIVE="$WORK/upgrade-firewall-inactive"
+prepare_upgrade_install "$UPGRADE_FIREWALL_INACTIVE" 3 1.6.1-test dual false
+printf '%s\n' '<service><port protocol="tcp" port="23000"/></service>' \
+  > "$UPGRADE_FIREWALL_INACTIVE/firewall/neko-proxy.xml"
+jq '
+  .firewall = {manager: "firewalld", zone: "public", zones: ["public"]}
+' "$UPGRADE_FIREWALL_INACTIVE/etc/state.json" \
+  > "$UPGRADE_FIREWALL_INACTIVE/etc/state.firewall.json"
+mv -f -- \
+  "$UPGRADE_FIREWALL_INACTIVE/etc/state.firewall.json" \
+  "$UPGRADE_FIREWALL_INACTIVE/etc/state.json"
+inactive_state_before="$(
+  sha256sum "$UPGRADE_FIREWALL_INACTIVE/etc/state.json" | awk '{print $1}'
+)"
+inactive_profile_before="$(
+  sha256sum "$UPGRADE_FIREWALL_INACTIVE/firewall/neko-proxy.xml" \
+    | awk '{print $1}'
+)"
+set +e
+run_upgrade "$UPGRADE_FIREWALL_INACTIVE" \
+  NEKO_TEST_FIREWALL_INACTIVE=1 \
+  > "$UPGRADE_FIREWALL_INACTIVE/upgrade.log" 2>&1
+inactive_upgrade_rc=$?
+set -e
+(( inactive_upgrade_rc != 0 ))
+[[ "$(
+  sha256sum "$UPGRADE_FIREWALL_INACTIVE/etc/state.json" | awk '{print $1}'
+)" == "$inactive_state_before" ]]
+[[ "$(
+  sha256sum "$UPGRADE_FIREWALL_INACTIVE/firewall/neko-proxy.xml" \
+    | awk '{print $1}'
+)" == "$inactive_profile_before" ]]
+grep -Fq 'firewalld 当前未运行；未开始升级' \
+  "$UPGRADE_FIREWALL_INACTIVE/upgrade.log"
 
 UPGRADE_V4="$WORK/upgrade-v4-only"
 prepare_upgrade_install "$UPGRADE_V4" 3 1.2.4-test ipv4-only
@@ -1279,6 +1478,7 @@ run_upgrade "$UPGRADE_V4" > "$UPGRADE_V4/upgrade.log"
   | wc -l | tr -d ' ')" == 4 ]]
 [[ -s "$UPGRADE_V4/etc/config/hysteria-v4.yaml" ]]
 [[ ! -e "$UPGRADE_V4/etc/config/hysteria-v6.yaml" ]]
+assert_trojan_migrated "$UPGRADE_V4"
 
 UPGRADE_V6="$WORK/upgrade-v6-only"
 prepare_upgrade_install "$UPGRADE_V6" 3 1.2.4-test ipv6-only
@@ -1293,9 +1493,17 @@ run_upgrade "$UPGRADE_V6" > "$UPGRADE_V6/upgrade.log"
   | wc -l | tr -d ' ')" == 4 ]]
 [[ ! -e "$UPGRADE_V6/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_V6/etc/config/hysteria-v6.yaml" ]]
+assert_trojan_migrated "$UPGRADE_V6"
 
 UPGRADE_FAIL="$WORK/upgrade-fail"
 prepare_upgrade_install "$UPGRADE_FAIL"
+printf '%s\n' '<service><port protocol="tcp" port="23000"/></service>' \
+  > "$UPGRADE_FAIL/firewall/neko-proxy.xml"
+jq '
+  .firewall = {manager: "firewalld", zone: "public", zones: ["public"]}
+' "$UPGRADE_FAIL/etc/state.json" > "$UPGRADE_FAIL/etc/state.firewall.json"
+mv -f -- \
+  "$UPGRADE_FAIL/etc/state.firewall.json" "$UPGRADE_FAIL/etc/state.json"
 cp -a -- "$ROOT/tests/helpers/systemctl" "$UPGRADE_FAIL/libexec/qrc"
 cp -a -- "$ROOT/tests/helpers/systemctl" \
   "$UPGRADE_FAIL/libexec/nexttrace-tiny"
@@ -1306,13 +1514,16 @@ nexttrace_before="$(
 state_before="$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')"
 config_before="$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')"
 unit_before="$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')"
+firewall_before="$(
+  sha256sum "$UPGRADE_FAIL/firewall/neko-proxy.xml" | awk '{print $1}'
+)"
 subscriptions_before="$(
   find "$UPGRADE_FAIL/etc/subscriptions" -maxdepth 1 -type f -printf '%f\n' \
     | sort | sha256sum | awk '{print $1}'
 )"
 set +e
 run_upgrade "$UPGRADE_FAIL" \
-  NEKO_TEST_SYSTEMCTL_FAIL_PATTERN='restart neko-caddy.service' \
+  NEKO_TEST_SYSTEMCTL_FAIL_PATTERN='neko-sing-box.service' \
   NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE="$UPGRADE_FAIL/systemctl-failed-once" \
   > "$UPGRADE_FAIL/upgrade.log" 2>&1
 upgrade_rc=$?
@@ -1321,6 +1532,9 @@ set -e
 [[ "$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')" == "$state_before" ]]
 [[ "$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')" == "$config_before" ]]
 [[ "$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')" == "$unit_before" ]]
+[[ "$(sha256sum "$UPGRADE_FAIL/firewall/neko-proxy.xml" | awk '{print $1}')" \
+  == "$firewall_before" ]]
+grep -Fxq -- '--reload' "$UPGRADE_FAIL/firewall/commands.log"
 [[ "$(sha256sum "$UPGRADE_FAIL/libexec/qrc" | awk '{print $1}')" == "$qrc_before" ]]
 [[ "$(
   sha256sum "$UPGRADE_FAIL/libexec/nexttrace-tiny" | awk '{print $1}'

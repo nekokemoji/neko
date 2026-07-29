@@ -3,8 +3,8 @@
 > 不只把代理协议装上，也帮你看懂这台 VPS 到底怎么样。
 
 Neko 是一套面向独立公网 VPS 的终端部署与维护工具。它一次安装
-Hysteria2、TUIC v5、Shadowsocks 2022、AnyTLS、VLESS REALITY Vision
-和 VLESS REALITY XHTTP，并为 Mihomo、Stash、Shadowrocket、sing-box
+Hysteria2、TUIC v5、Shadowsocks 2022、AnyTLS、Trojan TLS、
+VLESS REALITY Vision 和 VLESS REALITY XHTTP，并为 Mihomo、Stash、Shadowrocket、sing-box
 生成订阅。
 
 项目没有网页面板。安装完成后，输入 `neko` 就能打开中文终端菜单。
@@ -215,7 +215,7 @@ HTTP-01 非交互安装可改用 `--acme-method http-01`。`--yes` 只跳过最�
 
 | 类型 | 端口 |
 |---|---|
-| TCP | 443、SS2022、AnyTLS、Vision、XHTTP |
+| TCP | 443、SS2022、AnyTLS、Trojan TLS、Vision、XHTTP |
 | UDP | Hysteria2 的完整 128 端口区间、TUIC、SS2022 |
 | TCP 80 | 仅 HTTP-01 必须公网放行 |
 | TCP 8443 | **不要公网放行**，它只应监听 `127.0.0.1` |
@@ -235,10 +235,10 @@ sudo neko
 
 | 客户端 | 格式 | 节点数 |
 |---|---|---:|
-| Mihomo | YAML | 6 |
-| Stash | YAML | 5 |
-| Shadowrocket | Base64 文本订阅 | 6 |
-| sing-box | 官方 Remote Profile JSON | 5 |
+| Mihomo | YAML | 7 |
+| Stash | YAML | 6 |
+| Shadowrocket | Base64 文本订阅 | 7 |
+| sing-box | 官方 Remote Profile JSON | 6 |
 
 只装一个地址族时共 4 条，双栈时共 8 条。sing-box 订阅少一个 XHTTP 节点，是因为
 当前冻结版本的 sing-box 官方 V2Ray Transport 不支持 XHTTP，并不是生成遗漏。
@@ -379,7 +379,7 @@ journalctl -u neko-renew.service --since '7 days ago'
 
 Neko 把三类工作放在同一套有状态、可回滚的流程里：
 
-1. 部署六种互补协议，并输出四类客户端订阅；
+1. 部署七种互补协议，并输出四类客户端订阅；
 2. 用端到端规则实现真正可验证的 IPv4 / IPv6 分离；
 3. 在不引入常驻探针的前提下，提供硬件、服务、IP、BGP 和地区线路诊断。
 
@@ -387,12 +387,12 @@ Neko 把三类工作放在同一套有状态、可回滚的流程里：
 选择较保守的范围：运行链路固定版本、关键改变真实核心校验、失败回滚；诊断默认只读、
 外部证据降级；不会为了结果“看起来能用”而关闭证书验证或允许跨地址族回退。
 
-当前 Neko 版本为 **1.6.1**。`versions.env` 冻结：
+当前 Neko 版本为 **1.7.0**。`versions.env` 冻结：
 
 | 组件 | 版本 | 用途 |
 |---|---:|---|
 | Xray | 26.3.27 | VLESS REALITY Vision / XHTTP |
-| sing-box | 1.13.14 | TUIC、SS2022、AnyTLS 与配置验证 |
+| sing-box | 1.13.14 | TUIC、SS2022、AnyTLS、Trojan 与配置验证 |
 | Hysteria | 2.10.0 | Hysteria2 |
 | Caddy | 2.11.4 | 订阅与本地 REALITY 目标 |
 | lego | 5.2.2 | ACME |
@@ -409,10 +409,10 @@ NextTrace 属于可选组件；下载、校验或运行失败不会让安装、�
 
 | 客户端 | IPv4 路径 | IPv6 路径 | 内容 |
 |---|---|---|---|
-| Mihomo | `https://<基础域名>/<IPv4令牌>/v4/mihomo.yaml` | `https://<基础域名>/<IPv6令牌>/v6/mihomo.yaml` | 6 个节点 |
-| Stash | `https://<基础域名>/<IPv4令牌>/v4/stash.yaml` | `https://<基础域名>/<IPv6令牌>/v6/stash.yaml` | 5 个节点 |
-| Shadowrocket | `https://<基础域名>/<IPv4令牌>/v4/shadowrocket.txt` | `https://<基础域名>/<IPv6令牌>/v6/shadowrocket.txt` | 6 个节点 |
-| sing-box | `https://<基础域名>/<IPv4令牌>/v4/sing-box.json` | `https://<基础域名>/<IPv6令牌>/v6/sing-box.json` | 5 个节点 |
+| Mihomo | `https://<基础域名>/<IPv4令牌>/v4/mihomo.yaml` | `https://<基础域名>/<IPv6令牌>/v6/mihomo.yaml` | 7 个节点 |
+| Stash | `https://<基础域名>/<IPv4令牌>/v4/stash.yaml` | `https://<基础域名>/<IPv6令牌>/v6/stash.yaml` | 6 个节点 |
+| Shadowrocket | `https://<基础域名>/<IPv4令牌>/v4/shadowrocket.txt` | `https://<基础域名>/<IPv6令牌>/v6/shadowrocket.txt` | 7 个节点 |
+| sing-box | `https://<基础域名>/<IPv4令牌>/v4/sing-box.json` | `https://<基础域名>/<IPv6令牌>/v6/sing-box.json` | 6 个节点 |
 
 基础域名是订阅文件的通用控制面入口；双栈时可通过任一可用地址族下载。Caddy 仍保留
 `v4.` / `v6.` 主机上的旧路径，因此升级不会让已添加的旧订阅失效。令牌和路径中的
@@ -425,16 +425,19 @@ NextTrace 属于可选组件；下载、校验或运行失败不会让安装、�
 | Hysteria2 | Hysteria | UDP + 128 端口跳跃区间 | 全部 |
 | TUIC v5 | sing-box | UDP | 全部 |
 | Shadowsocks 2022 | sing-box | TCP + UDP | 全部 |
-| AnyTLS | sing-box | TCP + TLS | Mihomo、Shadowrocket、sing-box |
+| AnyTLS | sing-box | TCP + TLS | 全部 |
+| Trojan TLS | sing-box | TCP + TLS | 全部 |
 | VLESS REALITY Vision | Xray | TCP/RAW | 全部 |
 | VLESS REALITY XHTTP | Xray | TCP/XHTTP | Mihomo、Shadowrocket |
 
-Stash 和 sing-box 当前各 5 个节点是明确的兼容性取舍，不通过伪造字段强塞不支持的
-协议。TUIC 即使在订阅中使用 IP 字面量作为服务器，也显式保留基础域名 SNI，不开启
-`skip-cert-verify`。
+Stash 和 sing-box 当前各 6 个节点，是因为它们没有包含 XHTTP；这属于明确的兼容性
+取舍，不通过伪造字段强塞不支持的协议。TUIC 和 Trojan 即使在订阅中使用 IP 字面量
+作为服务器，也显式保留基础域名 SNI，不开启 `skip-cert-verify`。
+Trojan 使用独立随机 TCP 端口，并复用现有 SAN 域名证书；不会新增域名、Token 或
+证书维护任务，也不会与订阅网站共用 TCP 443。
 
 sing-box 文件是可直接添加为 Remote Profile 的完整官方 JSON 配置，不是节点列表或
-转换接口。它包含 TUN、DNS、路由、选择器和五个出站，并由冻结的 sing-box
+转换接口。它包含 TUN、DNS、路由、选择器和六个代理出站，并由冻结的 sing-box
 真实执行 `check`。
 
 ### 严格 IPv4 / IPv6 是怎样实现的
@@ -552,6 +555,8 @@ SMTP 的用户应自行审计并修改渲染器，而不是直接删除所有安
 - 未知自定义 nftables / iptables：不擅自改写；
 - 云厂商安全组：只给出端口清单，不假装已经修改。
 
+升级到 1.7.0 时，脚本会为旧安装生成独立 Trojan 端口和密码，并事务更新 Neko
+自己的 firewalld/UFW 配置；后续校验或服务启动失败时，旧防火墙配置也一起恢复。
 卸载只清理 Neko 创建的规则。补装失败也不会删除用户原先存在的放行规则。
 
 ### 有状态维护与回滚
@@ -679,6 +684,7 @@ tests/                   本地与 CI 测试
   [TUIC](https://sing-box.sagernet.org/configuration/outbound/tuic/)、
   [Shadowsocks](https://sing-box.sagernet.org/configuration/outbound/shadowsocks/)、
   [AnyTLS](https://sing-box.sagernet.org/configuration/outbound/anytls/)、
+  [Trojan](https://sing-box.sagernet.org/configuration/outbound/trojan/)、
   [VLESS](https://sing-box.sagernet.org/configuration/outbound/vless/)
 - [Hysteria2 服务端完整配置](https://v2.hysteria.network/docs/advanced/Full-Server-Config/)
   与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
@@ -686,6 +692,7 @@ tests/                   本地与 CI 测试
   [XHTTP](https://xtls.github.io/en/config/transports/xhttp.html) 与
   [targetStrategy/sendThrough](https://xtls.github.io/en/config/outbound.html)
 - [Mihomo TUIC](https://wiki.metacubex.one/en/config/proxies/tuic/)、
+  [Mihomo Trojan](https://wiki.metacubex.one/en/config/proxies/trojan/)、
   [Stash 代理协议](https://stash.wiki/en/proxy-protocols/proxy-types)
 - [Caddy 自定义 TLS 证书](https://caddyserver.com/docs/caddyfile/directives/tls)
 - [qrc](https://github.com/fumiyas/qrc)、[NextTrace](https://github.com/nxtrace/NTrace-core)

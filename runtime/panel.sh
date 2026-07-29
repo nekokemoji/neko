@@ -322,7 +322,7 @@ rotate_node_credentials() {
   local has_ipv4=false has_ipv6=false
   local new_hy2_password new_hy2_obfs_password
   local new_tuic_uuid new_tuic_password new_ss_password
-  local new_anytls_password new_vision_uuid new_xhttp_uuid
+  local new_anytls_password new_trojan_password new_vision_uuid new_xhttp_uuid
   local new_ipv4_token="" new_ipv6_token=""
 
   case "$rotate_urls" in
@@ -337,7 +337,7 @@ rotate_node_credentials() {
     read -r -p "输入 REVOKE 确认紧急全部换新：" confirmation
     [[ "$confirmation" == REVOKE ]] || return 0
   else
-    warn "此操作会重置六种协议的全部节点凭据，并短暂重启代理服务。"
+    warn "此操作会重置七种协议的全部节点凭据，并短暂重启代理服务。"
     printf '当前订阅 URL 保持不变；完成后必须在所有客户端刷新订阅。\n'
     read -r -p "输入 ROTATE 确认重置全部节点凭据：" confirmation
     [[ "$confirmation" == ROTATE ]] || return 0
@@ -355,6 +355,7 @@ rotate_node_credentials() {
   new_tuic_password="$(random_urlsafe 24)"
   new_ss_password="$(random_base64 16)"
   new_anytls_password="$(random_urlsafe 24)"
+  new_trojan_password="$(random_urlsafe 24)"
   new_vision_uuid="$(new_uuid)"
   new_xhttp_uuid="$(new_uuid)"
   if [[ "$rotate_urls" == true ]]; then
@@ -367,6 +368,7 @@ rotate_node_credentials() {
     || "$new_tuic_password" == "$TUIC_PASSWORD" \
     || "$new_ss_password" == "$SS_PASSWORD" \
     || "$new_anytls_password" == "$ANYTLS_PASSWORD" \
+    || "$new_trojan_password" == "$TROJAN_PASSWORD" \
     || "$new_vision_uuid" == "$VISION_UUID" \
     || "$new_xhttp_uuid" == "$XHTTP_UUID" \
     || ( "$rotate_urls" == true \
@@ -404,6 +406,7 @@ rotate_node_credentials() {
        | .credentials.tuic_password = $tuic_password
        | .credentials.ss2022_password = $ss_password
        | .credentials.anytls_password = $anytls_password
+       | .credentials.trojan_password = $trojan_password
        | .credentials.vision_uuid = $vision_uuid
        | .credentials.xhttp_uuid = $xhttp_uuid
        | if ($rotate_urls and $has_ipv4) then
@@ -418,6 +421,7 @@ rotate_node_credentials() {
       --arg tuic_password "$new_tuic_password" \
       --arg ss_password "$new_ss_password" \
       --arg anytls_password "$new_anytls_password" \
+      --arg trojan_password "$new_trojan_password" \
       --arg vision_uuid "$new_vision_uuid" \
       --arg xhttp_uuid "$new_xhttp_uuid" \
       --argjson rotate_urls "$rotate_urls" \
@@ -444,7 +448,7 @@ rotate_node_credentials() {
       ok "旧订阅 URL 与旧节点凭据已全部失效。"
       warn "请删除客户端中的旧订阅，并使用下方新链接或二维码重新添加。"
     else
-      ok "六种协议的全部节点凭据已换新；订阅 URL 保持不变。"
+      ok "七种协议的全部节点凭据已换新；订阅 URL 保持不变。"
       warn "请立即在所有客户端刷新订阅；手工导入的旧节点需要重新导入。"
     fi
     show_subscription_links

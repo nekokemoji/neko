@@ -15,6 +15,7 @@
     "tuic": 22000,
     "ss2022": 23000,
     "anytls": 24000,
+    "trojan": 24500,
     "vless_reality_vision": 25000,
     "vless_reality_xhttp": 26000
   },
@@ -25,6 +26,7 @@
     "tuic_password": "test-tuic-password",
     "ss2022_password": "MDEyMzQ1Njc4OWFiY2RlZg==",
     "anytls_password": "test-anytls-password",
+    "trojan_password": "test-trojan-password",
     "vision_uuid": "22222222-2222-4222-8222-222222222222",
     "xhttp_uuid": "33333333-3333-4333-8333-333333333333"
   },

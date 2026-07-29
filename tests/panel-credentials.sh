@@ -13,6 +13,7 @@ credential_keys=(
   tuic_password
   ss2022_password
   anytls_password
+  trojan_password
   vision_uuid
   xhttp_uuid
 )
@@ -99,8 +100,9 @@ run_case() {
           2) printf "new-hy2-obfs-value-02" ;;
           3) printf "new-tuic-password-value-03" ;;
           4) printf "new-anytls-password-value-04" ;;
-          5) printf "new-ipv4-subscription-token-05" ;;
-          6) printf "new-ipv6-subscription-token-06" ;;
+          5) printf "new-trojan-password-value-05" ;;
+          6) printf "new-ipv4-subscription-token-06" ;;
+          7) printf "new-ipv6-subscription-token-07" ;;
           *) return 70 ;;
         esac
       }
@@ -243,6 +245,7 @@ jq -e '
     tuic_password: "new-tuic-password-value-03",
     ss2022_password: "YWJjZGVmZ2hpamtsbW5vcA==",
     anytls_password: "new-anytls-password-value-04",
+    trojan_password: "new-trojan-password-value-05",
     vision_uuid: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     xhttp_uuid: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
   }
@@ -253,7 +256,7 @@ jq -cS 'del(.credentials)' "$WORK/credentials-only/etc/state.json" \
   > "$WORK/credentials-only/after.public"
 cmp -s \
   "$WORK/credentials-only/before.public" "$WORK/credentials-only/after.public"
-[[ "$(<"$WORK/credentials-only/urlsafe.count")" == 4 ]]
+[[ "$(<"$WORK/credentials-only/urlsafe.count")" == 5 ]]
 [[ "$(<"$WORK/credentials-only/uuid.count")" == 3 ]]
 [[ "$(call_count credentials-only base64)" == 1 ]]
 [[ "$(call_count credentials-only render)" == 1 ]]
@@ -282,7 +285,7 @@ new_ipv6_token="$(jq -r '.subscription.ipv6_token' \
 [[ "$new_ipv4_token" != "$old_ipv4_token" ]]
 [[ "$new_ipv6_token" != "$old_ipv6_token" ]]
 [[ "$new_ipv4_token" != "$new_ipv6_token" ]]
-[[ "$(<"$WORK/emergency-dual/urlsafe.count")" == 6 ]]
+[[ "$(<"$WORK/emergency-dual/urlsafe.count")" == 7 ]]
 jq -cS '
   del(
     .credentials,
@@ -334,7 +337,7 @@ for mode in ipv4-only ipv6-only; do
         "$WORK/$name/etc/state.json")" == "" ]]
       ;;
   esac
-  [[ "$(<"$WORK/$name/urlsafe.count")" == 5 ]]
+  [[ "$(<"$WORK/$name/urlsafe.count")" == 6 ]]
   assert_old_credentials_absent_from_runtime "$name"
   assert_new_credentials_rendered "$name"
   assert_no_access_backup "$name"

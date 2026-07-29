@@ -869,6 +869,7 @@ load_state() {
   TUIC_PORT="$(state_value '.ports.tuic')"
   SS_PORT="$(state_value '.ports.ss2022')"
   ANYTLS_PORT="$(state_value '.ports.anytls')"
+  TROJAN_PORT="$(state_value '.ports.trojan')"
   VISION_PORT="$(state_value '.ports.vless_reality_vision')"
   XHTTP_PORT="$(state_value '.ports.vless_reality_xhttp')"
   HY2_PASSWORD="$(state_value '.credentials.hysteria2_password')"
@@ -877,6 +878,7 @@ load_state() {
   TUIC_PASSWORD="$(state_value '.credentials.tuic_password')"
   SS_PASSWORD="$(state_value '.credentials.ss2022_password')"
   ANYTLS_PASSWORD="$(state_value '.credentials.anytls_password')"
+  TROJAN_PASSWORD="$(state_value '.credentials.trojan_password')"
   VISION_UUID="$(state_value '.credentials.vision_uuid')"
   XHTTP_UUID="$(state_value '.credentials.xhttp_uuid')"
   VISION_PRIVATE_KEY="$(state_value '.reality.vision_private_key')"
@@ -1111,11 +1113,11 @@ show_required_ports() {
   local family_label
   family_label="$(network_mode_label)"
   if [[ "$ACME_METHOD" == "$ACME_METHOD_HTTP" ]]; then
-    printf '%s 云防火墙 TCP：80, 443, %s, %s, %s, %s\n' "$family_label" \
-      "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
+    printf '%s 云防火墙 TCP：80, 443, %s, %s, %s, %s, %s\n' "$family_label" \
+      "$SS_PORT" "$ANYTLS_PORT" "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"
   else
-    printf '%s 云防火墙 TCP：443, %s, %s, %s, %s\n' "$family_label" \
-      "$SS_PORT" "$ANYTLS_PORT" "$VISION_PORT" "$XHTTP_PORT"
+    printf '%s 云防火墙 TCP：443, %s, %s, %s, %s, %s\n' "$family_label" \
+      "$SS_PORT" "$ANYTLS_PORT" "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"
     printf 'TCP 80：DNS-01 模式无需公网放行（Caddy 仍会在本机监听 HTTP 跳转）。\n'
   fi
   printf '%s 云防火墙 UDP：%s-%s, %s, %s\n' \
