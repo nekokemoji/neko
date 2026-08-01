@@ -184,6 +184,38 @@ case "$*" in
 esac
 EOF
 
+cat > "$WORK/bin/ping" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ -n "${NEKO_DIAG_PING_ARGS_LOG:-}" ]]; then
+  printf '%s\n' "$*" >> "$NEKO_DIAG_PING_ARGS_LOG"
+fi
+[[ "${NEKO_DIAG_PING_FAIL:-0}" != 1 ]] || exit 2
+if [[ "${NEKO_DIAG_PING_MALFORMED:-0}" == 1 ]]; then
+  printf '100 packets transmitted, 101 received, invalid packet loss\n'
+  exit 0
+fi
+target="${*: -1}"
+transmitted=100
+received=100
+if [[ "${NEKO_DIAG_PING_INCOMPLETE:-0}" == 1 ]]; then
+  transmitted=80
+  received=75
+elif [[ "${NEKO_DIAG_PING_NO_REPLY:-0}" == 1 ]]; then
+  received=0
+else
+  case "$target" in
+    *-cu-*) received=98 ;;
+    *-cm-*) received=93 ;;
+  esac
+fi
+loss=$((transmitted - received))
+printf 'PING %s (%s) 56(84) bytes of data.\n' "$target" "$target"
+printf '%d packets transmitted, %d received, %d%% packet loss, time 20000ms\n' \
+  "$transmitted" "$received" "$loss"
+(( received > 0 )) || exit 1
+EOF
+
 cat > "$WORK/libexec/nexttrace-tiny" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -205,7 +237,9 @@ printf '%s\n' \
   '{"Hops":[[{"Success":true,"Address":{"IP":"198.51.100.1"},"TTL":1,"RTT":20000000,"Geo":{"ip":"198.51.100.1","asnumber":"2497","owner":"Internet Initiative Japan Inc."}}],[{"Success":true,"Address":{"IP":"203.0.113.9"},"TTL":2,"RTT":30000000,"Geo":{"ip":"203.0.113.9","asnumber":"'"$asn"'"}}]]}'
 EOF
 
-chmod 0755 "$WORK/bin/systemctl" "$WORK/bin/ip" "$WORK/bin/dig" "$WORK/bin/curl"
+chmod 0755 \
+  "$WORK/bin/systemctl" "$WORK/bin/ip" "$WORK/bin/dig" "$WORK/bin/curl" \
+  "$WORK/bin/ping"
 chmod 0755 "$WORK/libexec/nexttrace-tiny"
 
 common_env=(
@@ -220,6 +254,7 @@ common_env=(
   "NEKO_DIAG_TMP_DIR=$WORK/bench"
   "NEKO_DIAG_CURL_ARGS_LOG=$WORK/curl-args.log"
   "NEKO_DIAG_ROUTE_ARGS_LOG=$WORK/route-args.log"
+  "NEKO_DIAG_PING_ARGS_LOG=$WORK/ping-args.log"
 )
 
 system_output="$(
@@ -326,17 +361,30 @@ grep -Fq '测试方向：回程（这台 VPS → 国内三网参考目标）' \
   <<< "$route_output"
 grep -Fq '去程状态：未测试' <<< "$route_output"
 grep -Fq '【广东 · IPv4 回程】' <<< "$route_output"
+grep -Fq '每条线路固定发送 100 个 ICMP 包' <<< "$route_output"
 grep -Fq 'CN2（AS4809）' <<< "$route_output"
 grep -Fq '联通 9929/CUII（AS9929）' <<< "$route_output"
 grep -Fq '中国移动国际 CMI（AS58453）' <<< "$route_output"
 grep -Fq '主要国际网络：IIJ（AS2497）；运营商网络：CN2（AS4809）' \
   <<< "$route_output"
 grep -Fq '网络识别：IIJ（AS2497） → CN2（AS4809）' <<< "$route_output"
-grep -Fq 'IPv4 电信：30.00 ms，主要国际网络：IIJ（AS2497）；运营商网络：CN2（AS4809）' \
+grep -Fq '电信｜末跳 30.00 ms｜丢包 0%（100/100）' \
   <<< "$route_output"
-grep -Fq 'IPv6 移动：30.00 ms，主要国际网络：IIJ（AS2497）；运营商网络：中国移动国际 CMI（AS58453）' \
+grep -Fq '联通｜末跳 30.00 ms｜丢包 2%（98/100）' \
+  <<< "$route_output"
+grep -Fq '移动｜末跳 30.00 ms｜丢包 7%（93/100）' \
+  <<< "$route_output"
+grep -Fq 'IPv4 电信｜延迟 30.00 ms｜丢包 0%（100/100）' \
+  <<< "$route_output"
+grep -Fq 'IPv6 移动｜延迟 30.00 ms｜丢包 7%（93/100）' \
+  <<< "$route_output"
+grep -Fq '线路：主要国际网络：IIJ（AS2497）；运营商网络：中国移动国际 CMI（AS58453）' \
   <<< "$route_output"
 grep -Fq '已完成 6 条，未完成 0 条' <<< "$route_output"
+grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+  <<< "$route_output"
+grep -Fq '100% ICMP 无响应不能单独证明代理线路实际丢包' \
+  <<< "$route_output"
 grep -Fq '不代表优化线路或质量保证' <<< "$route_output"
 if grep -Fq '【上海 ·' <<< "$route_output"; then
   printf '默认 --routes 不应自动测试全部地区。\n' >&2
@@ -346,8 +394,14 @@ grep -Fq -- '--ipv4 --tcp --port 80 --source 192.0.2.44' \
   "$WORK/route-args.log"
 grep -Fq -- '--ipv6 --tcp --port 80 --source 2001:db8::44' \
   "$WORK/route-args.log"
+grep -Fq -- '-4 -n -q -I 192.0.2.44 -c 100 -i 0.2 -W 1 -w 30' \
+  "$WORK/ping-args.log"
+grep -Fq -- '-6 -n -q -I 2001:db8::44 -c 100 -i 0.2 -W 1 -w 30' \
+  "$WORK/ping-args.log"
+[[ "$(wc -l < "$WORK/ping-args.log")" -eq 6 ]]
 
 : > "$WORK/route-args.log"
+: > "$WORK/ping-args.log"
 all_regions_output="$(
   env "${common_env[@]}" bash "$ROOT/runtime/diagnostics.sh" --routes 5
 )"
@@ -382,7 +436,10 @@ for target in \
   grep -Fq "$target" "$WORK/route-args.log"
 done
 [[ "$(wc -l < "$WORK/route-args.log")" -eq 36 ]]
+[[ "$(wc -l < "$WORK/ping-args.log")" -eq 36 ]]
 grep -Fq '已完成 36 条，未完成 0 条' <<< "$all_regions_output"
+grep -Fq '丢包样本：已完成 36 组，未完成 0 组（每组固定 100 包）' \
+  <<< "$all_regions_output"
 
 region_number_output="$(
   env "${common_env[@]}" bash -c '
@@ -488,16 +545,70 @@ route_failed_output="$(
   env "${common_env[@]}" NEKO_DIAG_ROUTE_FAIL=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '未完成（超时、无响应或线路元数据不可用）' \
+grep -Fq '路径未完成｜丢包' \
+  <<< "$route_failed_output"
+grep -Fq '原因：超时、无响应或线路元数据不可用' \
   <<< "$route_failed_output"
 grep -Fq '线路测试小结' <<< "$route_failed_output"
 grep -Fq '已完成 0 条，未完成 6 条' <<< "$route_failed_output"
+grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+  <<< "$route_failed_output"
+
+ping_no_reply_output="$(
+  env "${common_env[@]}" NEKO_DIAG_PING_NO_REPLY=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '丢包 100%（0/100；目标可能禁 ICMP）' \
+  <<< "$ping_no_reply_output"
+grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+  <<< "$ping_no_reply_output"
+grep -Fq '100% ICMP 无响应不能单独证明代理线路实际丢包' \
+  <<< "$ping_no_reply_output"
+
+ping_failed_output="$(
+  env "${common_env[@]}" NEKO_DIAG_PING_FAIL=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '丢包 未测' <<< "$ping_failed_output"
+grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_failed_output"
+grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+  <<< "$ping_failed_output"
+
+ping_malformed_output="$(
+  env "${common_env[@]}" NEKO_DIAG_PING_MALFORMED=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '丢包 未测' <<< "$ping_malformed_output"
+grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_malformed_output"
+grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+  <<< "$ping_malformed_output"
+
+ping_incomplete_output="$(
+  env "${common_env[@]}" NEKO_DIAG_PING_INCOMPLETE=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '丢包 未完成（仅发出 80/100）' <<< "$ping_incomplete_output"
+grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+  <<< "$ping_incomplete_output"
+
+ping_missing_output="$(
+  env "${common_env[@]}" NEKO_DIAG_PING="$WORK/missing-ping" \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '系统缺少 ping；继续尝试路径检测，丢包率显示为未测' \
+  <<< "$ping_missing_output"
+grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_missing_output"
+grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+  <<< "$ping_missing_output"
 
 route_missing_output="$(
   env "${common_env[@]}" NEKO_DIAG_NEXTTRACE="$WORK/missing-nexttrace" \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
 grep -Fq '可选 NextTrace 组件不可用' <<< "$route_missing_output"
+grep -Fq '已完成 0 条，未完成 6 条' <<< "$route_missing_output"
+grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+  <<< "$route_missing_output"
 
 if find "$WORK/bench" -mindepth 1 -maxdepth 1 \
   \( -name '.neko-ip-quality.*' -o -name '.neko-route.*' \) \
@@ -529,4 +640,4 @@ fi
 grep -Fq '7. VPS 硬件、IP 与网络体检' "$ROOT/runtime/panel.sh"
 grep -Fq 'open_diagnostics' "$ROOT/runtime/panel.sh"
 
-printf 'VPS 体检：硬件、IP 质量、BGP、双栈三网线路、降级与轻量测试通过。\n'
+printf 'VPS 体检：硬件、IP 质量、BGP、双栈三网线路、100 包丢包降级与轻量测试通过。\n'
