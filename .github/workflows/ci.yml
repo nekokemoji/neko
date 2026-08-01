@@ -17,7 +17,7 @@ concurrency:
 jobs:
   core-validation:
     name: Core and subscription validation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Check out source
@@ -34,7 +34,7 @@ jobs:
 
   distro-userland:
     name: ${{ matrix.distro.name }} (amd64 + arm64)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
