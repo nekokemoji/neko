@@ -182,7 +182,7 @@ jobs:
             -drive "file=$work/seed.img,if=virtio,format=raw,readonly=on" \
             -device virtio-net-pci,netdev=net0 \
             -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
-            -nographic -monitor none -serial "file:$work/serial.log" \
+            -display none -monitor none -serial "file:$work/serial.log" \
             -daemonize -pidfile "$work/qemu.pid"
           cleanup() {
             if [[ -s "$work/qemu.pid" ]]; then
