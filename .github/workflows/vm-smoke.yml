@@ -1,0 +1,235 @@
+name: full-system-vm-smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "agent/vm-validation/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  systemd-vm:
+    name: ${{ matrix.name }} systemd VM (amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - name: Debian 12
+            id: debian
+            version: "12"
+            family: debian
+            user: debian
+            image: debian-12-generic-amd64.qcow2
+            image_url: https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-generic-amd64.qcow2
+            checksum_url: https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS
+            checksum: sha512
+          - name: Debian 13
+            id: debian
+            version: "13"
+            family: debian
+            user: debian
+            image: debian-13-generic-amd64.qcow2
+            image_url: https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2
+            checksum_url: https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS
+            checksum: sha512
+          - name: Ubuntu 24.04
+            id: ubuntu
+            version: "24.04"
+            family: debian
+            user: ubuntu
+            image: noble-server-cloudimg-amd64.img
+            image_url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+            checksum_url: https://cloud-images.ubuntu.com/noble/current/SHA256SUMS
+            checksum: sha256
+          - name: Ubuntu 26.04
+            id: ubuntu
+            version: "26.04"
+            family: debian
+            user: ubuntu
+            image: resolute-server-cloudimg-amd64.img
+            image_url: https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img
+            checksum_url: https://cloud-images.ubuntu.com/resolute/current/SHA256SUMS
+            checksum: sha256
+          - name: Rocky Linux 9
+            id: rocky
+            version: "9"
+            family: rhel
+            user: rocky
+            image: Rocky-9-GenericCloud-Base.latest.x86_64.qcow2
+            image_url: https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2
+            checksum_url: https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base.latest.x86_64.qcow2.CHECKSUM
+            checksum: sha256
+          - name: Rocky Linux 10
+            id: rocky
+            version: "10"
+            family: rhel
+            user: rocky
+            image: Rocky-10-GenericCloud-Base.latest.x86_64.qcow2
+            image_url: https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2
+            checksum_url: https://download.rockylinux.org/pub/rocky/10/images/x86_64/Rocky-10-GenericCloud-Base.latest.x86_64.qcow2.CHECKSUM
+            checksum: sha256
+          - name: AlmaLinux 9
+            id: almalinux
+            version: "9"
+            family: rhel
+            user: almalinux
+            image: AlmaLinux-9-GenericCloud-latest.x86_64.qcow2
+            image_url: https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2
+            checksum_url: https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/CHECKSUM
+            checksum: sha256
+          - name: AlmaLinux 10
+            id: almalinux
+            version: "10"
+            family: rhel
+            user: almalinux
+            image: AlmaLinux-10-GenericCloud-latest.x86_64.qcow2
+            image_url: https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/AlmaLinux-10-GenericCloud-latest.x86_64.qcow2
+            checksum_url: https://repo.almalinux.org/almalinux/10/cloud/x86_64/images/CHECKSUM
+            checksum: sha256
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Install QEMU and cloud-init seed tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cloud-image-utils openssh-client qemu-system-x86 qemu-utils
+
+      - name: Download and verify official cloud image
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          IMAGE_URL: ${{ matrix.image_url }}
+          CHECKSUM_URL: ${{ matrix.checksum_url }}
+          CHECKSUM_ALGORITHM: ${{ matrix.checksum }}
+        run: |
+          set -Eeuo pipefail
+          curl --fail --location --silent --show-error \
+            --retry 4 --connect-timeout 20 \
+            "$IMAGE_URL" --output "$RUNNER_TEMP/$IMAGE_NAME"
+          curl --fail --location --silent --show-error \
+            --retry 4 --connect-timeout 20 \
+            "$CHECKSUM_URL" --output "$RUNNER_TEMP/image-checksums"
+          expected="$(python3 - "$RUNNER_TEMP/image-checksums" \
+            "$IMAGE_NAME" "$CHECKSUM_ALGORITHM" <<'PY'
+          import re
+          import sys
+
+          manifest, filename, algorithm = sys.argv[1:]
+          width = {"sha256": 64, "sha512": 128}[algorithm]
+          pattern = re.compile(rf"(?<![0-9a-fA-F])[0-9a-fA-F]{{{width}}}(?![0-9a-fA-F])")
+          with open(manifest, encoding="utf-8", errors="replace") as handle:
+              for line in handle:
+                  if filename in line:
+                      match = pattern.search(line)
+                      if match:
+                          print(match.group(0).lower())
+                          break
+              else:
+                  raise SystemExit(f"checksum not found for {filename}")
+          PY
+          )"
+          actual="$("${CHECKSUM_ALGORITHM}sum" "$RUNNER_TEMP/$IMAGE_NAME" \
+            | awk '{print $1}')"
+          [[ "$actual" == "$expected" ]]
+
+      - name: Boot systemd VM and run smoke test
+        env:
+          VM_USER: ${{ matrix.user }}
+          IMAGE_NAME: ${{ matrix.image }}
+          EXPECTED_ID: ${{ matrix.id }}
+          EXPECTED_VERSION: ${{ matrix.version }}
+          EXPECTED_FAMILY: ${{ matrix.family }}
+        run: |
+          set -Eeuo pipefail
+          work="$RUNNER_TEMP/neko-vm"
+          mkdir -p "$work"
+          ssh-keygen -q -t ed25519 -N '' -f "$work/id_ed25519"
+          public_key="$(<"$work/id_ed25519.pub")"
+          cat > "$work/user-data" <<EOF
+          #cloud-config
+          ssh_pwauth: false
+          disable_root: true
+          ssh_authorized_keys:
+            - ${public_key}
+          EOF
+          cat > "$work/meta-data" <<EOF
+          instance-id: neko-${EXPECTED_ID}-${EXPECTED_VERSION}
+          local-hostname: neko-vm
+          EOF
+          cloud-localds "$work/seed.img" "$work/user-data" "$work/meta-data"
+          cp --reflink=auto "$RUNNER_TEMP/$IMAGE_NAME" "$work/disk.qcow2"
+
+          accel=tcg
+          cpu=max
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 0666 /dev/kvm
+            accel=kvm
+            cpu=host
+          fi
+          qemu-system-x86_64 \
+            -machine "q35,accel=${accel}" -cpu "$cpu" -smp 2 -m 2048 \
+            -drive "file=$work/disk.qcow2,if=virtio,format=qcow2" \
+            -drive "file=$work/seed.img,if=virtio,format=raw,readonly=on" \
+            -device virtio-net-pci,netdev=net0 \
+            -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22 \
+            -nographic -monitor none -serial "file:$work/serial.log" \
+            -daemonize -pidfile "$work/qemu.pid"
+          cleanup() {
+            if [[ -s "$work/qemu.pid" ]]; then
+              kill "$(<"$work/qemu.pid")" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          ssh_options=(
+            -i "$work/id_ed25519"
+            -p 2222
+            -o BatchMode=yes
+            -o ConnectTimeout=5
+            -o StrictHostKeyChecking=no
+            -o UserKnownHostsFile=/dev/null
+          )
+          scp_options=(
+            -i "$work/id_ed25519"
+            -P 2222
+            -o BatchMode=yes
+            -o ConnectTimeout=5
+            -o StrictHostKeyChecking=no
+            -o UserKnownHostsFile=/dev/null
+          )
+          ready=0
+          for ((attempt = 0; attempt < 120; attempt++)); do
+            if ssh "${ssh_options[@]}" "${VM_USER}@127.0.0.1" true \
+                >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if (( ready == 0 )); then
+            tail -n 200 "$work/serial.log" || true
+            exit 1
+          fi
+
+          tar --exclude=.git --exclude=tests/.tools -czf "$work/source.tar.gz" .
+          scp "${scp_options[@]}" "$work/source.tar.gz" \
+            "${VM_USER}@127.0.0.1:/tmp/neko-source.tar.gz"
+          ssh "${ssh_options[@]}" "${VM_USER}@127.0.0.1" \
+            'timeout 180s cloud-init status --wait'
+          ssh "${ssh_options[@]}" "${VM_USER}@127.0.0.1" \
+            'mkdir -p /tmp/neko-source && tar -xzf /tmp/neko-source.tar.gz -C /tmp/neko-source'
+          if ! ssh "${ssh_options[@]}" "${VM_USER}@127.0.0.1" \
+              "sudo bash /tmp/neko-source/tests/vm-smoke.sh '$EXPECTED_ID' '$EXPECTED_VERSION' '$EXPECTED_FAMILY' amd64"; then
+            tail -n 200 "$work/serial.log" || true
+            exit 1
+          fi
