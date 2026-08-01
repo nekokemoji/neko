@@ -82,11 +82,11 @@ timeout_output="$(
 if ! id neko-proxy >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin neko-proxy
 fi
-install -d -m 0755 /usr/local/libexec/neko/runtime
+install -d -m 0755 /usr/local/libexec/neko
 install -m 0755 \
   "$ROOT/runtime/renew.sh" \
   "$ROOT/runtime/hysteria-dual.sh" \
-  /usr/local/libexec/neko/runtime/
+  /usr/local/libexec/neko/
 for binary in caddy sing-box xray hysteria; do
   install -m 0755 /usr/bin/true "/usr/local/libexec/neko/${binary}"
 done
