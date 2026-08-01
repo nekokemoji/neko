@@ -34,7 +34,7 @@ NEKO_DIAG_ROUTE_REGION="${NEKO_DIAG_ROUTE_REGION:-gd}"
 NEKO_DIAG_PING="${NEKO_DIAG_PING:-ping}"
 NEKO_DIAG_PACKET_LOSS_COUNT=100
 NEKO_DIAG_PACKET_LOSS_INTERVAL=0.2
-NEKO_DIAG_PACKET_LOSS_DEADLINE=30
+NEKO_DIAG_PACKET_LOSS_TIMEOUT=33
 NEKO_DIAG_ROUTE_V4_CT="${NEKO_DIAG_ROUTE_V4_CT:-gd-ct-v4.ip.zstaticcdn.com}"
 NEKO_DIAG_ROUTE_V4_CU="${NEKO_DIAG_ROUTE_V4_CU:-gd-cu-v4.ip.zstaticcdn.com}"
 NEKO_DIAG_ROUTE_V4_CM="${NEKO_DIAG_ROUTE_V4_CM:-gd-cm-v4.ip.zstaticcdn.com}"
@@ -1224,13 +1224,14 @@ run_packet_loss_probe() {
   else
     family_flag=-6
   fi
-  outer_timeout=$((NEKO_DIAG_PACKET_LOSS_DEADLINE + 3))
+  outer_timeout="$NEKO_DIAG_PACKET_LOSS_TIMEOUT"
+  # Do not add ping -w: combined with -c it may send past 100 after loss.
   timeout --kill-after=2 "$outer_timeout" \
     "$NEKO_DIAG_PING" "$family_flag" -n -q \
     -I "$source_address" \
     -c "$NEKO_DIAG_PACKET_LOSS_COUNT" \
     -i "$NEKO_DIAG_PACKET_LOSS_INTERVAL" \
-    -W 1 -w "$NEKO_DIAG_PACKET_LOSS_DEADLINE" \
+    -W 1 \
     -- "$target" \
     > "$output_file" 2> "${output_file}.err"
 }
@@ -1264,12 +1265,16 @@ packet_loss_sample() {
   local file="$1" counts transmitted received loss
 
   counts="$(packet_loss_counts "$file")" || {
-    printf 'unavailable\t未测\n'
+    if [[ -s "$file" ]]; then
+      printf 'invalid\t测试异常（无法读取可靠统计）\n'
+    else
+      printf 'unavailable\t未测\n'
+    fi
     return 0
   }
   IFS=$'\t' read -r transmitted received <<< "$counts"
   if (( transmitted != NEKO_DIAG_PACKET_LOSS_COUNT )); then
-    printf 'incomplete\t未完成（仅发出 %d/%d）\n' \
+    printf 'invalid\t测试异常（发包统计 %d/%d）\n' \
       "$transmitted" "$NEKO_DIAG_PACKET_LOSS_COUNT"
     return 0
   fi
@@ -1771,7 +1776,7 @@ show_route_report_summary() {
     "$C_BLUE" "$C_RESET"
   printf '  已完成 %d 条，未完成 %d 条。\n' \
     "$ROUTE_COMPLETED_COUNT" "$ROUTE_FAILED_COUNT"
-  printf '  丢包样本：已完成 %d 组，未完成 %d 组（每组固定 %d 包）。\n' \
+  printf '  丢包样本：有效 %d 组，异常/未测 %d 组（每组固定 %d 包）。\n' \
     "$PACKET_LOSS_COMPLETED_COUNT" "$PACKET_LOSS_FAILED_COUNT" \
     "$NEKO_DIAG_PACKET_LOSS_COUNT"
   printf '  回程：已按所选地区测试（VPS → 国内参考目标）。\n'
