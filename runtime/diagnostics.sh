@@ -1222,6 +1222,12 @@ normalize_route_region() {
     5|all)
       printf 'all'
       ;;
+    6|hb|hubei)
+      printf 'hb'
+      ;;
+    7|ln|liaoning)
+      printf 'ln'
+      ;;
     *)
       return 1
       ;;
@@ -1234,6 +1240,8 @@ route_region_label() {
     sh) printf '上海' ;;
     bj) printf '北京' ;;
     sc) printf '四川' ;;
+    hb) printf '湖北' ;;
+    ln) printf '辽宁' ;;
     *) return 1 ;;
   esac
 }
@@ -1512,11 +1520,11 @@ show_route_report() {
   local -a regions=()
 
   selected_region="$(normalize_route_region "$requested_region")" || {
-    warn "不支持的线路地区：${requested_region}。可用值：gd、sh、bj、sc、all。"
+    warn "不支持的线路地区：${requested_region}。可用值：gd、sh、bj、sc、hb、ln、all。"
     return 2
   }
   if [[ "$selected_region" == all ]]; then
-    regions=(gd sh bj sc)
+    regions=(gd sh bj sc hb ln)
   else
     regions=("$selected_region")
   fi
@@ -1716,21 +1724,23 @@ run_route_menu() {
     printf '2. 上海（华东）\n'
     printf '3. 北京（华北）\n'
     printf '4. 四川（西南，双栈省级目标）\n'
-    printf '5. 全部地区\n'
+    printf '5. 全部地区（六地）\n'
+    printf '6. 湖北（华中，双栈省级目标）\n'
+    printf '7. 辽宁（东北，双栈省级目标）\n'
     printf '0. 返回\n\n'
     printf '说明：本机只能可靠测试回程（VPS → 国内）；去程需要国内探针。\n\n'
-    read -r -p "请选择 [0-5]：" choice
+    read -r -p "请选择 [0-7]：" choice
     case "$choice" in
       0) return 0 ;;
     esac
     selected_region="$(normalize_route_region "$choice")" || {
-      warn "请输入 0 到 5。"
+      warn "请输入 0 到 7。"
       sleep 1
       continue
     }
     if [[ "$selected_region" == all ]]; then
-      region_text="广东、上海、北京、四川"
-      duration_text="全部地区可能需要几分钟"
+      region_text="广东、上海、北京、四川、湖北、辽宁"
+      duration_text="全部六地双栈在连续超时时可能接近 7 分钟"
     else
       region_text="$(route_region_label "$selected_region")"
       duration_text="通常需要几十秒"
@@ -1823,7 +1833,7 @@ usage() {
   --system          只显示离线系统与硬件信息
   --neko            只检查 Neko 服务与证书
   --network         检查已安装地址族、IP 质量与 BGP 注册
-  --routes [地区]   运行三网回程测试：gd、sh、bj、sc 或 all（默认 gd）
+  --routes [地区]   运行三网回程测试：gd、sh、bj、sc、hb、ln 或 all（默认 gd）
   --full            完整只读体检（不运行性能测试）
   --benchmark-cpu   运行明确请求的轻量 CPU 测试
   --benchmark-disk  运行明确请求的轻量磁盘测试
@@ -1848,7 +1858,7 @@ main() {
       route_region="$(
         normalize_route_region "${2:-$NEKO_DIAG_ROUTE_REGION}"
       )" || {
-        warn "线路地区只能是 gd、sh、bj、sc 或 all。"
+        warn "线路地区只能是 gd、sh、bj、sc、hb、ln 或 all。"
         return 2
       }
       run_report routes "$route_region"

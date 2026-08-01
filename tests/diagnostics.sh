@@ -14,7 +14,7 @@ mkdir -p \
   "$WORK/bench"
 cp -a -- "$ROOT/lib/common.sh" "$WORK/libexec/lib/common.sh"
 jq \
-  '.release = "1.7.0-test"
+  '.release = "1.7.1-test"
    | .subscription.ipv4_address = "192.0.2.44"
    | .subscription.ipv6_address = "2001:db8::44"' \
   "$ROOT/tests/fixtures/state.json" > "$WORK/etc/state.json"
@@ -344,24 +344,51 @@ grep -Fq -- '--ipv6 --tcp --port 80 --source 2001:db8::44' \
 
 : > "$WORK/route-args.log"
 all_regions_output="$(
-  env "${common_env[@]}" bash "$ROOT/runtime/diagnostics.sh" --routes all
+  env "${common_env[@]}" bash "$ROOT/runtime/diagnostics.sh" --routes 5
 )"
+grep -Fq '测试地区：广东、上海、北京、四川、湖北、辽宁' \
+  <<< "$all_regions_output"
 for region_heading in \
   '【广东 · IPv4 回程】' \
   '【上海 · IPv4 回程】' \
   '【北京 · IPv4 回程】' \
-  '【四川 · IPv4 回程】'; do
+  '【四川 · IPv4 回程】' \
+  '【湖北 · IPv4 回程】' \
+  '【辽宁 · IPv4 回程】'; do
   grep -Fq "$region_heading" <<< "$all_regions_output"
 done
 for target in \
   gd-ct-v4.ip.zstaticcdn.com \
   sh-cu-v6.ip.zstaticcdn.com \
   bj-cm-v4.ip.zstaticcdn.com \
-  sc-ct-v6.ip.zstaticcdn.com; do
+  sc-ct-v6.ip.zstaticcdn.com \
+  hb-ct-v4.ip.zstaticcdn.com \
+  hb-cu-v4.ip.zstaticcdn.com \
+  hb-cm-v4.ip.zstaticcdn.com \
+  hb-ct-v6.ip.zstaticcdn.com \
+  hb-cu-v6.ip.zstaticcdn.com \
+  hb-cm-v6.ip.zstaticcdn.com \
+  ln-ct-v4.ip.zstaticcdn.com \
+  ln-cu-v4.ip.zstaticcdn.com \
+  ln-cm-v4.ip.zstaticcdn.com \
+  ln-ct-v6.ip.zstaticcdn.com \
+  ln-cu-v6.ip.zstaticcdn.com \
+  ln-cm-v6.ip.zstaticcdn.com; do
   grep -Fq "$target" "$WORK/route-args.log"
 done
-[[ "$(wc -l < "$WORK/route-args.log")" -eq 24 ]]
-grep -Fq '已完成 24 条，未完成 0 条' <<< "$all_regions_output"
+[[ "$(wc -l < "$WORK/route-args.log")" -eq 36 ]]
+grep -Fq '已完成 36 条，未完成 0 条' <<< "$all_regions_output"
+
+region_number_output="$(
+  env "${common_env[@]}" bash -c '
+    source "$1"
+    printf "%s\n" \
+      "$(normalize_route_region 5)" \
+      "$(normalize_route_region 6)" \
+      "$(normalize_route_region 7)"
+  ' _ "$ROOT/runtime/diagnostics.sh"
+)"
+[[ "$region_number_output" == $'all\nhb\nln' ]]
 
 classification_output="$(
   env "${common_env[@]}" bash -c '
@@ -383,9 +410,9 @@ jq '.network.mode = "ipv4-only"' \
   "$WORK/etc/state.json" > "$WORK/etc/state-ipv4.json"
 ipv4_only_route_output="$(
   env "${common_env[@]}" NEKO_STATE="$WORK/etc/state-ipv4.json" \
-    bash "$ROOT/runtime/diagnostics.sh" --routes sh
+    bash "$ROOT/runtime/diagnostics.sh" --routes hb
 )"
-grep -Fq '【上海 · IPv4 回程】' <<< "$ipv4_only_route_output"
+grep -Fq '【湖北 · IPv4 回程】' <<< "$ipv4_only_route_output"
 grep -Fq '已完成 3 条，未完成 0 条' <<< "$ipv4_only_route_output"
 if grep -Fq 'IPv6 回程' <<< "$ipv4_only_route_output"; then
   printf 'IPv4-only 线路测试不应运行 IPv6 探测。\n' >&2
@@ -396,9 +423,9 @@ jq '.network.mode = "ipv6-only"' \
   "$WORK/etc/state.json" > "$WORK/etc/state-ipv6.json"
 ipv6_only_route_output="$(
   env "${common_env[@]}" NEKO_STATE="$WORK/etc/state-ipv6.json" \
-    bash "$ROOT/runtime/diagnostics.sh" --routes bj
+    bash "$ROOT/runtime/diagnostics.sh" --routes ln
 )"
-grep -Fq '【北京 · IPv6 回程】' <<< "$ipv6_only_route_output"
+grep -Fq '【辽宁 · IPv6 回程】' <<< "$ipv6_only_route_output"
 grep -Fq '已完成 3 条，未完成 0 条' <<< "$ipv6_only_route_output"
 if grep -Fq 'IPv4 回程' <<< "$ipv6_only_route_output"; then
   printf 'IPv6-only 线路测试不应运行 IPv4 探测。\n' >&2
@@ -411,7 +438,7 @@ if env "${common_env[@]}" \
   printf '无效线路地区没有被拒绝。\n' >&2
   exit 1
 fi
-grep -Fq '线路地区只能是 gd、sh、bj、sc 或 all' \
+grep -Fq '线路地区只能是 gd、sh、bj、sc、hb、ln 或 all' \
   "$WORK/invalid-route.log"
 
 route_failed_output="$(
