@@ -1310,6 +1310,157 @@ route_asn_path() {
     | join(" → ")' "$file" 2>/dev/null
 }
 
+known_carrier_network_label() {
+  case "$1" in
+    AS4809) printf 'CN2（AS4809）' ;;
+    AS4134) printf '电信 163（AS4134）' ;;
+    AS9929) printf '联通 9929/CUII（AS9929）' ;;
+    AS4837) printf '联通 169（AS4837）' ;;
+    AS10099) printf '中国联通国际（AS10099）' ;;
+    AS23764) printf '中国电信国际 CTGNet（AS23764）' ;;
+    AS58807) printf '移动 CMIN2（AS58807）' ;;
+    AS58453) printf '中国移动国际 CMI（AS58453）' ;;
+    AS9808) printf '移动 CMNET（AS9808）' ;;
+    *) return 1 ;;
+  esac
+}
+
+known_major_network_label() {
+  # Stable short names for common global and East-Asian networks. This list is
+  # intentionally not exhaustive; route_network_path falls back to the
+  # sanitized NextTrace owner/isp value for every other ASN.
+  case "$1" in
+    AS174) printf 'Cogent（AS174）' ;;
+    AS701) printf 'Verizon（AS701）' ;;
+    AS1221) printf 'Telstra（AS1221）' ;;
+    AS1239) printf 'Cogent（AS1239）' ;;
+    AS1299) printf 'Arelion（AS1299）' ;;
+    AS2497) printf 'IIJ（AS2497）' ;;
+    AS2516) printf 'KDDI（AS2516）' ;;
+    AS2914) printf 'NTT（AS2914）' ;;
+    AS3257) printf 'GTT（AS3257）' ;;
+    AS3320) printf 'Deutsche Telekom（AS3320）' ;;
+    AS3356) printf 'Level 3（AS3356）' ;;
+    AS3462) printf 'HiNet（AS3462）' ;;
+    AS3491) printf 'PCCW Global（AS3491）' ;;
+    AS3549) printf 'Level 3（AS3549）' ;;
+    AS3786) printf 'LG U+（AS3786）' ;;
+    AS4637) printf 'Telstra Global（AS4637）' ;;
+    AS4725) printf 'SoftBank ODN（AS4725）' ;;
+    AS4766) printf 'Korea Telecom（AS4766）' ;;
+    AS4826) printf 'Vocus（AS4826）' ;;
+    AS5511) printf 'Orange OpenTransit（AS5511）' ;;
+    AS6453) printf 'Tata Communications（AS6453）' ;;
+    AS6461) printf 'Zayo（AS6461）' ;;
+    AS6762) printf 'Sparkle（AS6762）' ;;
+    AS6939) printf 'Hurricane Electric（AS6939）' ;;
+    AS7018) printf 'AT&T（AS7018）' ;;
+    AS7473) printf 'Singtel（AS7473）' ;;
+    AS7474) printf 'Optus（AS7474）' ;;
+    AS7578) printf 'GSL（AS7578）' ;;
+    AS9002) printf 'RETN（AS9002）' ;;
+    AS9304) printf 'HGC（AS9304）' ;;
+    AS9318) printf 'SK Broadband（AS9318）' ;;
+    AS10026) printf 'Telstra Global（AS10026）' ;;
+    AS12956) printf 'Telxius（AS12956）' ;;
+    AS17676) printf 'SoftBank（AS17676）' ;;
+    AS136510) printf 'Streamline Servers（AS136510）' ;;
+    AS137409) printf 'GSL Networks（AS137409）' ;;
+    *) return 1 ;;
+  esac
+}
+
+route_network_label() {
+  local asn="$1" owner="${2:-}" label
+  if label="$(known_carrier_network_label "$asn")"; then
+    printf '%s' "$label"
+  elif label="$(known_major_network_label "$asn")"; then
+    printf '%s' "$label"
+  elif [[ -n "$owner" ]]; then
+    printf '%s（%s）' "$owner" "$asn"
+  else
+    printf '%s' "$asn"
+  fi
+}
+
+route_network_path() {
+  local file="$1" asn owner label result="" count=0 omitted=0
+  while IFS=$'\t' read -r asn owner; do
+    [[ -n "$asn" ]] || continue
+    if (( count >= 12 )); then
+      omitted=1
+      continue
+    fi
+    label="$(route_network_label "$asn" "$owner")"
+    [[ -z "$result" ]] || result+=" → "
+    result+="$label"
+    ((count += 1))
+  done < <(
+    jq -r '
+      def asn:
+        tostring
+        | ascii_upcase
+        | sub("^AS"; "")
+        | select(test("^[0-9]+$"))
+        | "AS" + .;
+      def clean_text:
+        tostring
+        | gsub("[[:cntrl:]]"; " ")
+        | gsub("[[:space:]]+"; " ")
+        | sub("^ +"; "")
+        | sub(" +$"; "")
+        | .[0:64];
+      [
+        .Hops[][]?
+        | select(.Success == true)
+        | (.Geo // {}) as $geo
+        | ($geo.asnumber? // "")
+        | select(. != "")
+        | asn as $asn
+        | (
+            [$geo.owner?, $geo.isp?, $geo.domain?]
+            | map(select(. != null and . != "") | clean_text)
+            | .[0] // ""
+          ) as $owner
+        | {asn: $asn, owner: $owner}
+      ]
+      | reduce .[] as $item (
+          [];
+          (map(.asn) | index($item.asn)) as $index
+          | if $index == null then
+              . + [$item]
+            elif .[$index].owner == "" and $item.owner != "" then
+              .[$index].owner = $item.owner
+            else
+              .
+            end
+        )
+      | .[]
+      | [.asn, .owner]
+      | @tsv' "$file" 2>/dev/null
+  )
+  (( omitted == 0 )) || result+=" → …"
+  printf '%s' "$result"
+}
+
+classify_major_networks() {
+  local asn_path="$1" token label result="" count=0 omitted=0
+  local -a path_tokens=()
+  read -r -a path_tokens <<< "$asn_path"
+  for token in "${path_tokens[@]}"; do
+    label="$(known_major_network_label "$token")" || continue
+    if (( count >= 8 )); then
+      omitted=1
+      continue
+    fi
+    [[ -z "$result" ]] || result+=" → "
+    result+="$label"
+    ((count += 1))
+  done
+  (( omitted == 0 )) || result+=" → …"
+  printf '%s' "$result"
+}
+
 route_hop_count() {
   local file="$1"
   jq -r '
@@ -1343,22 +1494,12 @@ classify_carrier_route() {
   local token label result=""
   local -a path_tokens=()
 
-  # Preserve path order and show every recognized carrier backbone. This is
-  # more honest than hiding an international transit ASN just because the
-  # destination belongs to a different carrier.
+  # Preserve path order and show every recognized China-carrier network,
+  # including the carrier's international and domestic backbone ASNs. Global
+  # transit networks are classified separately.
   read -r -a path_tokens <<< "$asn_path"
   for token in "${path_tokens[@]}"; do
-    case "$token" in
-      AS4809) label='CN2（AS4809）' ;;
-      AS4134) label='电信 163（AS4134）' ;;
-      AS9929) label='联通 9929/CUII（AS9929）' ;;
-      AS4837) label='联通 169（AS4837）' ;;
-      AS10099) label='中国联通国际（AS10099）' ;;
-      AS58807) label='移动 CMIN2（AS58807）' ;;
-      AS58453) label='中国移动国际 CMI（AS58453）' ;;
-      AS9808) label='移动 CMNET（AS9808）' ;;
-      *) continue ;;
-    esac
+    label="$(known_carrier_network_label "$token")" || continue
     [[ -z "$result" ]] || result+=" → "
     result+="$label"
   done
@@ -1375,7 +1516,8 @@ classify_carrier_route() {
 
 show_carrier_route_result() {
   local region="$1" family="$2" carrier="$3" label="$4" file="$5"
-  local asn_path hop_count latency latency_display judgment key
+  local asn_path network_path major_networks carrier_network
+  local hop_count latency latency_display judgment key
   key="${region}:${family}:${carrier}"
 
   if ! route_result_valid "$file"; then
@@ -1394,9 +1536,15 @@ show_carrier_route_result() {
     return 0
   fi
   asn_path="$(route_asn_path "$file")"
+  network_path="$(route_network_path "$file")"
   latency="$(route_last_latency_ms "$file")"
   if [[ -n "$asn_path" ]]; then
-    judgment="$(classify_carrier_route "$carrier" "$asn_path")"
+    carrier_network="$(classify_carrier_route "$carrier" "$asn_path")"
+    major_networks="$(classify_major_networks "$asn_path")"
+    judgment="运营商网络：${carrier_network}"
+    if [[ -n "$major_networks" ]]; then
+      judgment="主要国际网络：${major_networks}；${judgment}"
+    fi
   else
     judgment="已测到路径，ASN 暂不可用"
   fi
@@ -1412,6 +1560,9 @@ show_carrier_route_result() {
   printf '  %s%s%s｜末跳 %s｜%s\n' \
     "$C_GREEN" "$label" "$C_RESET" \
     "$latency_display" "$judgment"
+  if [[ -n "$network_path" ]]; then
+    printf '        网络识别：%s\n' "$network_path"
+  fi
   printf '        ASN 路径：%s（%s 跳有响应）\n' \
     "${asn_path:-无 ASN 数据}" "$hop_count"
 }
@@ -1511,6 +1662,7 @@ show_route_report_summary() {
   printf '  回程：已按所选地区测试（VPS → 国内参考目标）。\n'
   printf '  去程：未测试；它需要国内探针主动访问这台 VPS。\n'
   printf '  “末跳”是最后一个有响应路由节点的本次样本，不等同于带宽或晚高峰速度。\n'
+  printf '  “主要国际网络”只说明本次响应路径出现该 ASN，不代表优化线路或质量保证。\n'
   printf '  ASN 只能辅助识别骨干；AS4809 不能单独证明 CN2 GT 或 GIA。\n'
 }
 
