@@ -198,7 +198,10 @@ fi
 target="${*: -1}"
 transmitted=100
 received=100
-if [[ "${NEKO_DIAG_PING_INCOMPLETE:-0}" == 1 ]]; then
+if [[ " $* " == *' -w '* ]]; then
+  transmitted=129
+  received=102
+elif [[ "${NEKO_DIAG_PING_INCOMPLETE:-0}" == 1 ]]; then
   transmitted=80
   received=75
 elif [[ "${NEKO_DIAG_PING_NO_REPLY:-0}" == 1 ]]; then
@@ -381,7 +384,7 @@ grep -Fq 'IPv6 移动｜延迟 30.00 ms｜丢包 7%（93/100）' \
 grep -Fq '线路：主要国际网络：IIJ（AS2497）；运营商网络：中国移动国际 CMI（AS58453）' \
   <<< "$route_output"
 grep -Fq '已完成 6 条，未完成 0 条' <<< "$route_output"
-grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
   <<< "$route_output"
 grep -Fq '100% ICMP 无响应不能单独证明代理线路实际丢包' \
   <<< "$route_output"
@@ -394,10 +397,14 @@ grep -Fq -- '--ipv4 --tcp --port 80 --source 192.0.2.44' \
   "$WORK/route-args.log"
 grep -Fq -- '--ipv6 --tcp --port 80 --source 2001:db8::44' \
   "$WORK/route-args.log"
-grep -Fq -- '-4 -n -q -I 192.0.2.44 -c 100 -i 0.2 -W 1 -w 30' \
+grep -Fq -- '-4 -n -q -I 192.0.2.44 -c 100 -i 0.2 -W 1 --' \
   "$WORK/ping-args.log"
-grep -Fq -- '-6 -n -q -I 2001:db8::44 -c 100 -i 0.2 -W 1 -w 30' \
+grep -Fq -- '-6 -n -q -I 2001:db8::44 -c 100 -i 0.2 -W 1 --' \
   "$WORK/ping-args.log"
+if grep -Eq -- '(^|[[:space:]])-w([[:space:]]|$)' "$WORK/ping-args.log"; then
+  printf '固定 100 包检测不应再向 ping 传递 deadline。\n' >&2
+  exit 1
+fi
 [[ "$(wc -l < "$WORK/ping-args.log")" -eq 6 ]]
 
 : > "$WORK/route-args.log"
@@ -438,7 +445,7 @@ done
 [[ "$(wc -l < "$WORK/route-args.log")" -eq 36 ]]
 [[ "$(wc -l < "$WORK/ping-args.log")" -eq 36 ]]
 grep -Fq '已完成 36 条，未完成 0 条' <<< "$all_regions_output"
-grep -Fq '丢包样本：已完成 36 组，未完成 0 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 36 组，异常/未测 0 组（每组固定 100 包）' \
   <<< "$all_regions_output"
 
 region_number_output="$(
@@ -551,7 +558,7 @@ grep -Fq '原因：超时、无响应或线路元数据不可用' \
   <<< "$route_failed_output"
 grep -Fq '线路测试小结' <<< "$route_failed_output"
 grep -Fq '已完成 0 条，未完成 6 条' <<< "$route_failed_output"
-grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
   <<< "$route_failed_output"
 
 ping_no_reply_output="$(
@@ -560,7 +567,7 @@ ping_no_reply_output="$(
 )"
 grep -Fq '丢包 100%（0/100；目标可能禁 ICMP）' \
   <<< "$ping_no_reply_output"
-grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
   <<< "$ping_no_reply_output"
 grep -Fq '100% ICMP 无响应不能单独证明代理线路实际丢包' \
   <<< "$ping_no_reply_output"
@@ -571,25 +578,38 @@ ping_failed_output="$(
 )"
 grep -Fq '丢包 未测' <<< "$ping_failed_output"
 grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_failed_output"
-grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
   <<< "$ping_failed_output"
 
 ping_malformed_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING_MALFORMED=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '丢包 未测' <<< "$ping_malformed_output"
+grep -Fq '丢包 测试异常（无法读取可靠统计）' \
+  <<< "$ping_malformed_output"
 grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_malformed_output"
-grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
   <<< "$ping_malformed_output"
 
 ping_incomplete_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING_INCOMPLETE=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '丢包 未完成（仅发出 80/100）' <<< "$ping_incomplete_output"
-grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+grep -Fq '丢包 测试异常（发包统计 80/100）' \
   <<< "$ping_incomplete_output"
+grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
+  <<< "$ping_incomplete_output"
+
+printf '129 packets transmitted, 102 received, 20%% packet loss\n' \
+  > "$WORK/ping-excess.txt"
+ping_excess_sample="$(
+  env "${common_env[@]}" bash -c '
+    source "$1"
+    packet_loss_sample "$2"
+  ' _ "$ROOT/runtime/diagnostics.sh" "$WORK/ping-excess.txt"
+)"
+[[ "$ping_excess_sample" == \
+  $'invalid\t测试异常（发包统计 129/100）' ]]
 
 ping_missing_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING="$WORK/missing-ping" \
@@ -598,7 +618,7 @@ ping_missing_output="$(
 grep -Fq '系统缺少 ping；继续尝试路径检测，丢包率显示为未测' \
   <<< "$ping_missing_output"
 grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_missing_output"
-grep -Fq '丢包样本：已完成 0 组，未完成 6 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
   <<< "$ping_missing_output"
 
 route_missing_output="$(
@@ -607,7 +627,7 @@ route_missing_output="$(
 )"
 grep -Fq '可选 NextTrace 组件不可用' <<< "$route_missing_output"
 grep -Fq '已完成 0 条，未完成 6 条' <<< "$route_missing_output"
-grep -Fq '丢包样本：已完成 6 组，未完成 0 组（每组固定 100 包）' \
+grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
   <<< "$route_missing_output"
 
 if find "$WORK/bench" -mindepth 1 -maxdepth 1 \
