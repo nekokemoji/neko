@@ -202,7 +202,7 @@ case "${*: -1}" in
   *-cm-*) asn=58453 ;;
 esac
 printf '%s\n' \
-  '{"Hops":[[{"Success":true,"Address":{"IP":"198.51.100.1"},"TTL":1,"RTT":20000000,"Geo":{"ip":"198.51.100.1","asnumber":"64500"}}],[{"Success":true,"Address":{"IP":"203.0.113.9"},"TTL":2,"RTT":30000000,"Geo":{"ip":"203.0.113.9","asnumber":"'"$asn"'"}}]]}'
+  '{"Hops":[[{"Success":true,"Address":{"IP":"198.51.100.1"},"TTL":1,"RTT":20000000,"Geo":{"ip":"198.51.100.1","asnumber":"2497","owner":"Internet Initiative Japan Inc."}}],[{"Success":true,"Address":{"IP":"203.0.113.9"},"TTL":2,"RTT":30000000,"Geo":{"ip":"203.0.113.9","asnumber":"'"$asn"'"}}]]}'
 EOF
 
 chmod 0755 "$WORK/bin/systemctl" "$WORK/bin/ip" "$WORK/bin/dig" "$WORK/bin/curl"
@@ -329,10 +329,15 @@ grep -Fq '【广东 · IPv4 回程】' <<< "$route_output"
 grep -Fq 'CN2（AS4809）' <<< "$route_output"
 grep -Fq '联通 9929/CUII（AS9929）' <<< "$route_output"
 grep -Fq '中国移动国际 CMI（AS58453）' <<< "$route_output"
-grep -Fq 'IPv4 电信：30.00 ms，CN2（AS4809）' <<< "$route_output"
-grep -Fq 'IPv6 移动：30.00 ms，中国移动国际 CMI（AS58453）' \
+grep -Fq '主要国际网络：IIJ（AS2497）；运营商网络：CN2（AS4809）' \
+  <<< "$route_output"
+grep -Fq '网络识别：IIJ（AS2497） → CN2（AS4809）' <<< "$route_output"
+grep -Fq 'IPv4 电信：30.00 ms，主要国际网络：IIJ（AS2497）；运营商网络：CN2（AS4809）' \
+  <<< "$route_output"
+grep -Fq 'IPv6 移动：30.00 ms，主要国际网络：IIJ（AS2497）；运营商网络：中国移动国际 CMI（AS58453）' \
   <<< "$route_output"
 grep -Fq '已完成 6 条，未完成 0 条' <<< "$route_output"
+grep -Fq '不代表优化线路或质量保证' <<< "$route_output"
 if grep -Fq '【上海 ·' <<< "$route_output"; then
   printf '默认 --routes 不应自动测试全部地区。\n' >&2
   exit 1
@@ -399,12 +404,50 @@ classification_output="$(
     printf "\n"
     classify_carrier_route ct "AS64500 → AS48090"
     printf "\n"
+    classify_carrier_route ct "AS2497 → AS23764 → AS4134"
+    printf "\n"
+    classify_major_networks "AS174 → AS1299 → AS2497 → AS2516 → AS2914 → AS3356 → AS3491 → AS6453 → AS6939 → AS9304"
+    printf "\n"
+    classify_major_networks "AS12956 → AS17676 → AS176760"
+    printf "\n"
+    route_network_label AS4725 ""
+    printf "\n"
+    route_network_label AS24970 "Fallback Transit"
+    printf "\n"
   ' _ "$ROOT/runtime/diagnostics.sh"
 )"
 grep -Fxq '电信 163（AS4134）' <<< "$classification_output"
 grep -Fxq '移动 CMIN2（AS58807） → 移动 CMNET（AS9808）' \
   <<< "$classification_output"
 grep -Fxq '未识别常见电信骨干' <<< "$classification_output"
+grep -Fxq '中国电信国际 CTGNet（AS23764） → 电信 163（AS4134）' \
+  <<< "$classification_output"
+grep -Fxq 'Cogent（AS174） → Arelion（AS1299） → IIJ（AS2497） → KDDI（AS2516） → NTT（AS2914） → Level 3（AS3356） → PCCW Global（AS3491） → Tata Communications（AS6453） → …' \
+  <<< "$classification_output"
+grep -Fxq 'Telxius（AS12956） → SoftBank（AS17676）' \
+  <<< "$classification_output"
+grep -Fxq 'SoftBank ODN（AS4725）' <<< "$classification_output"
+grep -Fxq 'Fallback Transit（AS24970）' <<< "$classification_output"
+if grep -Fq 'IIJ（AS24970）' <<< "$classification_output"; then
+  printf '相似但不同的 ASN 不应被识别为 IIJ。\n' >&2
+  exit 1
+fi
+
+cat > "$WORK/route-network.json" <<'EOF'
+{"Hops":[[{"Success":true,"Geo":{"asnumber":"61112","owner":"AkileCloud AKILE LTD"}}],[{"Success":true,"Geo":{"asnumber":"2497","owner":"错误别名"}}],[{"Success":true,"Geo":{"asnumber":"64520","owner":""}}],[{"Success":true,"Geo":{"asnumber":"64520","isp":"Fallback\tTransit\u001b\n"}}],[{"Success":true,"Geo":{"asnumber":"17676"}}],[{"Success":true,"Geo":{"asnumber":"4134"}}]]}
+EOF
+network_path_output="$(
+  env "${common_env[@]}" bash -c '
+    source "$1"
+    route_network_path "$2"
+  ' _ "$ROOT/runtime/diagnostics.sh" "$WORK/route-network.json"
+)"
+grep -Fxq 'AkileCloud AKILE LTD（AS61112） → IIJ（AS2497） → Fallback Transit（AS64520） → SoftBank（AS17676） → 电信 163（AS4134）' \
+  <<< "$network_path_output"
+if LC_ALL=C grep -q $'\033' <<< "$network_path_output"; then
+  printf '线路网络名称不应保留终端控制字符。\n' >&2
+  exit 1
+fi
 
 jq '.network.mode = "ipv4-only"' \
   "$WORK/etc/state.json" > "$WORK/etc/state-ipv4.json"
