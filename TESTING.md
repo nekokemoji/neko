@@ -1,4 +1,4 @@
-# Neko 1.7.2 测试范围
+# Neko 1.7.3 测试范围
 
 最近核对日期：2026-08-01（Asia/Tokyo）。
 
@@ -20,11 +20,12 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
 - firewalld 只根据已安装地址族的默认路由网卡寻找实际 zone，而不是盲目使用 default zone；补装另一族时不会接管或回滚预先存在的区域规则。
-- Bootstrap 离线解压固定源码包、核对 1.7.2 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.7.3 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
 - 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29、可选 qrc 0.9.0 与 NextTrace Tiny 1.7.1 的版本身份和所需 CLI 参数。
 - Cloudflare DNS-01 与 HTTP-01 分别传递正确的 lego 参数；DNS-01 只暴露固定的 `_FILE` 凭据变量，清除原始 Token、旧式变量和外部文件变量。
+- 连续模拟 1000 次 lego 快速失败，确认公共 ACME 保护完整保留原始退出码与错误输出，不会再由 Bash `coproc` 竞态产生 `Bad file descriptor`；Cloudflare `9109` 会给出 Token 类型、有效性、最小权限与 Zone 范围提示。发行版矩阵也会在全部 16 个系统/架构组合中执行快速失败路径。
 - 模拟 lego 收到 Let’s Encrypt `rateLimited` 后准备长时间等待，确认公共 ACME 保护在 5 秒内终止、保留并显示 `retry after`，返回临时失败；另模拟无输出挂起，确认 10 分钟总时限的可配置短时测试路径。发行版矩阵也会在全部 16 个系统/架构组合中执行快速限额终止路径。
 - Cloudflare Token 内容格式、凭据目录 `0700`、文件 `0600` 与非符号链接约束。
 - 真实 `sing-box check` 与 `xray run -test` 分别解析 IPv4-only、IPv6-only、dual 三种服务端配置；每个已启用 sing-box Remote Profile 也由真实核心解析。
@@ -50,7 +51,7 @@ bash tests/run.sh
 - 体检在外部 HTTP 查询失败时返回“提醒/未测”并正常结束；测试状态中的订阅令牌和协议密码不会出现在报告。CPU 与磁盘测试只从明确入口运行，磁盘临时文件在成功、失败或中断路径都由统一清理函数保护。
 - 控制面板端点刷新在地址未变化时不重启；模拟新地址更新成功、服务失败后完整回滚，以及回滚服务仍失败时保留状态备份。
 - 控制面板从 IPv4-only 补装 IPv6 的成功、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
-- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.7.2，确认原端口、协议凭据、REALITY 参数、已安装模式、令牌和旧订阅 URL 继续可用，并只为旧安装补充新的 Trojan 端口与密码；再次升级会保持已有 Trojan 身份不变。schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
+- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.7.3，确认原端口、协议凭据、REALITY 参数、已安装模式、令牌和旧订阅 URL 继续可用，并只为旧安装补充新的 Trojan 端口与密码；再次升级会保持已有 Trojan 身份不变。schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
 - 模拟 firewalld 管理的旧安装升级，确认 Neko 专用服务规则加入 Trojan TCP 端口并查询生效；模拟后续服务启动失败，确认状态、配置、Hysteria systemd 单元、firewalld 配置与已有 qrc/NextTrace 一起恢复。另模拟可选 NextTrace 更新来源损坏，确认核心升级仍成功、原组件保持不变且暂存目录清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
@@ -78,11 +79,25 @@ bash tests/run.sh
 
 Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态以对应提交/PR 的 GitHub Checks 为准；工作流文件存在不等于某次提交已经通过。
 
+## 手动完整 systemd VM 矩阵
+
+`.github/workflows/vm-smoke.yml` 不在每个普通 PR 自动运行，只能手动触发，或在专用
+`agent/vm-validation/**` 分支运行。它从 Debian、Ubuntu、Rocky Linux 与 AlmaLinux
+官方站点下载云镜像并核对同站校验和，在 QEMU amd64 完整虚拟机中确认 PID 1 确实是
+systemd，再运行平台识别、全部 Shell 语法、250 次 ACME 快速失败、限额/超时保护、
+systemd unit 解析和实际临时 unit 启动。八个发行版 job 相互独立，单个失败不会取消
+其他结果。
+
+这个手动矩阵验证的是完整 systemd 用户空间与内核边界，不申请真实公网证书，也不
+导入移动客户端；arm64 仍由上面的 16 组 QEMU user-mode 矩阵覆盖，不能把它描述成
+arm64 完整 VM。某个 VM 工作流文件存在也不等于某次提交已经实际通过，应以对应
+Actions run 为准。
+
 ## 仍未由隔离环境完成
 
 以下项目需要真实、可重装的公网 VPS 与真机客户端：
 
-- 8 个发行版各自作为完整 systemd VM 的安装、重启、升级、失败回滚和卸载循环；
+- 8 个发行版各自使用真实公网 DNS/证书完成安装、重启、升级、失败回滚和卸载循环；
 - 单栈/双栈活动 DNS 名称的真实 Let’s Encrypt 生产证书签发、面板 SAN 扩容及后续自动续期；
 - Cloudflare 生产 API 对 Token 权限、TXT 传播和清理的真实端到端调用；
 - 云厂商安全组、firewalld/UFW 与 Hysteria 端口跳跃在真实内核上的联动；

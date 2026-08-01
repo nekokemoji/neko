@@ -25,6 +25,18 @@ detect_platform
 [[ "$ARCH" == "$EXPECTED_ARCH" ]]
 
 ACME_METHOD=http-01
+for ((attempt = 0; attempt < 25; attempt++)); do
+  fast_failure_output=""
+  fast_failure_rc=0
+  fast_failure_output="$(
+    run_acme_command_guarded "$ROOT/tests/fixtures/lego-fast-failure.sh" 2>&1
+  )" || fast_failure_rc=$?
+  (( fast_failure_rc == 42 ))
+  [[ "$fast_failure_output" == *'9109: Invalid access token'* ]]
+  [[ "$fast_failure_output" == *'Cloudflare 拒绝了 DNS API Token'* ]]
+  [[ "$fast_failure_output" != *'Bad file descriptor'* ]]
+done
+
 rate_limit_started=$SECONDS
 set +e
 rate_limit_output="$(

@@ -359,7 +359,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.7.2"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.7.3"' "$ROOT/versions.env"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
@@ -548,6 +548,27 @@ NEKO_VAR="$ACME_WORK/var" NEKO_TEST_MODE=1 \
     grep -Fxq "$NEKO_VAR/acme" "$NEKO_TEST_ARGS_LOG"
     [[ "$(<"$NEKO_TEST_ENV_LOG")" == "" ]]
   ' _ "$ROOT/lib/common.sh"
+
+fast_failure_output="$(
+  NEKO_TEST_MODE=1 NEKO_ACME_TIMEOUT_SECONDS=20 \
+    bash -c '
+      set -Eeuo pipefail
+      source "$1"
+      for ((attempt = 0; attempt < 1000; attempt++)); do
+        output=""
+        rc=0
+        output="$(run_acme_command_guarded "$2" 2>&1)" || rc=$?
+        (( rc == 42 ))
+        [[ "$output" == *"9109: Invalid access token"* ]]
+        [[ "$output" == *"Cloudflare 拒绝了 DNS API Token"* ]]
+        [[ "$output" != *"Bad file descriptor"* ]]
+      done
+      printf "%s\n" "$output"
+    ' _ "$ROOT/lib/common.sh" \
+      "$ROOT/tests/fixtures/lego-fast-failure.sh"
+)"
+grep -Fq 'Zone / Zone / Read' <<< "$fast_failure_output"
+grep -Fq 'Zone / DNS / Edit' <<< "$fast_failure_output"
 
 rate_limit_started=$SECONDS
 set +e

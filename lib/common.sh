@@ -302,7 +302,7 @@ stop_acme_guard_process() {
 run_acme_command_guarded() (
   local timeout_seconds="${NEKO_ACME_TIMEOUT_SECONDS:-$ACME_DEFAULT_TIMEOUT_SECONDS}"
   local guard_pid output_fd line retry_after="" acme_rc=0
-  local rate_limited=0 exact_set_limited=0
+  local rate_limited=0 exact_set_limited=0 cloudflare_invalid_token=0
 
   command -v timeout >/dev/null 2>&1 \
     || die "系统缺少证书申请超时保护命令：timeout"
@@ -311,12 +311,14 @@ run_acme_command_guarded() (
   (( timeout_seconds <= 3600 )) \
     || die "证书申请超时不能超过 3600 秒。"
 
-  coproc NEKO_ACME_GUARD {
+  # Keep the read descriptor under this subshell's ownership. Bash may reap a
+  # short-lived coproc and close its generated descriptors before the first
+  # read, which can hide the useful ACME error behind "Bad file descriptor".
+  exec {output_fd}< <(
     exec timeout --signal=TERM --kill-after=5s "${timeout_seconds}s" \
       "$@" 2>&1
-  }
-  guard_pid="$NEKO_ACME_GUARD_PID"
-  output_fd="${NEKO_ACME_GUARD[0]}"
+  )
+  guard_pid=$!
 
   trap 'stop_acme_guard_process "$guard_pid"; exit 130' INT
   trap 'stop_acme_guard_process "$guard_pid"; exit 143' TERM
@@ -332,7 +334,11 @@ run_acme_command_guarded() (
       fi
       stop_acme_guard_process "$guard_pid"
     fi
+    if [[ "$line" == *"9109: Invalid access token"* ]]; then
+      cloudflare_invalid_token=1
+    fi
   done
+  exec {output_fd}<&-
 
   if wait "$guard_pid"; then
     acme_rc=0
@@ -357,6 +363,11 @@ run_acme_command_guarded() (
   if (( acme_rc == ACME_TIMEOUT_EXIT )); then
     warn "证书申请超过 ${timeout_seconds} 秒，已主动停止；不会继续无限等待。"
     warn "请检查上方 ACME 输出和网络/DNS 后再试。"
+  fi
+  if (( cloudflare_invalid_token == 1 && acme_rc != 0 )); then
+    warn "Cloudflare 拒绝了 DNS API Token（错误 9109：Invalid access token）。"
+    warn "请使用仍然有效的 API Token；不要使用 Global API Key、Origin CA Key 或已撤销的 Token。"
+    warn "Token 需要 Zone / Zone / Read 与 Zone / DNS / Edit，并把 Zone Resources 限定到当前域名所在 Zone。"
   fi
   return "$acme_rc"
 )
