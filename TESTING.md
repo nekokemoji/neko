@@ -1,4 +1,4 @@
-# Neko 1.7.3 测试范围
+# Neko 1.8.0 测试范围
 
 最近核对日期：2026-08-01（Asia/Tokyo）。
 
@@ -20,7 +20,7 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
 - firewalld 只根据已安装地址族的默认路由网卡寻找实际 zone，而不是盲目使用 default zone；补装另一族时不会接管或回滚预先存在的区域规则。
-- Bootstrap 离线解压固定源码包、核对 1.7.3 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.8.0 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
 - 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29、可选 qrc 0.9.0 与 NextTrace Tiny 1.7.1 的版本身份和所需 CLI 参数。
@@ -47,11 +47,11 @@ bash tests/run.sh
 - 面板把 URL 只写入 qrc 标准输入，命令参数不含 URL；qrc 缺失、执行失败、终端太窄或输出不是交互终端时均返回文字链接而不终止面板。
 - VPS 体检的离线硬件报告、状态文件权限、四个服务、续期定时器、证书期限与 SAN 覆盖；模拟严格 IPv4/IPv6 源地址绑定后的 HTTPS 出口、Cloudflare 位置/时延、四个 IP 数据库的类型/位置/风控交叉结论，以及 RIPEstat 的 RIR 登记、ASN/BGP/RPKI 和 PTR。
 - IP 数据库测试覆盖全部成功、单个来源失败、返回地址不匹配和全部失败；每个查询都断言使用已安装地址族的精确源地址，外部内容经过清理且不会被单个标签冒充“原生 IP”结论。
-- 三网回程测试使用结构化 NextTrace fixture，覆盖广东默认值以及广东、上海、北京、四川、湖北、辽宁六地的 36 条双栈目标，断言每地区/运营商的末跳延迟结论、精确 IPv4/IPv6 源地址和目标名称，并保留原菜单 `5` 为全部地区。ASN 判断覆盖电信 163/CN2/CTGNet、联通 9929、移动 CMI/CMIN2，以及 IIJ、SoftBank、NTT、KDDI、PCCW、HGC、Level 3、Cogent、Arelion、Hurricane Electric、Tata、Telxius 等主要国际网络；相似但不相同的 ASN 不会误判。未知 ASN 使用经过控制字符清理的 NextTrace `owner` / `isp`，名称缺失时保留 ASN，且不会增加新的外部查询。无效地区、外部探测失败、组件缺失和临时文件清理均有降级测试。界面明确标注 VPS 到国内是回程、国内探针到 VPS 的去程未测；默认 `--full` 不会触发路径探测。
+- 三网回程测试使用结构化 NextTrace 与 `ping` fixture，覆盖广东默认值以及广东、上海、北京、四川、湖北、辽宁六地的 36 条双栈目标，断言每地区/运营商的末跳延迟结论、固定 100 包、精确 IPv4/IPv6 源地址、目标名称及 0%/2%/7% 丢包显示，并保留原菜单 `5` 为全部地区。丢包测试另覆盖 100% ICMP 无响应、命令失败、畸形统计、只发出 80 包、缺少 `ping` 以及 NextTrace 单独失败，确认每种情况都保留线路报告、给出保守提示并正常返回。ASN 判断覆盖电信 163/CN2/CTGNet、联通 9929、移动 CMI/CMIN2，以及 IIJ、SoftBank、NTT、KDDI、PCCW、HGC、Level 3、Cogent、Arelion、Hurricane Electric、Tata、Telxius 等主要国际网络；相似但不相同的 ASN 不会误判。未知 ASN 使用经过控制字符清理的 NextTrace `owner` / `isp`，名称缺失时保留 ASN，且不会增加新的外部查询。无效地区、外部探测失败、组件缺失和临时文件清理均有降级测试。界面明确标注 VPS 到国内是回程、国内探针到 VPS 的去程未测；默认 `--full` 不会触发路径或丢包探测。
 - 体检在外部 HTTP 查询失败时返回“提醒/未测”并正常结束；测试状态中的订阅令牌和协议密码不会出现在报告。CPU 与磁盘测试只从明确入口运行，磁盘临时文件在成功、失败或中断路径都由统一清理函数保护。
 - 控制面板端点刷新在地址未变化时不重启；模拟新地址更新成功、服务失败后完整回滚，以及回滚服务仍失败时保留状态备份。
 - 控制面板从 IPv4-only 补装 IPv6 的成功、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
-- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.7.3，确认原端口、协议凭据、REALITY 参数、已安装模式、令牌和旧订阅 URL 继续可用，并只为旧安装补充新的 Trojan 端口与密码；再次升级会保持已有 Trojan 身份不变。schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
+- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.8.0，确认原端口、协议凭据、REALITY 参数、已安装模式、令牌和旧订阅 URL 继续可用，并只为旧安装补充新的 Trojan 端口与密码；再次升级会保持已有 Trojan 身份不变。schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
 - 模拟 firewalld 管理的旧安装升级，确认 Neko 专用服务规则加入 Trojan TCP 端口并查询生效；模拟后续服务启动失败，确认状态、配置、Hysteria systemd 单元、firewalld 配置与已有 qrc/NextTrace 一起恢复。另模拟可选 NextTrace 更新来源损坏，确认核心升级仍成功、原组件保持不变且暂存目录清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 

@@ -31,6 +31,10 @@ NEKO_DIAG_NETWORK_TIMEOUT="${NEKO_DIAG_NETWORK_TIMEOUT:-5}"
 NEKO_DIAG_ROUTE_TIMEOUT="${NEKO_DIAG_ROUTE_TIMEOUT:-35}"
 NEKO_DIAG_ROUTE_PROVIDER="${NEKO_DIAG_ROUTE_PROVIDER:-LeoMoeAPI}"
 NEKO_DIAG_ROUTE_REGION="${NEKO_DIAG_ROUTE_REGION:-gd}"
+NEKO_DIAG_PING="${NEKO_DIAG_PING:-ping}"
+NEKO_DIAG_PACKET_LOSS_COUNT=100
+NEKO_DIAG_PACKET_LOSS_INTERVAL=0.2
+NEKO_DIAG_PACKET_LOSS_DEADLINE=30
 NEKO_DIAG_ROUTE_V4_CT="${NEKO_DIAG_ROUTE_V4_CT:-gd-ct-v4.ip.zstaticcdn.com}"
 NEKO_DIAG_ROUTE_V4_CU="${NEKO_DIAG_ROUTE_V4_CU:-gd-cu-v4.ip.zstaticcdn.com}"
 NEKO_DIAG_ROUTE_V4_CM="${NEKO_DIAG_ROUTE_V4_CM:-gd-cm-v4.ip.zstaticcdn.com}"
@@ -49,10 +53,15 @@ DIAG_QUALITY_DIR=""
 DIAG_ROUTE_DIR=""
 ROUTE_COMPLETED_COUNT=0
 ROUTE_FAILED_COUNT=0
+PACKET_LOSS_COMPLETED_COUNT=0
+PACKET_LOSS_FAILED_COUNT=0
 ROUTE_REPORT_HAS_SUMMARY=0
+ROUTE_TRACE_AVAILABLE=0
+ROUTE_PACKET_LOSS_AVAILABLE=0
 declare -A ROUTE_SUMMARY_LATENCY=()
 declare -A ROUTE_SUMMARY_LINE=()
 declare -A ROUTE_SUMMARY_STATUS=()
+declare -A ROUTE_SUMMARY_PACKET_LOSS=()
 
 diag_cleanup() {
   local base="${NEKO_DIAG_TMP_DIR%/}"
@@ -1205,6 +1214,75 @@ run_nexttrace_probe() {
     > "$output_file" 2> "${output_file}.err"
 }
 
+run_packet_loss_probe() {
+  local family="$1" source_address="$2" target="$3" output_file="$4"
+  local family_flag outer_timeout
+
+  (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )) || return 0
+  if [[ "$family" == ipv4 ]]; then
+    family_flag=-4
+  else
+    family_flag=-6
+  fi
+  outer_timeout=$((NEKO_DIAG_PACKET_LOSS_DEADLINE + 3))
+  timeout --kill-after=2 "$outer_timeout" \
+    "$NEKO_DIAG_PING" "$family_flag" -n -q \
+    -I "$source_address" \
+    -c "$NEKO_DIAG_PACKET_LOSS_COUNT" \
+    -i "$NEKO_DIAG_PACKET_LOSS_INTERVAL" \
+    -W 1 -w "$NEKO_DIAG_PACKET_LOSS_DEADLINE" \
+    -- "$target" \
+    > "$output_file" 2> "${output_file}.err"
+}
+
+packet_loss_counts() {
+  local file="$1" summary transmitted received
+
+  [[ -s "$file" ]] || return 1
+  summary="$(
+    awk '/packets transmitted/ && /received/ {print; exit}' "$file" \
+      2>/dev/null || true
+  )"
+  [[ -n "$summary" ]] || return 1
+  transmitted="$(
+    sed -nE \
+      's/^[[:space:]]*([0-9]+) packets transmitted,.*/\1/p' \
+      <<< "$summary"
+  )"
+  received="$(
+    sed -nE \
+      's/.*,[[:space:]]*([0-9]+)( packets)? received,.*/\1/p' \
+      <<< "$summary"
+  )"
+  [[ "$transmitted" =~ ^[0-9]+$ && "$received" =~ ^[0-9]+$ ]] \
+    || return 1
+  (( received <= transmitted )) || return 1
+  printf '%s\t%s\n' "$transmitted" "$received"
+}
+
+packet_loss_sample() {
+  local file="$1" counts transmitted received loss
+
+  counts="$(packet_loss_counts "$file")" || {
+    printf 'unavailable\t未测\n'
+    return 0
+  }
+  IFS=$'\t' read -r transmitted received <<< "$counts"
+  if (( transmitted != NEKO_DIAG_PACKET_LOSS_COUNT )); then
+    printf 'incomplete\t未完成（仅发出 %d/%d）\n' \
+      "$transmitted" "$NEKO_DIAG_PACKET_LOSS_COUNT"
+    return 0
+  fi
+  loss=$((transmitted - received))
+  if (( received == 0 )); then
+    printf 'complete\t100%%（0/%d；目标可能禁 ICMP）\n' \
+      "$NEKO_DIAG_PACKET_LOSS_COUNT"
+  else
+    printf 'complete\t%d%%（%d/%d）\n' \
+      "$loss" "$received" "$NEKO_DIAG_PACKET_LOSS_COUNT"
+  fi
+}
+
 normalize_route_region() {
   case "${1,,}" in
     ""|1|gd|guangdong|guangzhou)
@@ -1516,23 +1594,36 @@ classify_carrier_route() {
 
 show_carrier_route_result() {
   local region="$1" family="$2" carrier="$3" label="$4" file="$5"
+  local packet_loss_file="$6"
   local asn_path network_path major_networks carrier_network
   local hop_count latency latency_display judgment key
+  local packet_loss_status packet_loss_display
   key="${region}:${family}:${carrier}"
+  IFS=$'\t' read -r packet_loss_status packet_loss_display \
+    < <(packet_loss_sample "$packet_loss_file")
+  packet_loss_display="${packet_loss_display:-未测}"
+  ROUTE_SUMMARY_PACKET_LOSS["$key"]="$packet_loss_display"
+  if [[ "$packet_loss_status" == complete ]]; then
+    ((PACKET_LOSS_COMPLETED_COUNT += 1))
+  else
+    ((PACKET_LOSS_FAILED_COUNT += 1))
+  fi
 
   if ! route_result_valid "$file"; then
     ((ROUTE_FAILED_COUNT += 1, DIAG_SKIP_COUNT += 1))
     ROUTE_SUMMARY_STATUS["$key"]="failed"
-    printf '  %s%s%s｜未完成（超时、无响应或线路元数据不可用）\n' \
-      "$C_YELLOW" "$label" "$C_RESET"
+    printf '  %s%s%s｜路径未完成｜丢包 %s\n' \
+      "$C_YELLOW" "$label" "$C_RESET" "$packet_loss_display"
+    printf '        原因：超时、无响应或线路元数据不可用\n'
     return 0
   fi
   hop_count="$(route_hop_count "$file")"
   if [[ ! "$hop_count" =~ ^[0-9]+$ ]] || (( hop_count == 0 )); then
     ((ROUTE_FAILED_COUNT += 1, DIAG_SKIP_COUNT += 1))
     ROUTE_SUMMARY_STATUS["$key"]="failed"
-    printf '  %s%s%s｜未完成（没有收到有效响应）\n' \
-      "$C_YELLOW" "$label" "$C_RESET"
+    printf '  %s%s%s｜路径未完成｜丢包 %s\n' \
+      "$C_YELLOW" "$label" "$C_RESET" "$packet_loss_display"
+    printf '        原因：没有收到有效路径响应\n'
     return 0
   fi
   asn_path="$(route_asn_path "$file")"
@@ -1557,9 +1648,10 @@ show_carrier_route_result() {
   else
     latency_display="未知"
   fi
-  printf '  %s%s%s｜末跳 %s｜%s\n' \
+  printf '  %s%s%s｜末跳 %s｜丢包 %s\n' \
     "$C_GREEN" "$label" "$C_RESET" \
-    "$latency_display" "$judgment"
+    "$latency_display" "$packet_loss_display"
+  printf '        线路判断：%s\n' "$judgment"
   if [[ -n "$network_path" ]]; then
     printf '        网络识别：%s\n' "$network_path"
   fi
@@ -1571,7 +1663,7 @@ show_carrier_routes_for_family() {
   local region="$1" family="$2" source_address="$3"
   local pid
   local -a carriers=(ct cu cm) labels=(电信 联通 移动)
-  local -a targets=() files=() pids=()
+  local -a targets=() files=() packet_loss_files=() pids=()
   local index region_label
 
   region_label="$(route_region_label "$region")"
@@ -1583,15 +1675,30 @@ show_carrier_routes_for_family() {
     "${DIAG_ROUTE_DIR}/${region}-${family}-cu.json"
     "${DIAG_ROUTE_DIR}/${region}-${family}-cm.json"
   )
+  packet_loss_files=(
+    "${DIAG_ROUTE_DIR}/${region}-${family}-ct.ping"
+    "${DIAG_ROUTE_DIR}/${region}-${family}-cu.ping"
+    "${DIAG_ROUTE_DIR}/${region}-${family}-cm.ping"
+  )
 
   printf '\n%s【%s · %s 回程】%s\n' \
     "$C_BLUE" "$region_label" "${family/ipv/IPv}" "$C_RESET"
   for index in 0 1 2; do
-    (
-      run_nexttrace_probe \
-        "$family" "$source_address" "${targets[$index]}" "${files[$index]}"
-    ) &
-    pids+=("$!")
+    if (( ROUTE_TRACE_AVAILABLE == 1 )); then
+      (
+        run_nexttrace_probe \
+          "$family" "$source_address" "${targets[$index]}" "${files[$index]}"
+      ) &
+      pids+=("$!")
+    fi
+    if (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )); then
+      (
+        run_packet_loss_probe \
+          "$family" "$source_address" "${targets[$index]}" \
+          "${packet_loss_files[$index]}"
+      ) &
+      pids+=("$!")
+    fi
   done
   for pid in "${pids[@]}"; do
     wait "$pid" 2>/dev/null || true
@@ -1599,7 +1706,7 @@ show_carrier_routes_for_family() {
   for index in 0 1 2; do
     show_carrier_route_result \
       "$region" "$family" "${carriers[$index]}" "${labels[$index]}" \
-      "${files[$index]}"
+      "${files[$index]}" "${packet_loss_files[$index]}"
   done
 }
 
@@ -1614,7 +1721,9 @@ mark_route_family_unavailable() {
   for carrier in "${carriers[@]}"; do
     key="${region}:${family}:${carrier}"
     ROUTE_SUMMARY_STATUS["$key"]="failed"
+    ROUTE_SUMMARY_PACKET_LOSS["$key"]="未测（地址不可用）"
     ((ROUTE_FAILED_COUNT += 1))
+    ((PACKET_LOSS_FAILED_COUNT += 1))
   done
   ((DIAG_SKIP_COUNT += 1))
 }
@@ -1623,10 +1732,10 @@ show_route_region_summary() {
   local region="$1" region_label family carrier label key
   local -a families=(ipv4 ipv6)
   local -a carriers=(ct cu cm) labels=(电信 联通 移动)
-  local index status latency judgment
+  local index status latency judgment packet_loss
 
   region_label="$(route_region_label "$region")"
-  printf '\n%s【%s · 本次延迟结论】%s\n' \
+  printf '\n%s【%s · 本次延迟与丢包】%s\n' \
     "$C_BLUE" "$region_label" "$C_RESET"
   for family in "${families[@]}"; do
     if [[ "$family" == ipv4 ]]; then
@@ -1639,15 +1748,18 @@ show_route_region_summary() {
       label="${labels[$index]}"
       key="${region}:${family}:${carrier}"
       status="${ROUTE_SUMMARY_STATUS[$key]:-failed}"
+      packet_loss="${ROUTE_SUMMARY_PACKET_LOSS[$key]:-未测}"
       if [[ "$status" == ok ]]; then
         latency="${ROUTE_SUMMARY_LATENCY[$key]:-未知}"
         judgment="${ROUTE_SUMMARY_LINE[$key]:-线路未知}"
         [[ "$latency" == 未知 ]] || latency+=" ms"
-        printf '  %s %s：%s，%s\n' \
-          "${family/ipv/IPv}" "$label" "$latency" "$judgment"
+        printf '  %s %s｜延迟 %s｜丢包 %s\n' \
+          "${family/ipv/IPv}" "$label" "$latency" \
+          "$packet_loss"
+        printf '        线路：%s\n' "$judgment"
       else
-        printf '  %s %s：本次未测到有效结果\n' \
-          "${family/ipv/IPv}" "$label"
+        printf '  %s %s｜路径未测到｜丢包 %s\n' \
+          "${family/ipv/IPv}" "$label" "$packet_loss"
       fi
     done
   done
@@ -1659,9 +1771,14 @@ show_route_report_summary() {
     "$C_BLUE" "$C_RESET"
   printf '  已完成 %d 条，未完成 %d 条。\n' \
     "$ROUTE_COMPLETED_COUNT" "$ROUTE_FAILED_COUNT"
+  printf '  丢包样本：已完成 %d 组，未完成 %d 组（每组固定 %d 包）。\n' \
+    "$PACKET_LOSS_COMPLETED_COUNT" "$PACKET_LOSS_FAILED_COUNT" \
+    "$NEKO_DIAG_PACKET_LOSS_COUNT"
   printf '  回程：已按所选地区测试（VPS → 国内参考目标）。\n'
   printf '  去程：未测试；它需要国内探针主动访问这台 VPS。\n'
   printf '  “末跳”是最后一个有响应路由节点的本次样本，不等同于带宽或晚高峰速度。\n'
+  printf '  “丢包”是 VPS → 参考目标的 ICMP 样本；目标禁 ICMP 或限速时可能显示 100%%。\n'
+  printf '  100%% ICMP 无响应不能单独证明代理线路实际丢包。\n'
   printf '  “主要国际网络”只说明本次响应路径出现该 ASN，不代表优化线路或质量保证。\n'
   printf '  ASN 只能辅助识别骨干；AS4809 不能单独证明 CN2 GT 或 GIA。\n'
 }
@@ -1682,10 +1799,15 @@ show_route_report() {
   fi
   ROUTE_COMPLETED_COUNT=0
   ROUTE_FAILED_COUNT=0
+  PACKET_LOSS_COMPLETED_COUNT=0
+  PACKET_LOSS_FAILED_COUNT=0
   ROUTE_REPORT_HAS_SUMMARY=0
+  ROUTE_TRACE_AVAILABLE=0
+  ROUTE_PACKET_LOSS_AVAILABLE=0
   ROUTE_SUMMARY_LATENCY=()
   ROUTE_SUMMARY_LINE=()
   ROUTE_SUMMARY_STATUS=()
+  ROUTE_SUMMARY_PACKET_LOSS=()
 
   printf '\n%s========== Neko 三网线路检测 ==========%s\n' \
     "$C_BLUE" "$C_RESET"
@@ -1693,8 +1815,18 @@ show_route_report() {
     diag_skip "没有可用的 Neko 安装状态，无法绑定已安装地址族。"
     return 0
   fi
-  if [[ ! -x "$NEKO_DIAG_NEXTTRACE" ]]; then
-    diag_skip "可选 NextTrace 组件不可用；安装与代理服务不受影响。"
+  if [[ -x "$NEKO_DIAG_NEXTTRACE" ]]; then
+    ROUTE_TRACE_AVAILABLE=1
+  else
+    printf '  [未测] 可选 NextTrace 组件不可用；继续尝试丢包样本。\n'
+  fi
+  if command -v "$NEKO_DIAG_PING" >/dev/null 2>&1; then
+    ROUTE_PACKET_LOSS_AVAILABLE=1
+  else
+    printf '  [未测] 系统缺少 ping；继续尝试路径检测，丢包率显示为未测。\n'
+  fi
+  if (( ROUTE_TRACE_AVAILABLE == 0 && ROUTE_PACKET_LOSS_AVAILABLE == 0 )); then
+    diag_skip "NextTrace 与 ping 都不可用；安装与代理服务不受影响。"
     return 0
   fi
   if ! command -v timeout >/dev/null 2>&1; then
@@ -1723,7 +1855,13 @@ show_route_report() {
     "$C_GREEN" "$C_RESET"
   printf '  去程状态：%s未测试%s（需要国内探针 → 这台 VPS）。\n' \
     "$C_YELLOW" "$C_RESET"
-  printf '  说明：结果只代表本次路径；失败会显示“未测”，不会修改或停止 Neko。\n'
+  if (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )); then
+    printf '  丢包样本：每条线路固定发送 %d 个 ICMP 包；三网并行，地区与地址族顺序执行。\n' \
+      "$NEKO_DIAG_PACKET_LOSS_COUNT"
+  else
+    printf '  丢包样本：未运行（系统缺少 ping）；路径检测仍会继续。\n'
+  fi
+  printf '  说明：结果只代表本次路径和样本；失败会显示“未测”，不会修改或停止 Neko。\n'
 
   for region in "${regions[@]}"; do
     if network_mode_has_ipv4 "$NETWORK_MODE"; then
@@ -1895,9 +2033,9 @@ run_route_menu() {
       duration_text="全部六地双栈在连续超时时可能接近 7 分钟"
     else
       region_text="$(route_region_label "$selected_region")"
-      duration_text="通常需要几十秒"
+      duration_text="通常需要约半分钟"
     fi
-    warn "将从 VPS 向${region_text}三网目标发送少量 TCP 探测包；${duration_text}，不会修改服务。"
+    warn "将从 VPS 向${region_text}三网目标为每条线路发送 100 个 ICMP 包，并运行少量 TCP 路径探测；${duration_text}，不会修改服务。"
     read -r -p "输入 ROUTE 确认运行：" answer
     [[ "$answer" == ROUTE ]] || continue
     run_report routes "$selected_region"
@@ -1945,7 +2083,7 @@ interactive_menu() {
     printf '1. 一键完整体检（推荐，只读）\n'
     printf '2. 只看系统与硬件（离线、只读）\n'
     printf '3. 只查 Neko、IP 质量与 BGP（联网、只读）\n'
-    printf '4. 真实三网线路（约几十秒，明确确认后运行）\n'
+    printf '4. 真实三网线路与丢包（约半分钟，明确确认后运行）\n'
     printf '5. 轻量性能测试（明确确认后才运行）\n'
     printf '0. 返回\n\n'
     read -r -p "请选择 [0-5]：" choice
@@ -1985,13 +2123,13 @@ usage() {
   --system          只显示离线系统与硬件信息
   --neko            只检查 Neko 服务与证书
   --network         检查已安装地址族、IP 质量与 BGP 注册
-  --routes [地区]   运行三网回程测试：gd、sh、bj、sc、hb、ln 或 all（默认 gd）
+  --routes [地区]   运行三网回程与 100 包丢包测试：gd、sh、bj、sc、hb、ln 或 all（默认 gd）
   --full            完整只读体检（不运行性能测试）
   --benchmark-cpu   运行明确请求的轻量 CPU 测试
   --benchmark-disk  运行明确请求的轻量磁盘测试
   -h, --help        显示帮助
 
-不提供选项时打开交互菜单。三网线路和性能测试都不会包含在 --full 中。
+不提供选项时打开交互菜单。三网线路、丢包和性能测试都不会包含在 --full 中。
 EOF
 }
 

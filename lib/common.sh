@@ -155,7 +155,7 @@ install_dependencies() {
     apt-get update
     apt-get install -y --no-install-recommends \
       ca-certificates curl jq openssl tar unzip iproute2 procps \
-      nftables util-linux passwd kmod findutils bind9-dnsutils
+      nftables util-linux passwd kmod findutils bind9-dnsutils iputils-ping
   else
     local rhel_package_manager
     if command -v dnf >/dev/null 2>&1; then
@@ -167,7 +167,7 @@ install_dependencies() {
     fi
     "$rhel_package_manager" -y install \
       ca-certificates curl jq openssl tar unzip iproute procps-ng \
-      nftables util-linux shadow-utils kmod findutils bind-utils
+      nftables util-linux shadow-utils kmod findutils bind-utils iputils
   fi
 }
 

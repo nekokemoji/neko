@@ -46,6 +46,7 @@ bash -c '
     ((calls += 1))
     if [[ "$1" == install ]]; then
       [[ " $* " == *" bind9-dnsutils "* ]]
+      [[ " $* " == *" iputils-ping "* ]]
     fi
   }
   OS_FAMILY=debian install_dependencies >/dev/null
@@ -59,6 +60,7 @@ bash -c '
     ((calls += 1))
     [[ "$1" == "-y" && "$2" == "install" ]]
     [[ " $* " == *" bind-utils "* ]]
+    [[ " $* " == *" iputils "* ]]
   }
   OS_FAMILY=rhel install_dependencies >/dev/null
   [[ "$calls" == 1 ]]
@@ -359,7 +361,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.7.3"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.8.0"' "$ROOT/versions.env"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
