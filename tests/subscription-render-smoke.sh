@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
+export LC_ALL=C
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-subscription-smoke.XXXXXX")"
@@ -44,7 +45,11 @@ expected_files=(
   stash-v6-to-v4.yaml
   stash-v6.yaml
 )
-[[ "${subscription_files[*]}" == "${expected_files[*]}" ]]
+if [[ "${subscription_files[*]}" != "${expected_files[*]}" ]]; then
+  printf '订阅渲染文件清单与预期不一致。\n实际：%s\n预期：%s\n' \
+    "${subscription_files[*]}" "${expected_files[*]}" >&2
+  exit 1
+fi
 
 check_profile() {
   local profile="$1" address="$2" dns_server="$3"
