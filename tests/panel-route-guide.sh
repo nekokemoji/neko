@@ -19,12 +19,12 @@ panel_output="$(
         _ "$ROOT/runtime/panel.sh" 2>&1
 )"
 
-[[ "$panel_output" == *'8. 订阅链接太多不知道怎么选？小白建议先看'* ]]
-[[ "$panel_output" == *'入站是“你的设备到 VPS”这一段'* ]]
-[[ "$panel_output" == *'IPv6→IPv4 = 你的设备通过 IPv6 连接 VPS'* ]]
-[[ "$panel_output" == *'IPv4→IPv4  改为  IPv6→IPv4'* ]]
-[[ "$panel_output" == *'IPv4→IPv4  改为  IPv4→IPv6'* ]]
-[[ "$panel_output" == *'左边决定怎么连接 VPS，右边决定 VPS 怎么连接网站'* ]]
+[[ "$panel_output" == *'8. 订阅链接怎么选？首次使用建议查看'* ]]
+[[ "$panel_output" == *'4 种线路方向 × 4 种客户端格式 = 16 条订阅链接'* ]]
+[[ "$panel_output" == *'你的设备 → VPS，这一段叫作入站。'* ]]
+[[ "$panel_output" == *'这里并不是把 IPv6“转换”成 IPv4'* ]]
+[[ "$panel_output" == *'IPv4→IPv4 切换为 IPv4→IPv6'* ]]
+[[ "$panel_output" == *'左边决定你怎么连接 VPS，右边决定 VPS 怎么连接网站'* ]]
 [[ "$(sha256sum "$WORK/state.json")" == "$state_before" ]]
 
 eof_output="$(
