@@ -363,7 +363,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.9.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.9.1"' "$ROOT/versions.env"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
@@ -1155,6 +1155,7 @@ decoded_qr="$(
 )"
 [[ "$decoded_qr" == "$qr_url" ]]
 bash "$ROOT/tests/panel-qrcode.sh"
+bash "$ROOT/tests/panel-route-guide.sh"
 bash "$ROOT/tests/diagnostics.sh"
 
 printf '[7/9] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
