@@ -317,6 +317,12 @@ validate_installed_configs() {
     "$NEKO_LIBEXEC/sing-box" check \
       -c "$NEKO_ETC/subscriptions/sing-box-v6.json" >/dev/null
   fi
+  if network_mode_has_cross_routes; then
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "$NEKO_ETC/subscriptions/sing-box-v4-to-v6.json" >/dev/null
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "$NEKO_ETC/subscriptions/sing-box-v6-to-v4.json" >/dev/null
+  fi
   "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json" >/dev/null
   "$NEKO_LIBEXEC/caddy" validate \
     --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile >/dev/null
@@ -374,6 +380,11 @@ resolve_strict_endpoints() {
 main() {
   local current_schema current_release certificate_domain service state_tmp
   local legacy_token trojan_port trojan_password hy2_start hy2_end port
+  local tuic_port ss_port anytls_port vision_port xhttp_port
+  local cross_hy2_start="null" cross_hy2_end="null"
+  local cross_tuic_port="null" cross_ss_port="null" cross_anytls_port="null"
+  local cross_trojan_port="null" cross_vision_port="null" cross_xhttp_port="null"
+  local cross_ipv4_to_ipv6_token="" cross_ipv6_to_ipv4_token=""
   local -a domain_args=()
 
   if (( EUID != 0 )) && [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
@@ -414,7 +425,8 @@ main() {
   current_schema="$(jq -er '.schema // 1 | select(type == "number")' "$NEKO_STATE")" \
     || die "state.json 缺少有效 schema。"
   current_release="$(jq -r '.release // "unknown"' "$NEKO_STATE")"
-  (( current_schema == 1 || current_schema == 2 || current_schema == 3 )) \
+  (( current_schema == 1 || current_schema == 2 \
+    || current_schema == 3 || current_schema == 4 )) \
     || die "不支持从 state schema ${current_schema} 升级。"
   DOMAIN="$(jq -er '.domain | select(type == "string" and length > 0)' "$NEKO_STATE")" \
     || die "state.json 缺少域名。"
@@ -425,7 +437,7 @@ main() {
   ACME_METHOD="$(jq -r '.acme.method // "http-01"' "$NEKO_STATE")"
   ACME_METHOD="$(normalize_acme_method "$ACME_METHOD")" \
     || die "state.json 中的 ACME 验证方式无效。"
-  if (( current_schema == 3 )); then
+  if (( current_schema >= 3 )); then
     NETWORK_MODE="$(jq -r '.network.mode // empty' "$NEKO_STATE")"
     NETWORK_MODE="$(normalize_network_mode "$NETWORK_MODE")" \
       || die "state.json 中的网络安装模式无效。"
@@ -435,38 +447,121 @@ main() {
   if [[ "$ACME_METHOD" == "$ACME_METHOD_CLOUDFLARE" ]]; then
     assert_cloudflare_dns_token_file
   fi
+  hy2_start="$(jq -er '.ports.hysteria2_start | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 中的 Hysteria2 起始端口无效。"
+  hy2_end="$(jq -er '.ports.hysteria2_end | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 中的 Hysteria2 结束端口无效。"
+  tuic_port="$(jq -er '.ports.tuic | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 中的 TUIC 端口无效。"
+  ss_port="$(jq -er '.ports.ss2022 | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 中的 SS2022 端口无效。"
+  anytls_port="$(jq -er '.ports.anytls | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 中的 AnyTLS 端口无效。"
+  vision_port="$(jq -er '.ports.vless_reality_vision | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 中的 VLESS Vision 端口无效。"
+  xhttp_port="$(jq -er '.ports.vless_reality_xhttp | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 中的 VLESS XHTTP 端口无效。"
+  (( hy2_start >= 10000 && hy2_end <= 60000 && hy2_end - hy2_start == 127 )) \
+    || die "state.json 中的 Hysteria2 端口范围无效。"
+  for port in "$tuic_port" "$ss_port" "$anytls_port" "$vision_port" "$xhttp_port"; do
+    (( port >= 10000 && port <= 60000 )) \
+      || die "state.json 中存在范围无效的代理端口。"
+  done
+
   trojan_port="$(jq -r '.ports.trojan // empty' "$NEKO_STATE")"
   if [[ -n "$trojan_port" ]]; then
-    if [[ ! "$trojan_port" =~ ^[0-9]+$ ]] \
-      || (( trojan_port < 10000 || trojan_port > 60000 )); then
-      die "state.json 中的 Trojan 端口无效。"
-    fi
-  else
-    initialize_port_reservations
-    hy2_start="$(jq -er '.ports.hysteria2_start | numbers' "$NEKO_STATE")" \
-      || die "state.json 中的 Hysteria2 起始端口无效。"
-    hy2_end="$(jq -er '.ports.hysteria2_end | numbers' "$NEKO_STATE")" \
-      || die "state.json 中的 Hysteria2 结束端口无效。"
-    (( hy2_start >= 1 && hy2_end >= hy2_start && hy2_end <= 65535 )) \
-      || die "state.json 中的 Hysteria2 端口范围无效。"
-    for ((port = hy2_start; port <= hy2_end; port++)); do
+    [[ "$trojan_port" =~ ^[0-9]+$ ]] \
+      || die "state.json 中的 Trojan 端口格式无效。"
+    (( trojan_port >= 10000 && trojan_port <= 60000 )) \
+      || die "state.json 中的 Trojan 端口范围无效。"
+  fi
+
+  if network_mode_has_cross_routes && (( current_schema == 4 )); then
+    cross_hy2_start="$(jq -er '.ports.cross.hysteria2_start | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 Hysteria2 起始端口无效。"
+    cross_hy2_end="$(jq -er '.ports.cross.hysteria2_end | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 Hysteria2 结束端口无效。"
+    cross_tuic_port="$(jq -er '.ports.cross.tuic | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 TUIC 端口无效。"
+    cross_ss_port="$(jq -er '.ports.cross.ss2022 | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 SS2022 端口无效。"
+    cross_anytls_port="$(jq -er '.ports.cross.anytls | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 AnyTLS 端口无效。"
+    cross_trojan_port="$(jq -er '.ports.cross.trojan | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 Trojan 端口无效。"
+    cross_vision_port="$(jq -er '.ports.cross.vless_reality_vision | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 VLESS Vision 端口无效。"
+    cross_xhttp_port="$(jq -er '.ports.cross.vless_reality_xhttp | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+      || die "state.json 中的跨族 VLESS XHTTP 端口无效。"
+    cross_ipv4_to_ipv6_token="$(jq -r '.subscription.ipv4_to_ipv6_token // empty' "$NEKO_STATE")"
+    cross_ipv6_to_ipv4_token="$(jq -r '.subscription.ipv6_to_ipv4_token // empty' "$NEKO_STATE")"
+    [[ "$cross_ipv4_to_ipv6_token" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+      || die "state.json 中的 IPv4→IPv6 订阅令牌无效。"
+    [[ "$cross_ipv6_to_ipv4_token" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+      || die "state.json 中的 IPv6→IPv4 订阅令牌无效。"
+  fi
+
+  initialize_port_reservations
+  for ((port = hy2_start; port <= hy2_end; port++)); do
+    NEKO_RESERVED_PORTS["$port"]=1
+  done
+  for port in "$tuic_port" "$ss_port" "$anytls_port" "$vision_port" "$xhttp_port"; do
+    NEKO_RESERVED_PORTS["$port"]=1
+  done
+  if network_mode_has_cross_routes && (( current_schema == 4 )); then
+    (( cross_hy2_start >= 10000 && cross_hy2_end <= 60000 \
+      && cross_hy2_end - cross_hy2_start == 127 )) \
+      || die "state.json 中的跨族 Hysteria2 端口范围无效。"
+    for ((port = cross_hy2_start; port <= cross_hy2_end; port++)); do
       NEKO_RESERVED_PORTS["$port"]=1
     done
-    while IFS= read -r port; do
-      [[ "$port" =~ ^[0-9]+$ ]] || die "state.json 中存在无效端口。"
+    for port in \
+      "$cross_tuic_port" "$cross_ss_port" "$cross_anytls_port" \
+      "$cross_trojan_port" "$cross_vision_port" "$cross_xhttp_port"; do
+      (( port >= 10000 && port <= 60000 )) \
+        || die "state.json 中存在范围无效的跨族代理端口。"
       NEKO_RESERVED_PORTS["$port"]=1
-    done < <(
-      jq -r '
-        .ports
-        | [
-            .tuic, .ss2022, .anytls,
-            .vless_reality_vision, .vless_reality_xhttp
-          ]
-        | .[]
-      ' "$NEKO_STATE"
-    )
+    done
+  fi
+  if [[ -n "$trojan_port" ]]; then
+    NEKO_RESERVED_PORTS["$trojan_port"]=1
+  else
     reserve_random_port trojan_port
   fi
+
+  if network_mode_has_cross_routes; then
+    if (( current_schema != 4 )); then
+      reserve_random_range 128 cross_hy2_start cross_hy2_end
+      reserve_random_port cross_tuic_port
+      reserve_random_port cross_ss_port
+      reserve_random_port cross_anytls_port
+      reserve_random_port cross_trojan_port
+      reserve_random_port cross_vision_port
+      reserve_random_port cross_xhttp_port
+      cross_ipv4_to_ipv6_token="$(random_urlsafe 24)"
+      cross_ipv6_to_ipv4_token="$(random_urlsafe 24)"
+    fi
+  fi
+
+  HY2_START="$hy2_start"
+  HY2_END="$hy2_end"
+  TUIC_PORT="$tuic_port"
+  SS_PORT="$ss_port"
+  ANYTLS_PORT="$anytls_port"
+  TROJAN_PORT="$trojan_port"
+  VISION_PORT="$vision_port"
+  XHTTP_PORT="$xhttp_port"
+  if network_mode_has_cross_routes; then
+    CROSS_HY2_START="$cross_hy2_start"
+    CROSS_HY2_END="$cross_hy2_end"
+    CROSS_TUIC_PORT="$cross_tuic_port"
+    CROSS_SS_PORT="$cross_ss_port"
+    CROSS_ANYTLS_PORT="$cross_anytls_port"
+    CROSS_TROJAN_PORT="$cross_trojan_port"
+    CROSS_VISION_PORT="$cross_vision_port"
+    CROSS_XHTTP_PORT="$cross_xhttp_port"
+  fi
+  validate_proxy_port_layout
   trojan_password="$(jq -r '.credentials.trojan_password // empty' "$NEKO_STATE")"
   if [[ -n "$trojan_password" ]]; then
     [[ "$trojan_password" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
@@ -546,6 +641,7 @@ main() {
   state_tmp="$(mktemp "${NEKO_STATE}.tmp.XXXXXX")"
   legacy_token="$(jq -r '.subscription.token // empty' "$NEKO_STATE")"
   jq \
+    --argjson schema "$NEKO_STATE_SCHEMA" \
     --arg release "$NEKO_RELEASE" \
     --arg network_mode "$NETWORK_MODE" \
     --arg v4_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
@@ -554,11 +650,33 @@ main() {
     --arg v6_address "$SUBSCRIPTION_IPV6_ADDRESS" \
     --arg acme_method "$ACME_METHOD" \
     --argjson trojan_port "$trojan_port" \
+    --argjson cross_hy2_start "$cross_hy2_start" \
+    --argjson cross_hy2_end "$cross_hy2_end" \
+    --argjson cross_tuic_port "$cross_tuic_port" \
+    --argjson cross_ss_port "$cross_ss_port" \
+    --argjson cross_anytls_port "$cross_anytls_port" \
+    --argjson cross_trojan_port "$cross_trojan_port" \
+    --argjson cross_vision_port "$cross_vision_port" \
+    --argjson cross_xhttp_port "$cross_xhttp_port" \
     --arg trojan_password "$trojan_password" \
     --arg legacy_token "$legacy_token" \
-    '.schema = 3
+    --arg cross_ipv4_to_ipv6_token "$cross_ipv4_to_ipv6_token" \
+    --arg cross_ipv6_to_ipv4_token "$cross_ipv6_to_ipv4_token" \
+    '.schema = $schema
      | .release = $release
      | .ports.trojan = $trojan_port
+     | .ports.cross = (
+         if $network_mode == "dual" then {
+           hysteria2_start: $cross_hy2_start,
+           hysteria2_end: $cross_hy2_end,
+           tuic: $cross_tuic_port,
+           ss2022: $cross_ss_port,
+           anytls: $cross_anytls_port,
+           trojan: $cross_trojan_port,
+           vless_reality_vision: $cross_vision_port,
+           vless_reality_xhttp: $cross_xhttp_port
+         } else null end
+       )
      | .credentials.trojan_password = $trojan_password
      | .network = {mode: $network_mode}
      | .subscription.ipv4_token = (
@@ -574,6 +692,12 @@ main() {
            if $legacy_token != "" then $legacy_token else null end
          ))
          else null end
+       )
+     | .subscription.ipv4_to_ipv6_token = (
+         if $network_mode == "dual" then $cross_ipv4_to_ipv6_token else null end
+       )
+     | .subscription.ipv6_to_ipv4_token = (
+         if $network_mode == "dual" then $cross_ipv6_to_ipv4_token else null end
        )
      | .subscription.ipv4_domain = (
          if $network_mode == "ipv4-only" or $network_mode == "dual"

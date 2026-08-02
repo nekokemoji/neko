@@ -328,6 +328,8 @@ if ! NEKO_ETC="$FIREWALL_TEST_WORK/etc" \
     }
     sync_managed_firewall_profile
     grep -Fq "24500" "$UFW_PROFILE_FILE"
+    grep -Fq "31000" "$UFW_PROFILE_FILE"
+    grep -Fq "27000:27127" "$UFW_PROFILE_FILE"
     grep -Fxq "app update NekoProxy" "$NEKO_UFW_CALLS"
   ' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"; then
   rm -rf -- "$FIREWALL_TEST_WORK"
@@ -361,7 +363,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.8.1"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.9.0"' "$ROOT/versions.env"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
@@ -688,12 +690,20 @@ printf '[5/9] 用真实冻结核心校验配置……\n'
 "$SING_BOX" check -c "$WORK/etc/config/sing-box.json"
 "$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v4.json"
 "$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v6.json"
+"$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v4-to-v6.json"
+"$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v6-to-v4.json"
 "$XRAY" run -test -c "$WORK/etc/config/xray.json"
 "$CADDY" validate --config "$WORK/etc/config/Caddyfile" --adapter caddyfile >/dev/null
-mkdir -p "$WORK/mihomo-v4" "$WORK/mihomo-v6"
+mkdir -p \
+  "$WORK/mihomo-v4" "$WORK/mihomo-v6" \
+  "$WORK/mihomo-v4-to-v6" "$WORK/mihomo-v6-to-v4"
 "$MIHOMO" -d "$WORK/mihomo-v4" -t -f "$WORK/etc/subscriptions/mihomo-v4.yaml"
 "$MIHOMO" -d "$WORK/mihomo-v6" -t -f "$WORK/etc/subscriptions/mihomo-v6.yaml"
-for family in v4 v6; do
+"$MIHOMO" -d "$WORK/mihomo-v4-to-v6" -t \
+  -f "$WORK/etc/subscriptions/mihomo-v4-to-v6.yaml"
+"$MIHOMO" -d "$WORK/mihomo-v6-to-v4" -t \
+  -f "$WORK/etc/subscriptions/mihomo-v6-to-v4.yaml"
+for family in v4 v6 v4-to-v6 v6-to-v4; do
   set +e
   PATH=/nonexistent "$HYSTERIA" server --disable-update-check \
     --config "$WORK/etc/config/hysteria-${family}.yaml" \
@@ -739,19 +749,33 @@ xray = json.loads((root / "etc/config/xray.json").read_text())
 sing = json.loads((root / "etc/config/sing-box.json").read_text())
 hysteria_v4 = yaml.safe_load((root / "etc/config/hysteria-v4.yaml").read_text())
 hysteria_v6 = yaml.safe_load((root / "etc/config/hysteria-v6.yaml").read_text())
+hysteria_v4_to_v6 = yaml.safe_load(
+    (root / "etc/config/hysteria-v4-to-v6.yaml").read_text()
+)
+hysteria_v6_to_v4 = yaml.safe_load(
+    (root / "etc/config/hysteria-v6-to-v4.yaml").read_text()
+)
 caddy = (root / "etc/config/Caddyfile").read_text()
 
 expected_subscription_files = {
-    "mihomo-v4.yaml", "mihomo-v6.yaml",
-    "stash-v4.yaml", "stash-v6.yaml",
-    "shadowrocket-v4.txt", "shadowrocket-v6.txt",
-    "sing-box-v4.json", "sing-box-v6.json",
+    f"{client}-{route}.{extension}"
+    for client, extension in (
+        ("mihomo", "yaml"), ("stash", "yaml"),
+        ("shadowrocket", "txt"), ("sing-box", "json"),
+    )
+    for route in ("v4", "v6", "v4-to-v6", "v6-to-v4")
 }
 assert {p.name for p in (root / "etc/subscriptions").iterdir()} == expected_subscription_files
 
-for family, address, ip_version in (
-    ("v4", state["subscription"]["ipv4_address"], "ipv4"),
-    ("v6", state["subscription"]["ipv6_address"], "ipv6"),
+for family, address, ip_version, route_ports, expected_dns_strategy, expected_dns_server, rejected_ip_version in (
+    ("v4", state["subscription"]["ipv4_address"], "ipv4", state["ports"],
+     "ipv4_only", "1.1.1.1", 6),
+    ("v6", state["subscription"]["ipv6_address"], "ipv6", state["ports"],
+     "ipv6_only", "2606:4700:4700::1111", 4),
+    ("v4-to-v6", state["subscription"]["ipv4_address"], "ipv4", state["ports"]["cross"],
+     "ipv6_only", "2606:4700:4700::1111", 4),
+    ("v6-to-v4", state["subscription"]["ipv6_address"], "ipv6", state["ports"]["cross"],
+     "ipv4_only", "1.1.1.1", 6),
 ):
     mihomo = yaml.safe_load((root / f"etc/subscriptions/mihomo-{family}.yaml").read_text())
     stash = yaml.safe_load((root / f"etc/subscriptions/stash-{family}.yaml").read_text())
@@ -772,7 +796,7 @@ for family, address, ip_version in (
         "type": "trojan",
         "server": address,
         "ip-version": ip_version,
-        "port": state["ports"]["trojan"],
+        "port": route_ports["trojan"],
         "password": state["credentials"]["trojan_password"],
         "sni": "example.com",
         "udp": True,
@@ -787,7 +811,7 @@ for family, address, ip_version in (
     stash_vision = next(p for p in stash["proxies"] if p["type"] == "vless")
     assert stash_hy2["auth"] == "test-hy2-password" and "password" not in stash_hy2
     assert stash_tuic["version"] == 5
-    assert stash_trojan["port"] == state["ports"]["trojan"]
+    assert stash_trojan["port"] == route_ports["trojan"]
     assert stash_trojan["password"] == state["credentials"]["trojan_password"]
     assert stash_trojan["sni"] == "example.com"
     assert stash_trojan["skip-cert-verify"] is False
@@ -799,10 +823,11 @@ for family, address, ip_version in (
     ]
     assert all(p["server"] == address for p in shadow_proxies)
     shadow_hy2, shadow_tuic, _, _, shadow_trojan, shadow_vision, shadow_xhttp = shadow_proxies
-    assert shadow_hy2["port-range"] == "21000-21127"
-    assert shadow_hy2["ports"] == "21000-21127"
+    route_hy2_range = f'{route_ports["hysteria2_start"]}-{route_ports["hysteria2_end"]}'
+    assert shadow_hy2["port-range"] == route_hy2_range
+    assert shadow_hy2["ports"] == route_hy2_range
     assert shadow_tuic["version"] == 5
-    assert shadow_trojan["port"] == state["ports"]["trojan"]
+    assert shadow_trojan["port"] == route_ports["trojan"]
     assert shadow_trojan["password"] == state["credentials"]["trojan_password"]
     assert shadow_trojan["sni"] == "example.com"
     assert shadow_trojan["skip-cert-verify"] is False
@@ -816,9 +841,6 @@ for family, address, ip_version in (
         "HY2", "TUIC-v5", "SS2022", "AnyTLS", "Trojan-TLS",
         "VLESS-Reality-Vision"
     ]
-    expected_dns_strategy = "ipv4_only" if family == "v4" else "ipv6_only"
-    expected_dns_server = "1.1.1.1" if family == "v4" else "2606:4700:4700::1111"
-    rejected_ip_version = 6 if family == "v4" else 4
     client_outbounds = {outbound["tag"]: outbound for outbound in sing_client["outbounds"]}
     assert set(client_outbounds) == {"PROXY", *expected_selector}
     assert client_outbounds["PROXY"] == {
@@ -833,7 +855,9 @@ for family, address, ip_version in (
         if tag != "PROXY"
     )
     assert all(outbound["type"] != "direct" for outbound in sing_client["outbounds"])
-    assert client_outbounds["HY2"]["server_ports"] == ["21000:21127"]
+    assert client_outbounds["HY2"]["server_ports"] == [
+        f'{route_ports["hysteria2_start"]}:{route_ports["hysteria2_end"]}'
+    ]
     assert client_outbounds["HY2"]["hop_interval"] == "30s"
     assert client_outbounds["TUIC-v5"]["udp_relay_mode"] == "native"
     assert client_outbounds["SS2022"]["method"] == "2022-blake3-aes-128-gcm"
@@ -851,7 +875,7 @@ for family, address, ip_version in (
         "type": "trojan",
         "tag": "Trojan-TLS",
         "server": address,
-        "server_port": state["ports"]["trojan"],
+        "server_port": route_ports["trojan"],
         "password": state["credentials"]["trojan_password"],
         "tls": {
             "enabled": True,
@@ -895,50 +919,68 @@ for family, address, ip_version in (
     assert sing_client["experimental"] == {"cache_file": {"enabled": True}}
 
 ports = state["ports"]
-singles = [
-    ports[k] for k in (
+cross_ports = ports["cross"]
+all_used_ports = set()
+for port_set in (ports, cross_ports):
+    singles = [
+        port_set[k] for k in (
         "tuic", "ss2022", "anytls", "trojan",
         "vless_reality_vision", "vless_reality_xhttp",
-    )
-]
-assert len(set(singles)) == len(singles)
-assert all(not (ports["hysteria2_start"] <= p <= ports["hysteria2_end"]) for p in singles)
-assert ports["hysteria2_end"] - ports["hysteria2_start"] + 1 == 128
+        )
+    ]
+    port_range = set(range(port_set["hysteria2_start"], port_set["hysteria2_end"] + 1))
+    assert len(port_range) == 128
+    assert len(set(singles)) == len(singles)
+    assert not port_range.intersection(singles)
+    assert not all_used_ports.intersection(port_range | set(singles))
+    all_used_ports |= port_range | set(singles)
 
 v4_address = state["subscription"]["ipv4_address"]
 v6_address = state["subscription"]["ipv6_address"]
 
-assert len(sing["inbounds"]) == 8
+assert len(sing["inbounds"]) == 16
 sing_inbounds = {inbound["tag"]: inbound for inbound in sing["inbounds"]}
-assert {tag for tag in sing_inbounds if "-v4-" in tag} == {
-    "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"
+sing_protocol_ports = {
+    "tuic": "tuic", "ss2022": "ss2022", "anytls": "anytls", "trojan": "trojan"
 }
-assert {tag for tag in sing_inbounds if "-v6-" in tag} == {
-    "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"
-}
-assert all(inbound["listen"] == v4_address for tag, inbound in sing_inbounds.items() if "-v4-" in tag)
-assert all(inbound["listen"] == v6_address for tag, inbound in sing_inbounds.items() if "-v6-" in tag)
+for suffix, address, route_ports in (
+    ("v4", v4_address, ports),
+    ("v6", v6_address, ports),
+    ("v4-to-v6", v4_address, cross_ports),
+    ("v6-to-v4", v6_address, cross_ports),
+):
+    for protocol, port_key in sing_protocol_ports.items():
+        inbound = sing_inbounds[f"{protocol}-{suffix}-in"]
+        assert inbound["listen"] == address
+        assert inbound["listen_port"] == route_ports[port_key]
 
-assert len(xray["inbounds"]) == 4
+assert len(xray["inbounds"]) == 8
 xray_inbounds = {inbound["tag"]: inbound for inbound in xray["inbounds"]}
-assert {tag for tag in xray_inbounds if "-v4-" in tag} == {
-    "vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"
-}
-assert {tag for tag in xray_inbounds if "-v6-" in tag} == {
-    "vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"
-}
-assert all(inbound["listen"] == v4_address for tag, inbound in xray_inbounds.items() if "-v4-" in tag)
-assert all(inbound["listen"] == v6_address for tag, inbound in xray_inbounds.items() if "-v6-" in tag)
+for suffix, address, route_ports in (
+    ("v4", v4_address, ports),
+    ("v6", v6_address, ports),
+    ("v4-to-v6", v4_address, cross_ports),
+    ("v6-to-v4", v6_address, cross_ports),
+):
+    vision = xray_inbounds[f"vless-reality-vision-{suffix}-in"]
+    xhttp = xray_inbounds[f"vless-reality-xhttp-{suffix}-in"]
+    assert vision["listen"] == address and vision["port"] == route_ports["vless_reality_vision"]
+    assert xhttp["listen"] == address and xhttp["port"] == route_ports["vless_reality_xhttp"]
 for inbound in xray["inbounds"]:
     reality = inbound["streamSettings"]["realitySettings"]
     assert reality["target"] == "127.0.0.1:8443"
     assert reality["serverNames"] == ["example.com"]
 cert_path = str(root / "var/lego/certificates/example.com.crt")
 key_path = str(root / "var/lego/certificates/example.com.key")
-for suffix, address in (("v4", v4_address), ("v6", v6_address)):
+for suffix, address, route_ports in (
+    ("v4", v4_address, ports),
+    ("v6", v6_address, ports),
+    ("v4-to-v6", v4_address, cross_ports),
+    ("v6-to-v4", v6_address, cross_ports),
+):
     trojan = sing_inbounds[f"trojan-{suffix}-in"]
     assert trojan["listen"] == address
-    assert trojan["listen_port"] == ports["trojan"]
+    assert trojan["listen_port"] == route_ports["trojan"]
     assert trojan["users"] == [
         {"password": state["credentials"]["trojan_password"]}
     ]
@@ -951,37 +993,47 @@ for suffix, address in (("v4", v4_address), ("v6", v6_address)):
 tls_inbounds = [i for i in sing["inbounds"] if "tls" in i]
 assert all(i["tls"]["certificate_path"] == cert_path for i in tls_inbounds)
 assert all(i["tls"]["key_path"] == key_path for i in tls_inbounds)
+v4_egress_tags = [
+    "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in",
+    "tuic-v6-to-v4-in", "ss2022-v6-to-v4-in",
+    "anytls-v6-to-v4-in", "trojan-v6-to-v4-in",
+]
+v6_egress_tags = [
+    "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in",
+    "tuic-v4-to-v6-in", "ss2022-v4-to-v6-in",
+    "anytls-v4-to-v6-in", "trojan-v4-to-v6-in",
+]
 assert sing["route"]["rules"][0] == {"network": "tcp", "port": 25, "action": "reject"}
 assert sing["route"]["rules"][1] == {
-    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"],
+    "inbound": v4_egress_tags,
     "action": "resolve",
     "server": "local",
     "strategy": "ipv4_only",
 }
 assert sing["route"]["rules"][2] == {
-    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"],
+    "inbound": v6_egress_tags,
     "action": "resolve",
     "server": "local",
     "strategy": "ipv6_only",
 }
 assert sing["route"]["rules"][3] == {"ip_is_private": True, "action": "reject"}
 assert sing["route"]["rules"][4] == {
-    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"],
+    "inbound": v4_egress_tags,
     "ip_version": 6,
     "action": "reject",
 }
 assert sing["route"]["rules"][5] == {
-    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"],
+    "inbound": v6_egress_tags,
     "ip_version": 4,
     "action": "reject",
 }
 assert sing["route"]["rules"][6] == {
-    "inbound": ["tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"],
+    "inbound": v4_egress_tags,
     "action": "route",
     "outbound": "direct-v4",
 }
 assert sing["route"]["rules"][7] == {
-    "inbound": ["tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"],
+    "inbound": v6_egress_tags,
     "action": "route",
     "outbound": "direct-v6",
 }
@@ -1020,18 +1072,28 @@ assert xray["routing"]["rules"][1] == {
 }
 assert xray["routing"]["rules"][2] == {
     "type": "field",
-    "inboundTag": ["vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"],
+    "inboundTag": [
+        "vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in",
+        "vless-reality-vision-v6-to-v4-in", "vless-reality-xhttp-v6-to-v4-in",
+    ],
     "outboundTag": "direct-v4",
 }
 assert xray["routing"]["rules"][3] == {
     "type": "field",
-    "inboundTag": ["vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"],
+    "inboundTag": [
+        "vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in",
+        "vless-reality-vision-v4-to-v6-in", "vless-reality-xhttp-v4-to-v6-in",
+    ],
     "outboundTag": "direct-v6",
 }
 
 for family, hysteria, address, mode, bind_field, listen in (
     ("v4", hysteria_v4, v4_address, 4, "bindIPv4", f"{v4_address}:21000-21127"),
     ("v6", hysteria_v6, v6_address, 6, "bindIPv6", f"[{v6_address}]:21000-21127"),
+    ("v4-to-v6", hysteria_v4_to_v6, v6_address, 6, "bindIPv6",
+     f'{v4_address}:{cross_ports["hysteria2_start"]}-{cross_ports["hysteria2_end"]}'),
+    ("v6-to-v4", hysteria_v6_to_v4, v4_address, 4, "bindIPv4",
+     f'[{v6_address}]:{cross_ports["hysteria2_start"]}-{cross_ports["hysteria2_end"]}'),
 ):
     assert hysteria["listen"] == listen
     assert hysteria["tls"] == {"cert": cert_path, "key": key_path}
@@ -1051,9 +1113,12 @@ assert caddy.count(f"tls {cert_path} {key_path}") == 4
 assert "protocols h1 h2" in caddy
 assert "mihomo-v4.yaml" in caddy and "mihomo-v6.yaml" in caddy
 assert "sing-box-v4.json" in caddy and "sing-box-v6.json" in caddy
+assert "sing-box-v4-to-v6.json" in caddy and "sing-box-v6-to-v4.json" in caddy
 assert "https://v4.example.com" in caddy and "https://v6.example.com" in caddy
 assert "handle /test-subscription-token/v4/mihomo.yaml" in caddy
 assert "handle /test-subscription-token/v6/mihomo.yaml" in caddy
+assert "handle /test-v4-to-v6-token/v4-to-v6/mihomo.yaml" in caddy
+assert "handle /test-v6-to-v4-token/v6-to-v4/mihomo.yaml" in caddy
 assert caddy.count("handle /test-subscription-token/mihomo.yaml") == 2
 assert (
     "handle /test-subscription-token/v4/mihomo.yaml {\n"
@@ -1064,7 +1129,7 @@ assert (
     "\t\trewrite * /mihomo-v6.yaml"
 ) in caddy
 assert 'header Content-Type "text/yaml; charset=utf-8"' in caddy
-assert caddy.count('header Content-Type "application/json; charset=utf-8"') == 4
+assert caddy.count('header Content-Type "application/json; charset=utf-8"') == 6
 PY
 
 links="$(
@@ -1075,7 +1140,9 @@ links="$(
 [[ "$links" == *'https://example.com/test-subscription-token/v6/mihomo.yaml'* ]]
 [[ "$links" == *'https://example.com/test-subscription-token/v4/sing-box.json'* ]]
 [[ "$links" == *'https://example.com/test-subscription-token/v6/sing-box.json'* ]]
-[[ "$(grep -c '（严格）' <<< "$links")" == 8 ]]
+[[ "$links" == *'https://example.com/test-v4-to-v6-token/v4-to-v6/mihomo.yaml'* ]]
+[[ "$links" == *'https://example.com/test-v6-to-v4-token/v6-to-v4/sing-box.json'* ]]
+[[ "$(grep -c '（严格）' <<< "$links")" == 16 ]]
 
 qr_url='https://example.com/test-subscription-token/v4/mihomo.yaml'
 printf '%s' "$qr_url" \
@@ -1123,6 +1190,10 @@ SUPERVISOR_WORK="$WORK/hysteria-supervisor"
 mkdir -p "$SUPERVISOR_WORK/config"
 printf 'listen: test-v4\n' > "$SUPERVISOR_WORK/config/hysteria-v4.yaml"
 printf 'listen: test-v6\n' > "$SUPERVISOR_WORK/config/hysteria-v6.yaml"
+printf 'listen: test-v4-to-v6\n' \
+  > "$SUPERVISOR_WORK/config/hysteria-v4-to-v6.yaml"
+printf 'listen: test-v6-to-v4\n' \
+  > "$SUPERVISOR_WORK/config/hysteria-v6-to-v4.yaml"
 cat > "$SUPERVISOR_WORK/fake-hysteria" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -1139,13 +1210,25 @@ done
 case "$config" in
   *hysteria-v4.yaml)
     : > "$NEKO_SUPERVISOR_TEST_DIR/v4.started"
-    sleep 0.2
+    sleep 0.5
     exit 0
     ;;
   *hysteria-v6.yaml)
     printf '%s\n' "$$" > "$NEKO_SUPERVISOR_TEST_DIR/v6.pid"
     : > "$NEKO_SUPERVISOR_TEST_DIR/v6.started"
     trap ': > "$NEKO_SUPERVISOR_TEST_DIR/v6.terminated"; exit 0' TERM INT
+    while :; do sleep 0.1; done
+    ;;
+  *hysteria-v4-to-v6.yaml)
+    printf '%s\n' "$$" > "$NEKO_SUPERVISOR_TEST_DIR/v4-to-v6.pid"
+    : > "$NEKO_SUPERVISOR_TEST_DIR/v4-to-v6.started"
+    trap ': > "$NEKO_SUPERVISOR_TEST_DIR/v4-to-v6.terminated"; exit 0' TERM INT
+    while :; do sleep 0.1; done
+    ;;
+  *hysteria-v6-to-v4.yaml)
+    printf '%s\n' "$$" > "$NEKO_SUPERVISOR_TEST_DIR/v6-to-v4.pid"
+    : > "$NEKO_SUPERVISOR_TEST_DIR/v6-to-v4.started"
+    trap ': > "$NEKO_SUPERVISOR_TEST_DIR/v6-to-v4.terminated"; exit 0' TERM INT
     while :; do sleep 0.1; done
     ;;
   *) exit 64 ;;
@@ -1163,11 +1246,15 @@ set -e
 [[ -e "$SUPERVISOR_WORK/v4.started" ]]
 [[ -e "$SUPERVISOR_WORK/v6.started" ]]
 [[ -e "$SUPERVISOR_WORK/v6.terminated" ]]
-v6_pid="$(<"$SUPERVISOR_WORK/v6.pid")"
-if kill -0 "$v6_pid" 2>/dev/null; then
-  printf 'Hysteria 监管脚本留下了 IPv6 子进程。\n' >&2
-  exit 1
-fi
+for child in v6 v4-to-v6 v6-to-v4; do
+  [[ -e "$SUPERVISOR_WORK/${child}.started" ]]
+  [[ -e "$SUPERVISOR_WORK/${child}.terminated" ]]
+  child_pid="$(<"$SUPERVISOR_WORK/${child}.pid")"
+  if kill -0 "$child_pid" 2>/dev/null; then
+    printf 'Hysteria 监管脚本留下了 %s 子进程。\n' "$child" >&2
+    exit 1
+  fi
+done
 
 mode_gate_line="$(grep -n 'collect_network_mode' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
 domain_gate_line="$(grep -n 'collect_identity' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
@@ -1213,6 +1300,7 @@ prepare_upgrade_install() {
       | .release = "1.0.4-test"
       | del(.acme)
       | del(.network)
+      | del(.ports.cross)
       | .subscription = {
           token: .subscription.ipv4_token,
           shadowrocket_server: .subscription.ipv4_address
@@ -1226,16 +1314,25 @@ prepare_upgrade_install() {
       | .acme = {method: "http-01"}
       | .network = {listen_address: "::"}
       | .subscription.token = .subscription.ipv4_token
-      | del(.subscription.ipv4_token, .subscription.ipv6_token)
+      | del(
+          .subscription.ipv4_token,
+          .subscription.ipv6_token,
+          .subscription.ipv4_to_ipv6_token,
+          .subscription.ipv6_to_ipv4_token,
+          .ports.cross
+        )
       | .firewall = {manager: "none", zone: "", zones: []}
     ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
-  else
+  elif [[ "$schema" == 3 ]]; then
     jq \
       --arg release "${source_release:-1.2.4-test}" \
       --arg mode "$source_mode" '
       .schema = 3
       | .release = $release
       | .network = {mode: $mode}
+      | .subscription.ipv4_to_ipv6_token = null
+      | .subscription.ipv6_to_ipv4_token = null
+      | .ports.cross = null
       | if $mode == "ipv4-only" then
           .subscription.ipv6_token = null
           | .subscription.ipv6_domain = null
@@ -1244,6 +1341,30 @@ prepare_upgrade_install() {
           .subscription.ipv4_token = null
           | .subscription.ipv4_domain = null
           | .subscription.ipv4_address = null
+        else . end
+      | .firewall = {manager: "none", zone: "", zones: []}
+    ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
+  else
+    jq \
+      --arg release "${source_release:-1.9.0-test}" \
+      --arg mode "$source_mode" '
+      .schema = 4
+      | .release = $release
+      | .network = {mode: $mode}
+      | if $mode == "ipv4-only" then
+          .subscription.ipv6_token = null
+          | .subscription.ipv4_to_ipv6_token = null
+          | .subscription.ipv6_to_ipv4_token = null
+          | .subscription.ipv6_domain = null
+          | .subscription.ipv6_address = null
+          | .ports.cross = null
+        elif $mode == "ipv6-only" then
+          .subscription.ipv4_token = null
+          | .subscription.ipv4_to_ipv6_token = null
+          | .subscription.ipv6_to_ipv4_token = null
+          | .subscription.ipv4_domain = null
+          | .subscription.ipv4_address = null
+          | .ports.cross = null
         else . end
       | .firewall = {manager: "none", zone: "", zones: []}
     ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
@@ -1302,10 +1423,31 @@ assert_trojan_migrated() {
           .ports.vless_reality_xhttp] | length == (unique | length))
   ' "$target/etc/state.json" >/dev/null
   [[ "$(jq -r '.network.mode' "$target/etc/state.json")" != dual ]] \
-    || expected_inbounds=2
+    || expected_inbounds=4
   jq -e --argjson expected "$expected_inbounds" '
     [.inbounds[] | select(.type == "trojan")] | length == $expected
   ' "$target/etc/config/sing-box.json" >/dev/null
+}
+
+assert_cross_routes_migrated() {
+  local target="$1"
+  jq -e '
+    .network.mode == "dual"
+    and (.ports.cross | type == "object")
+    and (.ports.cross.hysteria2_end - .ports.cross.hysteria2_start == 127)
+    and (.subscription.ipv4_to_ipv6_token
+      | test("^[A-Za-z0-9_-]{16,128}$"))
+    and (.subscription.ipv6_to_ipv4_token
+      | test("^[A-Za-z0-9_-]{16,128}$"))
+  ' "$target/etc/state.json" >/dev/null
+  NEKO_ETC="$target/etc" NEKO_VAR="$target/var" \
+    NEKO_STATE="$target/etc/state.json" NEKO_USER=root \
+    bash -c 'source "$1"; load_state' \
+      _ "$target/libexec/lib/common.sh"
+  [[ -s "$target/etc/config/hysteria-v4-to-v6.yaml" ]]
+  [[ -s "$target/etc/config/hysteria-v6-to-v4.yaml" ]]
+  [[ -s "$target/etc/subscriptions/sing-box-v4-to-v6.json" ]]
+  [[ -s "$target/etc/subscriptions/sing-box-v6-to-v4.json" ]]
 }
 
 UPGRADE_OK="$WORK/upgrade-ok"
@@ -1313,7 +1455,7 @@ prepare_upgrade_install "$UPGRADE_OK"
 upgrade_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
   "$UPGRADE_OK/etc/state.json")"
 run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
-[[ "$(jq -r '.schema' "$UPGRADE_OK/etc/state.json")" == 3 ]]
+[[ "$(jq -r '.schema' "$UPGRADE_OK/etc/state.json")" == 4 ]]
 [[ "$(jq -r '.release' "$UPGRADE_OK/etc/state.json")" == "$NEKO_RELEASE" ]]
 [[ "$(jq -r '.network.mode' "$UPGRADE_OK/etc/state.json")" == dual ]]
 [[ "$(jq -r '.subscription.ipv4_domain' "$UPGRADE_OK/etc/state.json")" == v4.example.com ]]
@@ -1321,7 +1463,7 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ "$(jq -r '.subscription.shadowrocket_server // empty' "$UPGRADE_OK/etc/state.json")" == "" ]]
 [[ "$(jq -r '.acme.method' "$UPGRADE_OK/etc/state.json")" == http-01 ]]
 [[ "$(jq -cS '{
-    ports: (.ports | del(.trojan)),
+    ports: (.ports | del(.trojan, .cross)),
     credentials: (.credentials | del(.trojan_password)),
     reality,
     token: .subscription.ipv4_token
@@ -1329,7 +1471,7 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
   "$UPGRADE_OK/etc/state.json")" == "$upgrade_identity_before" ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_OK/etc/state.json")" \
   == "$(jq -r '.token' <<< "$upgrade_identity_before")" ]]
-[[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
+[[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 16 ]]
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
 [[ -x "$UPGRADE_OK/libexec/diagnostics.sh" ]]
 cmp -s -- "$QRC" "$UPGRADE_OK/libexec/qrc"
@@ -1340,6 +1482,7 @@ grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
 [[ -s "$UPGRADE_OK/etc/config/hysteria-v6.yaml" ]]
 [[ ! -e "$UPGRADE_OK/etc/config/hysteria.yaml" ]]
 assert_trojan_migrated "$UPGRADE_OK"
+assert_cross_routes_migrated "$UPGRADE_OK"
 if find "$UPGRADE_OK/tmp" -maxdepth 1 \
     \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \
        -o -name 'neko-nexttrace-stage.*' \) \
@@ -1362,6 +1505,7 @@ run_upgrade "$UPGRADE_OPTIONAL_FAIL" \
 [[ "$(jq -r '.release' "$UPGRADE_OPTIONAL_FAIL/etc/state.json")" \
   == "$NEKO_RELEASE" ]]
 assert_trojan_migrated "$UPGRADE_OPTIONAL_FAIL"
+assert_cross_routes_migrated "$UPGRADE_OPTIONAL_FAIL"
 [[ "$(
   sha256sum "$UPGRADE_OPTIONAL_FAIL/libexec/nexttrace-tiny" \
     | awk '{print $1}'
@@ -1381,10 +1525,10 @@ prepare_upgrade_install "$UPGRADE_SCHEMA2" 2
 schema2_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
   "$UPGRADE_SCHEMA2/etc/state.json")"
 run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
-[[ "$(jq -r '.schema' "$UPGRADE_SCHEMA2/etc/state.json")" == 3 ]]
+[[ "$(jq -r '.schema' "$UPGRADE_SCHEMA2/etc/state.json")" == 4 ]]
 [[ "$(jq -r '.release' "$UPGRADE_SCHEMA2/etc/state.json")" == "$NEKO_RELEASE" ]]
 [[ "$(jq -cS '{
-    ports: (.ports | del(.trojan)),
+    ports: (.ports | del(.trojan, .cross)),
     credentials: (.credentials | del(.trojan_password)),
     reality,
     token: .subscription.ipv4_token
@@ -1398,6 +1542,7 @@ run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
 [[ ! -e "$UPGRADE_SCHEMA2/etc/config/hysteria.yaml" ]]
 assert_trojan_migrated "$UPGRADE_SCHEMA2"
+assert_cross_routes_migrated "$UPGRADE_SCHEMA2"
 
 UPGRADE_123="$WORK/upgrade-1.2.3"
 prepare_upgrade_install "$UPGRADE_123" 2 1.2.3-test
@@ -1407,7 +1552,7 @@ release_123_identity_before="$(jq -cS '{ports, credentials, reality, token: .sub
 run_upgrade "$UPGRADE_123" > "$UPGRADE_123/upgrade.log"
 [[ "$(jq -r '.release' "$UPGRADE_123/etc/state.json")" == "$NEKO_RELEASE" ]]
 [[ "$(jq -cS '{
-    ports: (.ports | del(.trojan)),
+    ports: (.ports | del(.trojan, .cross)),
     credentials: (.credentials | del(.trojan_password)),
     reality,
     token: .subscription.ipv4_token
@@ -1415,10 +1560,11 @@ run_upgrade "$UPGRADE_123" > "$UPGRADE_123/upgrade.log"
   "$UPGRADE_123/etc/state.json")" == "$release_123_identity_before" ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_123/etc/state.json")" \
   == "$(jq -r '.token' <<< "$release_123_identity_before")" ]]
-[[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 8 ]]
+[[ "$(find "$UPGRADE_123/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 16 ]]
 [[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v4.json" ]]
 [[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v6.json" ]]
 assert_trojan_migrated "$UPGRADE_123"
+assert_cross_routes_migrated "$UPGRADE_123"
 
 UPGRADE_CURRENT="$WORK/upgrade-current"
 prepare_upgrade_install "$UPGRADE_CURRENT" 3 1.7.0-test dual true
@@ -1430,6 +1576,35 @@ run_upgrade "$UPGRADE_CURRENT" > "$UPGRADE_CURRENT/upgrade.log"
 [[ "$(jq -cS '{port: .ports.trojan, password: .credentials.trojan_password}' \
   "$UPGRADE_CURRENT/etc/state.json")" == "$current_trojan_before" ]]
 assert_trojan_migrated "$UPGRADE_CURRENT"
+assert_cross_routes_migrated "$UPGRADE_CURRENT"
+
+UPGRADE_SCHEMA4="$WORK/upgrade-schema4"
+prepare_upgrade_install "$UPGRADE_SCHEMA4" 4 1.9.0-test dual true
+schema4_identity_before="$(jq -cS '{
+  ports,
+  credentials,
+  reality,
+  tokens: {
+    ipv4: .subscription.ipv4_token,
+    ipv6: .subscription.ipv6_token,
+    ipv4_to_ipv6: .subscription.ipv4_to_ipv6_token,
+    ipv6_to_ipv4: .subscription.ipv6_to_ipv4_token
+  }
+}' "$UPGRADE_SCHEMA4/etc/state.json")"
+run_upgrade "$UPGRADE_SCHEMA4" > "$UPGRADE_SCHEMA4/upgrade.log"
+[[ "$(jq -cS '{
+  ports,
+  credentials,
+  reality,
+  tokens: {
+    ipv4: .subscription.ipv4_token,
+    ipv6: .subscription.ipv6_token,
+    ipv4_to_ipv6: .subscription.ipv4_to_ipv6_token,
+    ipv6_to_ipv4: .subscription.ipv6_to_ipv4_token
+  }
+}' "$UPGRADE_SCHEMA4/etc/state.json")" == "$schema4_identity_before" ]]
+assert_trojan_migrated "$UPGRADE_SCHEMA4"
+assert_cross_routes_migrated "$UPGRADE_SCHEMA4"
 
 UPGRADE_FIREWALL="$WORK/upgrade-firewall"
 prepare_upgrade_install "$UPGRADE_FIREWALL" 3 1.6.1-test dual false
@@ -1446,12 +1621,24 @@ run_upgrade "$UPGRADE_FIREWALL" > "$UPGRADE_FIREWALL/upgrade.log"
 firewall_trojan_port="$(
   jq -r '.ports.trojan' "$UPGRADE_FIREWALL/etc/state.json"
 )"
+firewall_cross_trojan_port="$(
+  jq -r '.ports.cross.trojan' "$UPGRADE_FIREWALL/etc/state.json"
+)"
+firewall_cross_hy2_range="$(
+  jq -r '.ports.cross | "\(.hysteria2_start)-\(.hysteria2_end)"' \
+    "$UPGRADE_FIREWALL/etc/state.json"
+)"
 grep -Fq "protocol=\"tcp\" port=\"${firewall_trojan_port}\"" \
+  "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
+grep -Fq "protocol=\"tcp\" port=\"${firewall_cross_trojan_port}\"" \
+  "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
+grep -Fq "protocol=\"udp\" port=\"${firewall_cross_hy2_range}\"" \
   "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
 grep -Fxq -- '--reload' "$UPGRADE_FIREWALL/firewall/commands.log"
 grep -Fxq -- '--zone=public --query-service=neko-proxy' \
   "$UPGRADE_FIREWALL/firewall/commands.log"
 assert_trojan_migrated "$UPGRADE_FIREWALL"
+assert_cross_routes_migrated "$UPGRADE_FIREWALL"
 
 UPGRADE_FIREWALL_INACTIVE="$WORK/upgrade-firewall-inactive"
 prepare_upgrade_install "$UPGRADE_FIREWALL_INACTIVE" 3 1.6.1-test dual false
@@ -1492,30 +1679,40 @@ UPGRADE_V4="$WORK/upgrade-v4-only"
 prepare_upgrade_install "$UPGRADE_V4" 3 1.2.4-test ipv4-only
 v4_token_before="$(jq -r '.subscription.ipv4_token' "$UPGRADE_V4/etc/state.json")"
 run_upgrade "$UPGRADE_V4" > "$UPGRADE_V4/upgrade.log"
-[[ "$(jq -r '.schema' "$UPGRADE_V4/etc/state.json")" == 3 ]]
+[[ "$(jq -r '.schema' "$UPGRADE_V4/etc/state.json")" == 4 ]]
 [[ "$(jq -r '.network.mode' "$UPGRADE_V4/etc/state.json")" == ipv4-only ]]
 [[ "$(jq -r '.subscription.ipv4_token' "$UPGRADE_V4/etc/state.json")" \
   == "$v4_token_before" ]]
 [[ "$(jq -r '.subscription.ipv6_token // empty' "$UPGRADE_V4/etc/state.json")" == "" ]]
+[[ "$(jq -r '.subscription.ipv4_to_ipv6_token // empty' \
+  "$UPGRADE_V4/etc/state.json")" == "" ]]
+[[ "$(jq -r '.ports.cross // empty' "$UPGRADE_V4/etc/state.json")" == "" ]]
 [[ "$(find "$UPGRADE_V4/etc/subscriptions" -maxdepth 1 -type f \
   | wc -l | tr -d ' ')" == 4 ]]
 [[ -s "$UPGRADE_V4/etc/config/hysteria-v4.yaml" ]]
 [[ ! -e "$UPGRADE_V4/etc/config/hysteria-v6.yaml" ]]
+[[ ! -e "$UPGRADE_V4/etc/config/hysteria-v4-to-v6.yaml" ]]
+[[ ! -e "$UPGRADE_V4/etc/config/hysteria-v6-to-v4.yaml" ]]
 assert_trojan_migrated "$UPGRADE_V4"
 
 UPGRADE_V6="$WORK/upgrade-v6-only"
 prepare_upgrade_install "$UPGRADE_V6" 3 1.2.4-test ipv6-only
 v6_token_before="$(jq -r '.subscription.ipv6_token' "$UPGRADE_V6/etc/state.json")"
 run_upgrade "$UPGRADE_V6" > "$UPGRADE_V6/upgrade.log"
-[[ "$(jq -r '.schema' "$UPGRADE_V6/etc/state.json")" == 3 ]]
+[[ "$(jq -r '.schema' "$UPGRADE_V6/etc/state.json")" == 4 ]]
 [[ "$(jq -r '.network.mode' "$UPGRADE_V6/etc/state.json")" == ipv6-only ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_V6/etc/state.json")" \
   == "$v6_token_before" ]]
 [[ "$(jq -r '.subscription.ipv4_token // empty' "$UPGRADE_V6/etc/state.json")" == "" ]]
+[[ "$(jq -r '.subscription.ipv6_to_ipv4_token // empty' \
+  "$UPGRADE_V6/etc/state.json")" == "" ]]
+[[ "$(jq -r '.ports.cross // empty' "$UPGRADE_V6/etc/state.json")" == "" ]]
 [[ "$(find "$UPGRADE_V6/etc/subscriptions" -maxdepth 1 -type f \
   | wc -l | tr -d ' ')" == 4 ]]
 [[ ! -e "$UPGRADE_V6/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_V6/etc/config/hysteria-v6.yaml" ]]
+[[ ! -e "$UPGRADE_V6/etc/config/hysteria-v4-to-v6.yaml" ]]
+[[ ! -e "$UPGRADE_V6/etc/config/hysteria-v6-to-v4.yaml" ]]
 assert_trojan_migrated "$UPGRADE_V6"
 
 UPGRADE_FAIL="$WORK/upgrade-fail"

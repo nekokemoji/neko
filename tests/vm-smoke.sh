@@ -38,6 +38,32 @@ detect_platform
 [[ "$OS_FAMILY" == "$EXPECTED_FAMILY" ]]
 [[ "$ARCH" == "$EXPECTED_ARCH" ]]
 
+if ! command -v jq >/dev/null 2>&1; then
+  case "$EXPECTED_FAMILY" in
+    debian)
+      DEBIAN_FRONTEND=noninteractive apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq
+      ;;
+    rhel)
+      if command -v microdnf >/dev/null 2>&1; then
+        microdnf -y install jq
+      else
+        dnf -y install jq
+      fi
+      ;;
+    *)
+      printf '无法为未知系统族安装 jq：%s\n' "$EXPECTED_FAMILY" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# Exercise schema 4 and all four strict route directions with the guest's real
+# Bash, jq and filesystem before touching systemd.  This complements the
+# container matrix without pretending user-mode emulation is a full VM.
+bash "$ROOT/tests/subscription-render-smoke.sh"
+bash "$ROOT/tests/family-render-smoke.sh"
+
 mapfile -t shell_files < <(find "$ROOT" -type f -name '*.sh' -print | sort)
 bash -n "${shell_files[@]}"
 

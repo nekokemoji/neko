@@ -164,6 +164,12 @@ validate_runtime_configs() {
     "$NEKO_LIBEXEC/sing-box" check \
       -c "${NEKO_SUB_DIR}/sing-box-v6.json" >/dev/null
   fi
+  if network_mode_has_cross_routes; then
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "${NEKO_SUB_DIR}/sing-box-v4-to-v6.json" >/dev/null
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "${NEKO_SUB_DIR}/sing-box-v6-to-v4.json" >/dev/null
+  fi
   "$NEKO_LIBEXEC/xray" run -test -c "${NEKO_CONFIG_DIR}/xray.json" >/dev/null
   "$NEKO_LIBEXEC/caddy" validate \
     --config "${NEKO_CONFIG_DIR}/Caddyfile" --adapter caddyfile >/dev/null
@@ -233,12 +239,13 @@ restore_bbr() {
 
 rotate_subscription() {
   local answer choice backup new_ipv4_token="" new_ipv6_token=""
+  local new_ipv4_to_ipv6_token="" new_ipv6_to_ipv4_token=""
   local rotate_ipv4=0 rotate_ipv6=0
   load_state
   printf '此操作只让所选地址族的旧下载 URL 失效，不会撤销已经导入客户端的节点凭据。\n\n'
-  printf '1. 只重置 IPv4 订阅 URL\n'
-  printf '2. 只重置 IPv6 订阅 URL\n'
-  printf '3. 同时重置 IPv4 与 IPv6 订阅 URL\n'
+  printf '1. 重置 IPv4 入口的订阅 URL\n'
+  printf '2. 重置 IPv6 入口的订阅 URL\n'
+  printf '3. 同时重置全部入口的订阅 URL\n'
   printf '0. 返回\n'
   read -r -p "请选择 [0-3]：" choice
   case "$choice" in
@@ -285,6 +292,12 @@ rotate_subscription() {
   acquire_maintenance_lock
   (( rotate_ipv4 == 0 )) || new_ipv4_token="$(random_urlsafe 24)"
   (( rotate_ipv6 == 0 )) || new_ipv6_token="$(random_urlsafe 24)"
+  if network_mode_has_cross_routes; then
+    (( rotate_ipv4 == 0 )) \
+      || new_ipv4_to_ipv6_token="$(random_urlsafe 24)"
+    (( rotate_ipv6 == 0 )) \
+      || new_ipv6_to_ipv4_token="$(random_urlsafe 24)"
+  fi
   backup="$(mktemp "${NEKO_STATE}.backup.XXXXXX")"
   if ! cp -a -- "$NEKO_STATE" "$backup"; then
     rm -f -- "$backup"
@@ -294,11 +307,20 @@ rotate_subscription() {
 
   if atomic_json_update \
       'if $rotate_ipv4 then .subscription.ipv4_token = $ipv4_token else . end
-       | if $rotate_ipv6 then .subscription.ipv6_token = $ipv6_token else . end' \
+       | if $rotate_ipv6 then .subscription.ipv6_token = $ipv6_token else . end
+       | if ($has_cross and $rotate_ipv4) then
+           .subscription.ipv4_to_ipv6_token = $ipv4_to_ipv6_token
+         else . end
+       | if ($has_cross and $rotate_ipv6) then
+           .subscription.ipv6_to_ipv4_token = $ipv6_to_ipv4_token
+         else . end' \
       --argjson rotate_ipv4 "$([[ $rotate_ipv4 == 1 ]] && printf true || printf false)" \
       --argjson rotate_ipv6 "$([[ $rotate_ipv6 == 1 ]] && printf true || printf false)" \
+      --argjson has_cross "$(network_mode_has_cross_routes && printf true || printf false)" \
       --arg ipv4_token "$new_ipv4_token" \
       --arg ipv6_token "$new_ipv6_token" \
+      --arg ipv4_to_ipv6_token "$new_ipv4_to_ipv6_token" \
+      --arg ipv6_to_ipv4_token "$new_ipv6_to_ipv4_token" \
     && render_all \
     && validate_runtime_configs \
     && systemctl restart neko-caddy.service \
@@ -319,11 +341,12 @@ rotate_subscription() {
 
 rotate_node_credentials() {
   local rotate_urls="${1:-false}" confirmation
-  local has_ipv4=false has_ipv6=false
+  local has_ipv4=false has_ipv6=false has_cross=false
   local new_hy2_password new_hy2_obfs_password
   local new_tuic_uuid new_tuic_password new_ss_password
   local new_anytls_password new_trojan_password new_vision_uuid new_xhttp_uuid
   local new_ipv4_token="" new_ipv6_token=""
+  local new_ipv4_to_ipv6_token="" new_ipv6_to_ipv4_token=""
 
   case "$rotate_urls" in
     true|false) ;;
@@ -348,6 +371,7 @@ rotate_node_credentials() {
   assert_access_source_tree
   network_mode_has_ipv4 && has_ipv4=true
   network_mode_has_ipv6 && has_ipv6=true
+  network_mode_has_cross_routes && has_cross=true
 
   new_hy2_password="$(random_urlsafe 24)"
   new_hy2_obfs_password="$(random_urlsafe 24)"
@@ -361,6 +385,10 @@ rotate_node_credentials() {
   if [[ "$rotate_urls" == true ]]; then
     [[ "$has_ipv4" != true ]] || new_ipv4_token="$(random_urlsafe 24)"
     [[ "$has_ipv6" != true ]] || new_ipv6_token="$(random_urlsafe 24)"
+    [[ "$has_cross" != true ]] \
+      || new_ipv4_to_ipv6_token="$(random_urlsafe 24)"
+    [[ "$has_cross" != true ]] \
+      || new_ipv6_to_ipv4_token="$(random_urlsafe 24)"
   fi
   if [[ "$new_hy2_password" == "$HY2_PASSWORD" \
     || "$new_hy2_obfs_password" == "$HY2_OBFS_PASSWORD" \
@@ -376,7 +404,13 @@ rotate_node_credentials() {
       && "$new_ipv4_token" == "$SUB_TOKEN_IPV4" ) \
     || ( "$rotate_urls" == true \
       && "$has_ipv6" == true \
-      && "$new_ipv6_token" == "$SUB_TOKEN_IPV6" ) ]]; then
+      && "$new_ipv6_token" == "$SUB_TOKEN_IPV6" ) \
+    || ( "$rotate_urls" == true \
+      && "$has_cross" == true \
+      && "$new_ipv4_to_ipv6_token" == "$SUB_TOKEN_IPV4_TO_IPV6" ) \
+    || ( "$rotate_urls" == true \
+      && "$has_cross" == true \
+      && "$new_ipv6_to_ipv4_token" == "$SUB_TOKEN_IPV6_TO_IPV4" ) ]]; then
     release_maintenance_lock
     die "随机生成的新值与旧值意外相同；没有修改订阅或节点凭据，请重新运行。"
   fi
@@ -414,6 +448,10 @@ rotate_node_credentials() {
          else . end
        | if ($rotate_urls and $has_ipv6) then
            .subscription.ipv6_token = $ipv6_token
+         else . end
+       | if ($rotate_urls and $has_cross) then
+           .subscription.ipv4_to_ipv6_token = $ipv4_to_ipv6_token
+           | .subscription.ipv6_to_ipv4_token = $ipv6_to_ipv4_token
          else . end' \
       --arg hy2_password "$new_hy2_password" \
       --arg hy2_obfs_password "$new_hy2_obfs_password" \
@@ -427,8 +465,11 @@ rotate_node_credentials() {
       --argjson rotate_urls "$rotate_urls" \
       --argjson has_ipv4 "$has_ipv4" \
       --argjson has_ipv6 "$has_ipv6" \
+      --argjson has_cross "$has_cross" \
       --arg ipv4_token "$new_ipv4_token" \
-      --arg ipv6_token "$new_ipv6_token"; then
+      --arg ipv6_token "$new_ipv6_token" \
+      --arg ipv4_to_ipv6_token "$new_ipv4_to_ipv6_token" \
+      --arg ipv6_to_ipv4_token "$new_ipv6_to_ipv4_token"; then
     ACCESS_TRANSACTION_ACTIVE=0
     trap - EXIT INT TERM
     cleanup_access_backup || true
@@ -589,6 +630,10 @@ preflight_family_firewall_add() {
         || die "Neko 的 firewalld 服务文件缺失；未开始补装。"
       ;;
     ufw)
+      ufw_is_active \
+        || die "原安装由 UFW 管理，但 UFW 当前未运行；未开始补装。"
+      [[ -s "$UFW_PROFILE_FILE" ]] \
+        || die "Neko 的 UFW 应用配置缺失；未开始补装。"
       if network_mode_has_ipv6 "$target_mode" \
         && [[ -r /etc/default/ufw ]] \
         && grep -Eq \
@@ -633,6 +678,7 @@ sync_firewall_for_family_add() {
           || die "无法在 firewalld 区域 ${zone} 放行 Neko 服务。"
         FAMILY_FIREWALL_ADDED_ZONES+=("$zone")
       done
+      write_firewalld_service_file
       firewall-cmd --reload >/dev/null \
         || die "补装地址族后 firewalld 重载失败。"
       for zone in "${desired_zones[@]}"; do
@@ -642,15 +688,18 @@ sync_firewall_for_family_add() {
       set_firewall_manager firewalld "${desired_zones[@]}"
       ;;
     ufw)
-      # The existing NekoProxy application rule already covers both address
-      # families when UFW has IPv6 support enabled.
+      write_ufw_profile_file
+      ufw app update NekoProxy >/dev/null \
+        || die "补装地址族后 UFW 应用配置更新失败。"
+      grep -Fq NekoProxy <<< "$(ufw status 2>/dev/null || true)" \
+        || die "补装地址族后 UFW 的 NekoProxy 规则未生效。"
       ;;
     none) ;;
   esac
 }
 
 rollback_family_transaction() {
-  local rollback_ok=1 zone service
+  local rollback_ok=1 zone service firewall_manager
   set +e
   trap - EXIT INT TERM
   warn "地址族补装未完成，正在恢复原来的安装状态……"
@@ -664,14 +713,33 @@ rollback_family_transaction() {
     rollback_ok=0
   fi
 
-  if (( ${#FAMILY_FIREWALL_ADDED_ZONES[@]} > 0 )) \
-    && command -v firewall-cmd >/dev/null 2>&1; then
-    for zone in "${FAMILY_FIREWALL_ADDED_ZONES[@]}"; do
-      firewall-cmd --permanent --zone="$zone" --remove-service=neko-proxy \
-        >/dev/null 2>&1 || rollback_ok=0
-    done
-    firewall-cmd --reload >/dev/null 2>&1 || rollback_ok=0
-  fi
+  firewall_manager="$(jq -r '.firewall.manager // "none"' "$NEKO_STATE" 2>/dev/null)"
+  case "$firewall_manager" in
+    firewalld)
+      cp -a -- "$FAMILY_BACKUP_DIR/firewall-profile" \
+        "$FIREWALLD_SERVICE_FILE" || rollback_ok=0
+      if command -v firewall-cmd >/dev/null 2>&1; then
+        for zone in "${FAMILY_FIREWALL_ADDED_ZONES[@]}"; do
+          firewall-cmd --permanent --zone="$zone" --remove-service=neko-proxy \
+            >/dev/null 2>&1 || rollback_ok=0
+        done
+        firewall-cmd --reload >/dev/null 2>&1 || rollback_ok=0
+      else
+        rollback_ok=0
+      fi
+      ;;
+    ufw)
+      cp -a -- "$FAMILY_BACKUP_DIR/firewall-profile" \
+        "$UFW_PROFILE_FILE" || rollback_ok=0
+      if command -v ufw >/dev/null 2>&1; then
+        ufw app update NekoProxy >/dev/null 2>&1 || rollback_ok=0
+      else
+        rollback_ok=0
+      fi
+      ;;
+    none) ;;
+    *) rollback_ok=0 ;;
+  esac
 
   systemctl restart \
     neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service \
@@ -708,6 +776,9 @@ finish_family_transaction() {
 add_missing_address_family() {
   local requested="$1" answer old_mode target_mode
   local new_ipv4_token="" new_ipv6_token="" certificate_domain
+  local new_ipv4_to_ipv6_token new_ipv6_to_ipv4_token
+  local cross_hy2_start cross_hy2_end cross_tuic_port cross_ss_port
+  local cross_anytls_port cross_trojan_port cross_vision_port cross_xhttp_port
   local service
   local -a domain_args=()
 
@@ -765,6 +836,33 @@ add_missing_address_family() {
   fi
   assert_family_source_trees
 
+  if network_mode_has_ipv4 "$old_mode"; then
+    new_ipv4_token="$(jq -r '.subscription.ipv4_token' "$NEKO_STATE")"
+  else
+    new_ipv4_token="$(random_urlsafe 24)"
+  fi
+  if network_mode_has_ipv6 "$old_mode"; then
+    new_ipv6_token="$(jq -r '.subscription.ipv6_token' "$NEKO_STATE")"
+  else
+    new_ipv6_token="$(random_urlsafe 24)"
+  fi
+  new_ipv4_to_ipv6_token="$(random_urlsafe 24)"
+  new_ipv6_to_ipv4_token="$(random_urlsafe 24)"
+
+  # Allocate everything before the rollback transaction starts.  A random
+  # source or port-allocation failure must leave the current services alone.
+  # Existing listeners are reserved explicitly as well as discovered through
+  # ss, covering temporarily stopped services and minimal test environments.
+  initialize_port_reservations
+  reserve_loaded_proxy_ports "$old_mode"
+  reserve_random_range 128 cross_hy2_start cross_hy2_end
+  reserve_random_port cross_tuic_port
+  reserve_random_port cross_ss_port
+  reserve_random_port cross_anytls_port
+  reserve_random_port cross_trojan_port
+  reserve_random_port cross_vision_port
+  reserve_random_port cross_xhttp_port
+
   [[ -d "$NEKO_PANEL_TMP_DIR" && -w "$NEKO_PANEL_TMP_DIR" ]] \
     || die "地址族补装临时目录不可写：${NEKO_PANEL_TMP_DIR}"
   FAMILY_BACKUP_DIR="$(
@@ -776,22 +874,28 @@ add_missing_address_family() {
     release_maintenance_lock
     die "无法完整备份当前配置与证书；未开始补装。"
   fi
+  case "$(jq -r '.firewall.manager // "none"' "$NEKO_STATE")" in
+    firewalld)
+      if ! cp -a -- \
+          "$FIREWALLD_SERVICE_FILE" "$FAMILY_BACKUP_DIR/firewall-profile"; then
+        cleanup_family_backup || true
+        release_maintenance_lock
+        die "无法备份 firewalld 配置；未开始补装。"
+      fi
+      ;;
+    ufw)
+      if ! cp -a -- "$UFW_PROFILE_FILE" "$FAMILY_BACKUP_DIR/firewall-profile"; then
+        cleanup_family_backup || true
+        release_maintenance_lock
+        die "无法备份 UFW 配置；未开始补装。"
+      fi
+      ;;
+  esac
   FAMILY_FIREWALL_ADDED_ZONES=()
   FAMILY_TRANSACTION_ACTIVE=1
   trap finish_family_transaction EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-
-  if network_mode_has_ipv4 "$old_mode"; then
-    new_ipv4_token="$(jq -r '.subscription.ipv4_token' "$NEKO_STATE")"
-  else
-    new_ipv4_token="$(random_urlsafe 24)"
-  fi
-  if network_mode_has_ipv6 "$old_mode"; then
-    new_ipv6_token="$(jq -r '.subscription.ipv6_token' "$NEKO_STATE")"
-  else
-    new_ipv6_token="$(random_urlsafe 24)"
-  fi
 
   atomic_json_update \
     '.network.mode = "dual"
@@ -800,13 +904,35 @@ add_missing_address_family() {
      | .subscription.ipv4_domain = $ipv4_domain
      | .subscription.ipv6_domain = $ipv6_domain
      | .subscription.ipv4_address = $ipv4_address
-     | .subscription.ipv6_address = $ipv6_address' \
+     | .subscription.ipv6_address = $ipv6_address
+     | .subscription.ipv4_to_ipv6_token = $ipv4_to_ipv6_token
+     | .subscription.ipv6_to_ipv4_token = $ipv6_to_ipv4_token
+     | .ports.cross = {
+         hysteria2_start: $cross_hy2_start,
+         hysteria2_end: $cross_hy2_end,
+         tuic: $cross_tuic_port,
+         ss2022: $cross_ss_port,
+         anytls: $cross_anytls_port,
+         trojan: $cross_trojan_port,
+         vless_reality_vision: $cross_vision_port,
+         vless_reality_xhttp: $cross_xhttp_port
+       }' \
     --arg ipv4_token "$new_ipv4_token" \
     --arg ipv6_token "$new_ipv6_token" \
     --arg ipv4_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
     --arg ipv6_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
     --arg ipv4_address "$SUBSCRIPTION_IPV4_ADDRESS" \
-    --arg ipv6_address "$SUBSCRIPTION_IPV6_ADDRESS"
+    --arg ipv6_address "$SUBSCRIPTION_IPV6_ADDRESS" \
+    --arg ipv4_to_ipv6_token "$new_ipv4_to_ipv6_token" \
+    --arg ipv6_to_ipv4_token "$new_ipv6_to_ipv4_token" \
+    --argjson cross_hy2_start "$cross_hy2_start" \
+    --argjson cross_hy2_end "$cross_hy2_end" \
+    --argjson cross_tuic_port "$cross_tuic_port" \
+    --argjson cross_ss_port "$cross_ss_port" \
+    --argjson cross_anytls_port "$cross_anytls_port" \
+    --argjson cross_trojan_port "$cross_trojan_port" \
+    --argjson cross_vision_port "$cross_vision_port" \
+    --argjson cross_xhttp_port "$cross_xhttp_port"
 
   load_state
   render_all
@@ -884,27 +1010,38 @@ manage_address_families() {
 }
 
 subscription_qr_menu() {
-  local choice index family client family_label client_label url
-  local -a qr_families=() qr_clients=() qr_labels=()
+  local choice index route client route_label client_label url
+  local -a qr_routes=() qr_clients=() qr_labels=()
 
   while true; do
     load_state
-    qr_families=()
+    qr_routes=()
     qr_clients=()
     qr_labels=()
-    for family in ipv4 ipv6; do
-      if [[ "$family" == ipv4 ]]; then
-        network_mode_has_ipv4 || continue
-        family_label=IPv4
-      else
-        network_mode_has_ipv6 || continue
-        family_label=IPv6
-      fi
+    for route in ipv4 ipv6 ipv4-to-ipv6 ipv6-to-ipv4; do
+      case "$route" in
+        ipv4)
+          network_mode_has_ipv4 || continue
+          route_label='IPv4 → IPv4'
+          ;;
+        ipv6)
+          network_mode_has_ipv6 || continue
+          route_label='IPv6 → IPv6'
+          ;;
+        ipv4-to-ipv6)
+          network_mode_has_cross_routes || continue
+          route_label='IPv4 → IPv6'
+          ;;
+        ipv6-to-ipv4)
+          network_mode_has_cross_routes || continue
+          route_label='IPv6 → IPv4'
+          ;;
+      esac
       for client in mihomo stash shadowrocket sing-box; do
         client_label="$(subscription_client_label "$client")"
-        qr_families+=("$family")
+        qr_routes+=("$route")
         qr_clients+=("$client")
-        qr_labels+=("${client_label} ${family_label}（严格）")
+        qr_labels+=("${client_label} ${route_label}（严格）")
       done
     done
 
@@ -933,9 +1070,9 @@ subscription_qr_menu() {
       continue
     fi
     index=$((index - 1))
-    family="${qr_families[$index]}"
+    route="${qr_routes[$index]}"
     client="${qr_clients[$index]}"
-    url="$(subscription_url "$family" "$client")" \
+    url="$(subscription_url "$route" "$client")" \
       || die "无法读取所选订阅链接；安装状态可能不完整。"
 
     clear 2>/dev/null || true
