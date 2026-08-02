@@ -1095,6 +1095,81 @@ open_diagnostics() {
   fi
 }
 
+show_route_guide() {
+  clear 2>/dev/null || true
+  cat <<'EOF'
+订阅链接太多不知道怎么选？小白建议先看
+======================================
+
+你好，很荣幸为你介绍入站和出站的区别。
+
+双栈安装会显示很多订阅链接，是因为 Neko 同时提供 4 个线路方向和 4 种客户端格式。
+先找到自己使用的客户端；同一个线路方向，只需要导入对应客户端的那一条。
+单栈安装只会显示当前地址族；如果没有某条线路，说明对应地址族尚未安装或不可用，
+不要照搬选择。
+
+一、先看懂箭头
+
+你的设备 ── 入站 IPv4/IPv6 ──> VPS ── 出站 IPv4/IPv6 ──> 目标网站
+
+入站是“你的设备到 VPS”这一段，出站是“VPS 到目标网站”这一段。
+所以，箭头左边决定怎么连接 VPS，箭头右边决定 VPS 怎么连接网站。
+
+例如：
+  IPv6→IPv4 = 你的设备通过 IPv6 连接 VPS，再由 VPS 通过 IPv4 访问网站
+
+二、四种线路分别适合什么情况
+
+  IPv4→IPv4  日常默认推荐，兼容性最好，适合绝大多数网站。
+  IPv6→IPv4  IPv6 入站更快、更稳，或者 VPS 的 IPv4 入口无法连接时使用。
+  IPv4→IPv6  IPv4 入站正常，但想让目标网站看到 VPS 的 IPv6 时使用。
+  IPv6→IPv6  入站和出站都使用 IPv6；目标网站必须支持 IPv6。
+
+三、VPS 的 IPv4 被墙了：尝试更换入口
+
+“IPv4 被墙”通常是指通过 IPv4 无法正常连接这个地址，并不一定代表整台 VPS，
+也不一定代表同一台 VPS 的 IPv6 同时无法连接。
+
+如果你的本地网络和 VPS 都有可用 IPv6，可以尝试：
+
+  IPv4→IPv4  改为  IPv6→IPv4
+
+这样只更换入口，VPS 访问网站时仍使用兼容性更好的 IPv4。很多情况下可以先继续
+使用原来的服务器，不必立刻更换 VPS 或增加 CDN。
+
+这不是永久保证：本地没有 IPv6、VPS 的 IPv6 不可达、IPv6 也被阻断，或者相关
+连接特征同时受到影响时，这条线路仍然可能失败。
+
+四、VPS 的 IPv4 被“送中”：尝试更换出口
+
+目标网站看到的是出站公网 IP。同一台 VPS 的 IPv4 和 IPv6 是两个不同地址，地理
+位置库和风险数据库对它们的记录可能不同。
+
+如果 IPv4 出口被错误识别，可以保持左边不变，只更换右边：
+
+  IPv4→IPv4  改为  IPv4→IPv6
+  IPv6→IPv4  改为  IPv6→IPv6
+
+切换后，目标网站看到的是 VPS 的 IPv6。它可能改善由 IPv4 地理位置或信誉记录造成
+的限制，但不能保证解决所有问题；账号地区、Cookie、设备位置和网站政策也可能参与
+判断。Google 搜索页面底部的位置可以作为参考，但不要把它当作唯一证据。
+
+严格 IPv6 出站只能访问支持 IPv6 的目标。遇到只有 IPv4 的网站时，请改用右边为
+IPv4 的线路。
+
+五、小白具体怎么选
+
+1. 日常先选择右边为 IPv4 的线路，网站兼容性通常更好。
+2. 在相同时间、相同网络和相同目标下，对比 IPv4→IPv4 与 IPv6→IPv4。
+3. 哪个入口延迟更低、更稳定，就使用哪个。
+4. 只有 IPv4 出口的位置或信誉有问题，或确认目标支持 IPv6 时，再尝试 IPv6 出站。
+
+一句话记住：左边决定怎么连接 VPS，右边决定 VPS 怎么连接网站。
+EOF
+  printf '\n'
+  read -r -p "按 Enter 返回菜单……" _ || true
+}
+
 uninstall_neko() {
   local answer created_user service
   printf '\n这会删除全部协议、证书、订阅和本工具创建的防火墙规则。\n'
@@ -1157,7 +1232,8 @@ draw_menu() {
   printf '4. 刷新已安装地址族端点\n'
   printf '5. IPv4/IPv6 安装管理\n'
   printf '6. 卸载全部协议\n'
-  printf '7. VPS 硬件、IP 与网络体检\n\n'
+  printf '7. VPS 硬件、IP 与网络体检\n'
+  printf '8. 订阅链接太多不知道怎么选？小白建议先看\n\n'
 }
 
 main() {
@@ -1170,7 +1246,7 @@ main() {
   [[ -r "$NEKO_STATE" ]] || die "Neko 尚未完整安装。"
   while true; do
     draw_menu
-    read -r -p "请选择 [0-7]：" choice
+    read -r -p "请选择 [0-8]：" choice
     case "$choice" in
       0) exit 0 ;;
       1)
@@ -1186,7 +1262,11 @@ main() {
         open_diagnostics
         continue
         ;;
-      *) warn "请输入 0 到 7。" ;;
+      8)
+        show_route_guide
+        continue
+        ;;
+      *) warn "请输入 0 到 8。" ;;
     esac
     printf '\n'
     read -r -p "按 Enter 返回菜单……" _
