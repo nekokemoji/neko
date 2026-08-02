@@ -1,6 +1,6 @@
-# Neko 1.8.1 测试范围
+# Neko 1.9.0 测试范围
 
-最近核对日期：2026-08-01（Asia/Tokyo）。
+最近核对日期：2026-08-03（Asia/Tokyo）。
 
 这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
@@ -20,7 +20,7 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
 - firewalld 只根据已安装地址族的默认路由网卡寻找实际 zone，而不是盲目使用 default zone；补装另一族时不会接管或回滚预先存在的区域规则。
-- Bootstrap 离线解压固定源码包、核对 1.8.1 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.9.0 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
 - 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29、可选 qrc 0.9.0 与 NextTrace Tiny 1.7.1 的版本身份和所需 CLI 参数。
@@ -28,31 +28,31 @@ bash tests/run.sh
 - 连续模拟 1000 次 lego 快速失败，确认公共 ACME 保护完整保留原始退出码与错误输出，不会再由 Bash `coproc` 竞态产生 `Bad file descriptor`；Cloudflare `9109` 会给出 Token 类型、有效性、最小权限与 Zone 范围提示。发行版矩阵也会在全部 16 个系统/架构组合中执行快速失败路径。
 - 模拟 lego 收到 Let’s Encrypt `rateLimited` 后准备长时间等待，确认公共 ACME 保护在 5 秒内终止、保留并显示 `retry after`，返回临时失败；另模拟无输出挂起，确认 10 分钟总时限的可配置短时测试路径。发行版矩阵也会在全部 16 个系统/架构组合中执行快速限额终止路径。
 - Cloudflare Token 内容格式、凭据目录 `0700`、文件 `0600` 与非符号链接约束。
-- 真实 `sing-box check` 与 `xray run -test` 分别解析 IPv4-only、IPv6-only、dual 三种服务端配置；每个已启用 sing-box Remote Profile 也由真实核心解析。
-- Hysteria 的单栈或双栈配置分别读取并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。
+- 真实 `sing-box check` 与 `xray run -test` 分别解析 IPv4-only、IPv6-only、dual 三种服务端配置；双栈四个方向的 sing-box Remote Profile 全部由真实核心解析。
+- Hysteria 的单栈配置或双栈四个配置分别读取并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。
 - 真实 Caddy 校验三种模式，并验证从单栈补装到双栈时，旧证书尚未包含新增 SAN 的短暂配置仍可加载；随后证书扩容参数必须带齐全部活动域名。
-- 真实 Mihomo 分别解析严格 IPv4 与严格 IPv6 配置。
-- 订阅目录按模式恰好生成 4、4、8 个文件；不存在未安装地址族的残留订阅或 Hysteria 配置。
-- Mihomo 7 个节点全部使用对应 IP 字面量和 `ip-version`；Stash 6 个节点全部使用对应 IP；Shadowrocket 7 个节点全部使用对应 IP。
-- sing-box 每份 Remote Profile 含 6 个同族 IP 节点、TUN、同族 DoH、异族拒绝规则和唯一的 `PROXY` 最终出口；测试确认不存在 DIRECT 或 XHTTP，TLS SNI 与 REALITY 参数仍保持基础域名。
+- 真实 Mihomo 分别解析 IPv4→IPv4、IPv6→IPv6、IPv4→IPv6 与 IPv6→IPv4 配置。
+- 订阅目录按模式恰好生成 4、4、16 个文件；不存在未安装地址族的残留订阅或 Hysteria 配置。
+- Mihomo 7 个节点全部使用箭头左侧入口 IP 字面量和 `ip-version`；Stash 6 个节点与 Shadowrocket 7 个节点也固定入口 IP。
+- sing-box 每份 Remote Profile 含 6 个入口族 IP 节点、TUN、出口族 DoH、异族拒绝规则和唯一的 `PROXY` 最终出口；测试确认不存在 DIRECT 或 XHTTP，TLS SNI 与 REALITY 参数仍保持基础域名。
 - Mihomo TUIC 明确包含 TLS SNI；其余证书主机名、REALITY `serverName` 与 XHTTP Host 也保持基础域名，不被 IP 字面量替换。
-- Caddy 在基础域名用带地址族的路径发布通用下载链接，同时保留 v4 主机只发布 v4 文件、v6 主机只发布 v6 文件的旧链接，并禁用公网 HTTP/3；相同旧令牌迁移时也由路径中的 `v4` / `v6` 正确区分内容。
-- 双栈时 sing-box 的八个入站与 Xray 的四个入站按本机 IPv4/IPv6 地址分开监听；单栈时只保留对应的四个与两个入站。sing-box 在路由阶段按入口只解析同族地址、拒绝异族 IP 字面量，再进入同族源地址绑定出口。
-- Hysteria 配置分别使用 `mode: 4`/`mode: 6` 和 `bindIPv4`/`bindIPv6`；用假核心动态验证监管脚本可启动单个子进程，也可同时启动两族并在任一退出时终止另一进程，交由 systemd 重启。
+- Caddy 在基础域名发布四个独立线路路径，同时保留 v4 主机只发布 v4 文件、v6 主机只发布 v6 文件的旧链接，并禁用公网 HTTP/3；相同旧令牌迁移时也由路径中的 `v4` / `v6` 正确区分内容。
+- 双栈时 sing-box 的 16 个入站与 Xray 的 8 个入站按箭头左侧本机 IPv4/IPv6 地址分开监听，再按箭头右侧进入对应出口；单栈时只保留对应的 4 个与 2 个入站。sing-box 在路由阶段按出口只解析对应族地址、拒绝异族 IP 字面量，再进入源地址绑定出口。
+- Hysteria 四个方向分别使用所需的 `mode: 4`/`mode: 6` 和 `bindIPv4`/`bindIPv6`；用假核心动态验证监管脚本可启动单个子进程，也可同时启动四个进程并在任一退出时终止其余进程，交由 systemd 重启完整进程组。
 - 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 与同族 direct 出站由配置加载路径和结构化断言校验。
-- 随机端口连续运行 50 轮：Hysteria2 的 128 端口区间与其余六个单端口无冲突。
-- IPv4/IPv6 订阅令牌可单独或同时轮换；未安装地址族为明确的无操作，另一族令牌与链接保持不变。
+- 随机端口连续运行 50 轮；状态加载还断言同族/跨族两个 Hysteria2 128 端口区间和两组六个单端口全局无冲突。
+- 双栈四个订阅令牌分别存储；按入口轮换时同时换新该入口的同族/跨族 URL，未选入口令牌与链接保持不变，未安装地址族为明确的无操作。
 - 面板可在不改变 URL 的情况下同时轮换七种协议的九个认证字段，也可在一个事务中紧急换新节点凭据和全部已安装地址族令牌。IPv4-only、IPv6-only、dual 均验证端口、域名、证书、REALITY 参数和未选令牌保持不变；旧凭据从服务端配置与全部订阅消失，终端不输出协议密码。服务失败、意外退出和回滚服务仍失败分别覆盖完整恢复、EXIT trap 恢复及 root-only 备份保留。
-- 面板为每个已安装地址族列出 Mihomo、Stash、Shadowrocket、sing-box 四个二维码选项；真实 qrc 的紧凑 Unicode 输出会转换为 PBM 并由 zbar 独立解码，确认内容与原 URL 完全一致。
+- 面板为每个可用线路方向列出 Mihomo、Stash、Shadowrocket、sing-box 四个二维码选项，双栈恰好 16 项；真实 qrc 的紧凑 Unicode 输出会转换为 PBM 并由 zbar 独立解码，确认内容与原 URL 完全一致。
 - 面板把 URL 只写入 qrc 标准输入，命令参数不含 URL；qrc 缺失、执行失败、终端太窄或输出不是交互终端时均返回文字链接而不终止面板。
 - VPS 体检的离线硬件报告、状态文件权限、四个服务、续期定时器、证书期限与 SAN 覆盖；模拟严格 IPv4/IPv6 源地址绑定后的 HTTPS 出口、Cloudflare 位置/时延、四个 IP 数据库的类型/位置/风控交叉结论，以及 RIPEstat 的 RIR 登记、ASN/BGP/RPKI 和 PTR。
 - IP 数据库测试覆盖全部成功、单个来源失败、返回地址不匹配和全部失败；每个查询都断言使用已安装地址族的精确源地址，外部内容经过清理且不会被单个标签冒充“原生 IP”结论。
 - 三网回程测试使用结构化 NextTrace 与 `ping` fixture，覆盖广东默认值以及广东、上海、北京、四川、湖北、辽宁六地的 36 条双栈目标，断言每地区/运营商的末跳延迟结论、固定 100 包、精确 IPv4/IPv6 源地址、目标名称及 0%/2%/7% 丢包显示，并保留原菜单 `5` 为全部地区。命令断言只由 `-c 100` 控制发包数且不传递内部 deadline。丢包测试另覆盖 100% ICMP 无响应、命令失败、畸形统计、只发出 80 包、异常发出 129 包、缺少 `ping` 以及 NextTrace 单独失败，确认每种情况都保留线路报告、给出保守提示并正常返回。ASN 判断覆盖电信 163/CN2/CTGNet、联通 9929、移动 CMI/CMIN2，以及 IIJ、SoftBank、NTT、KDDI、PCCW、HGC、Level 3、Cogent、Arelion、Hurricane Electric、Tata、Telxius 等主要国际网络；相似但不相同的 ASN 不会误判。未知 ASN 使用经过控制字符清理的 NextTrace `owner` / `isp`，名称缺失时保留 ASN，且不会增加新的外部查询。无效地区、外部探测失败、组件缺失和临时文件清理均有降级测试。界面明确标注 VPS 到国内是回程、国内探针到 VPS 的去程未测；默认 `--full` 不会触发路径或丢包探测。
 - 体检在外部 HTTP 查询失败时返回“提醒/未测”并正常结束；测试状态中的订阅令牌和协议密码不会出现在报告。CPU 与磁盘测试只从明确入口运行，磁盘临时文件在成功、失败或中断路径都由统一清理函数保护。
 - 控制面板端点刷新在地址未变化时不重启；模拟新地址更新成功、服务失败后完整回滚，以及回滚服务仍失败时保留状态备份。
-- 控制面板从 IPv4-only 补装 IPv6 的成功、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
-- 分别从 schema 1、schema 2 及 schema 3 的 IPv4-only/IPv6-only 模拟升级到 Neko 1.8.1，确认原端口、协议凭据、REALITY 参数、已安装模式、令牌和旧订阅 URL 继续可用，并只为旧安装补充新的 Trojan 端口与密码；再次升级会保持已有 Trojan 身份不变。schema 1/2 的旧共享令牌迁移为两族独立字段，新的体检组件以 `0755` 安装。
-- 模拟 firewalld 管理的旧安装升级，确认 Neko 专用服务规则加入 Trojan TCP 端口并查询生效；模拟后续服务启动失败，确认状态、配置、Hysteria systemd 单元、firewalld 配置与已有 qrc/NextTrace 一起恢复。另模拟可选 NextTrace 更新来源损坏，确认核心升级仍成功、原组件保持不变且暂存目录清理。
+- 控制面板从 IPv4-only 补装 IPv6 的成功、第二组跨族端口无碰撞、两个跨族令牌、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
+- 分别从 schema 1、schema 2 与 schema 3 的双栈/IPv4-only/IPv6-only 模拟升级到 Neko 1.9.0，确认原端口、协议凭据、REALITY 参数、安装模式、令牌和旧订阅 URL 继续可用；旧双栈只新增跨族端口集与两个令牌。schema 4 再次升级会原样保留两组端口、四个令牌和全部节点身份。缺少 Trojan 的旧状态只补充其端口/密码，schema 1/2 旧共享令牌迁移为两个同族字段。
+- 模拟 firewalld 管理的旧安装升级，确认 Neko 专用服务规则同时加入 Trojan 与跨族 TCP/UDP 端口并查询生效；模拟后续服务启动失败，确认状态、配置、Hysteria systemd 单元、firewalld 配置与已有 qrc/NextTrace 一起恢复。另模拟可选 NextTrace 更新来源损坏，确认核心升级仍成功、原组件保持不变且暂存目录清理。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
 本次修改在当前 Ubuntu 24.04 用户空间中完成；这里 PID 1 不是 systemd，也没有分配可用于 ACME 的公网测试域名。真实核心配置校验能够运行，但不能据此声称完成了一次真实 VPS 安装。
@@ -84,9 +84,9 @@ Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态�
 `.github/workflows/vm-smoke.yml` 不在每个普通 PR 自动运行，只能手动触发，或在专用
 `agent/vm-validation/**` 分支运行。它从 Debian、Ubuntu、Rocky Linux 与 AlmaLinux
 官方站点下载云镜像并核对同站校验和，在 QEMU amd64 完整虚拟机中确认 PID 1 确实是
-systemd，再运行平台识别、全部 Shell 语法、250 次 ACME 快速失败、限额/超时保护、
-systemd unit 解析和实际临时 unit 启动。八个发行版 job 相互独立，单个失败不会取消
-其他结果。
+systemd，再运行平台识别、全部 Shell 语法、schema 4 四线路渲染、250 次 ACME 快速
+失败、限额/超时保护、systemd unit 解析和实际临时 unit 启动。八个发行版 job 相互
+独立，单个失败不会取消其他结果。
 
 这个手动矩阵验证的是完整 systemd 用户空间与内核边界，不申请真实公网证书，也不
 导入移动客户端；arm64 仍由上面的 16 组 QEMU user-mode 矩阵覆盖，不能把它描述成
@@ -107,4 +107,7 @@ Actions run 为准。
 - iPad SSH 终端的真实二维码尺寸、截图后由“照片”识别，以及各客户端扫描导入；
 - 非 443 REALITY 在具体网络中的可用性与封锁概率。
 
-容器和 QEMU user-mode 很适合发现 Bash、架构、系统识别和配置格式问题，但不能代替 systemd、内核网络、防火墙、ACME 与移动客户端真机测试。首次部署应使用可随时重装的测试 VPS，导入当前 4 条或 8 条订阅逐项验收后再长期使用。
+容器和 QEMU user-mode 很适合发现 Bash、架构、系统识别和配置格式问题；专用 QEMU
+完整 VM 进一步覆盖真实 systemd，但仍不能代替公网 DNS、防火墙、ACME 与移动客户端
+真机测试。首次部署应使用可随时重装的测试 VPS，导入当前 4 条或 16 条订阅逐项验收
+后再长期使用。

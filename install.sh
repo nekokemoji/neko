@@ -576,8 +576,12 @@ write_initial_state() {
   local anytls_password trojan_password vision_uuid xhttp_uuid vision_pair xhttp_pair
   local vision_private vision_public xhttp_private xhttp_public
   local vision_sid xhttp_sid xhttp_path sub_token_ipv4 sub_token_ipv6 installed_at
+  local sub_token_ipv4_to_ipv6="" sub_token_ipv6_to_ipv4=""
   local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT TROJAN_PORT
   local VISION_PORT XHTTP_PORT
+  local CROSS_HY2_START="null" CROSS_HY2_END="null"
+  local CROSS_TUIC_PORT="null" CROSS_SS_PORT="null" CROSS_ANYTLS_PORT="null"
+  local CROSS_TROJAN_PORT="null" CROSS_VISION_PORT="null" CROSS_XHTTP_PORT="null"
 
   initialize_port_reservations
   reserve_random_range 128 HY2_START HY2_END
@@ -587,6 +591,15 @@ write_initial_state() {
   reserve_random_port TROJAN_PORT
   reserve_random_port VISION_PORT
   reserve_random_port XHTTP_PORT
+  if network_mode_has_cross_routes; then
+    reserve_random_range 128 CROSS_HY2_START CROSS_HY2_END
+    reserve_random_port CROSS_TUIC_PORT
+    reserve_random_port CROSS_SS_PORT
+    reserve_random_port CROSS_ANYTLS_PORT
+    reserve_random_port CROSS_TROJAN_PORT
+    reserve_random_port CROSS_VISION_PORT
+    reserve_random_port CROSS_XHTTP_PORT
+  fi
 
   hy2_password="$(random_urlsafe 24)"
   hy2_obfs_password="$(random_urlsafe 24)"
@@ -612,9 +625,14 @@ write_initial_state() {
   if network_mode_has_ipv6; then
     sub_token_ipv6="$(random_urlsafe 24)"
   fi
+  if network_mode_has_cross_routes; then
+    sub_token_ipv4_to_ipv6="$(random_urlsafe 24)"
+    sub_token_ipv6_to_ipv4="$(random_urlsafe 24)"
+  fi
   installed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
   jq -n \
+    --argjson schema "$NEKO_STATE_SCHEMA" \
     --arg release "$NEKO_RELEASE" \
     --arg installed_at "$installed_at" \
     --arg os_id "$OS_ID" --arg os_version "$OS_VERSION" --arg arch "$ARCH" \
@@ -628,6 +646,14 @@ write_initial_state() {
     --argjson anytls_port "$ANYTLS_PORT" --argjson trojan_port "$TROJAN_PORT" \
     --argjson vision_port "$VISION_PORT" \
     --argjson xhttp_port "$XHTTP_PORT" \
+    --argjson cross_hy2_start "$CROSS_HY2_START" \
+    --argjson cross_hy2_end "$CROSS_HY2_END" \
+    --argjson cross_tuic_port "$CROSS_TUIC_PORT" \
+    --argjson cross_ss_port "$CROSS_SS_PORT" \
+    --argjson cross_anytls_port "$CROSS_ANYTLS_PORT" \
+    --argjson cross_trojan_port "$CROSS_TROJAN_PORT" \
+    --argjson cross_vision_port "$CROSS_VISION_PORT" \
+    --argjson cross_xhttp_port "$CROSS_XHTTP_PORT" \
     --arg hy2_password "$hy2_password" --arg hy2_obfs "$hy2_obfs_password" \
     --arg tuic_uuid "$tuic_uuid" --arg tuic_password "$tuic_password" \
     --arg ss_password "$ss_password" --arg anytls_password "$anytls_password" \
@@ -639,12 +665,14 @@ write_initial_state() {
     --arg xhttp_path "$xhttp_path" \
     --arg sub_token_ipv4 "$sub_token_ipv4" \
     --arg sub_token_ipv6 "$sub_token_ipv6" \
+    --arg sub_token_ipv4_to_ipv6 "$sub_token_ipv4_to_ipv6" \
+    --arg sub_token_ipv6_to_ipv4 "$sub_token_ipv6_to_ipv4" \
     --arg subscription_domain_ipv4 "$SUBSCRIPTION_DOMAIN_IPV4" \
     --arg subscription_domain_ipv6 "$SUBSCRIPTION_DOMAIN_IPV6" \
     --arg subscription_address_ipv4 "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg subscription_address_ipv6 "$SUBSCRIPTION_IPV6_ADDRESS" \
     '{
-      schema: 3,
+      schema: $schema,
       release: $release,
       installed_at: $installed_at,
       platform: {id: $os_id, version: $os_version, arch: $arch},
@@ -668,7 +696,19 @@ write_initial_state() {
         anytls: $anytls_port,
         trojan: $trojan_port,
         vless_reality_vision: $vision_port,
-        vless_reality_xhttp: $xhttp_port
+        vless_reality_xhttp: $xhttp_port,
+        cross: (
+          if $network_mode == "dual" then {
+            hysteria2_start: $cross_hy2_start,
+            hysteria2_end: $cross_hy2_end,
+            tuic: $cross_tuic_port,
+            ss2022: $cross_ss_port,
+            anytls: $cross_anytls_port,
+            trojan: $cross_trojan_port,
+            vless_reality_vision: $cross_vision_port,
+            vless_reality_xhttp: $cross_xhttp_port
+          } else null end
+        )
       },
       credentials: {
         hysteria2_password: $hy2_password,
@@ -698,6 +738,12 @@ write_initial_state() {
         ipv6_token: (
           if $network_mode == "ipv6-only" or $network_mode == "dual"
           then $sub_token_ipv6 else null end
+        ),
+        ipv4_to_ipv6_token: (
+          if $network_mode == "dual" then $sub_token_ipv4_to_ipv6 else null end
+        ),
+        ipv6_to_ipv4_token: (
+          if $network_mode == "dual" then $sub_token_ipv6_to_ipv4 else null end
         ),
         ipv4_domain: (
           if $network_mode == "ipv4-only" or $network_mode == "dual"
@@ -732,9 +778,15 @@ validate_generated_configs() {
   if network_mode_has_ipv6; then
     "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v6.json"
   fi
+  if network_mode_has_cross_routes; then
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "$NEKO_ETC/subscriptions/sing-box-v4-to-v6.json"
+    "$NEKO_LIBEXEC/sing-box" check \
+      -c "$NEKO_ETC/subscriptions/sing-box-v6-to-v4.json"
+  fi
   "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json"
   "$NEKO_LIBEXEC/caddy" validate --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile
-  ok "sing-box 服务端、当前地址族客户端订阅、Xray 与 Caddy 配置校验通过。"
+  ok "sing-box 服务端、当前线路客户端订阅、Xray 与 Caddy 配置校验通过。"
 }
 
 start_services() {

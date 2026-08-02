@@ -1,5 +1,5 @@
 {
-  "schema": 3,
+  "schema": 4,
   "release": "1.0.0-test",
   "domain": "example.com",
   "acme_email": "admin@example.com",
@@ -17,7 +17,17 @@
     "anytls": 24000,
     "trojan": 24500,
     "vless_reality_vision": 25000,
-    "vless_reality_xhttp": 26000
+    "vless_reality_xhttp": 26000,
+    "cross": {
+      "hysteria2_start": 27000,
+      "hysteria2_end": 27127,
+      "tuic": 28000,
+      "ss2022": 29000,
+      "anytls": 30000,
+      "trojan": 31000,
+      "vless_reality_vision": 32000,
+      "vless_reality_xhttp": 33000
+    }
   },
   "credentials": {
     "hysteria2_password": "test-hy2-password",
@@ -42,6 +52,8 @@
   "subscription": {
     "ipv4_token": "test-subscription-token",
     "ipv6_token": "test-subscription-token",
+    "ipv4_to_ipv6_token": "test-v4-to-v6-token",
+    "ipv6_to_ipv4_token": "test-v6-to-v4-token",
     "ipv4_domain": "v4.example.com",
     "ipv6_domain": "v6.example.com",
     "ipv4_address": "127.0.0.1",

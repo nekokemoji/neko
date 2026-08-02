@@ -180,7 +180,8 @@ write_firewalld_service_file() {
   local tmp
   mkdir -p "$(dirname -- "$FIREWALLD_SERVICE_FILE")"
   tmp="$(mktemp "${FIREWALLD_SERVICE_FILE}.tmp.XXXXXX")"
-  cat > "$tmp" <<EOF
+  {
+    cat <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <service>
   <short>Neko Proxy</short>
@@ -195,21 +196,42 @@ write_firewalld_service_file() {
   <port protocol="tcp" port="${XHTTP_PORT}"/>
   <port protocol="udp" port="${TUIC_PORT}"/>
   <port protocol="udp" port="${HY2_START}-${HY2_END}"/>
+EOF
+    if network_mode_has_cross_routes; then
+      cat <<EOF
+  <port protocol="tcp" port="${CROSS_SS_PORT}"/>
+  <port protocol="udp" port="${CROSS_SS_PORT}"/>
+  <port protocol="tcp" port="${CROSS_ANYTLS_PORT}"/>
+  <port protocol="tcp" port="${CROSS_TROJAN_PORT}"/>
+  <port protocol="tcp" port="${CROSS_VISION_PORT}"/>
+  <port protocol="tcp" port="${CROSS_XHTTP_PORT}"/>
+  <port protocol="udp" port="${CROSS_TUIC_PORT}"/>
+  <port protocol="udp" port="${CROSS_HY2_START}-${CROSS_HY2_END}"/>
+EOF
+    fi
+    cat <<'EOF'
 </service>
 EOF
+  } > "$tmp"
   chmod 0644 "$tmp"
   mv -f "$tmp" "$FIREWALLD_SERVICE_FILE"
 }
 
 write_ufw_profile_file() {
-  local tmp
+  local tmp tcp_ports udp_ports
   mkdir -p "$(dirname -- "$UFW_PROFILE_FILE")"
   tmp="$(mktemp "${UFW_PROFILE_FILE}.tmp.XXXXXX")"
+  tcp_ports="80,443,${SS_PORT},${ANYTLS_PORT},${TROJAN_PORT},${VISION_PORT},${XHTTP_PORT}"
+  udp_ports="${SS_PORT},${TUIC_PORT},${HY2_START}:${HY2_END}"
+  if network_mode_has_cross_routes; then
+    tcp_ports+=",${CROSS_SS_PORT},${CROSS_ANYTLS_PORT},${CROSS_TROJAN_PORT},${CROSS_VISION_PORT},${CROSS_XHTTP_PORT}"
+    udp_ports+=",${CROSS_SS_PORT},${CROSS_TUIC_PORT},${CROSS_HY2_START}:${CROSS_HY2_END}"
+  fi
   cat > "$tmp" <<EOF
 [NekoProxy]
 title=Neko Proxy
 description=Neko managed proxy listeners and HTTPS subscriptions
-ports=80,443,${SS_PORT},${ANYTLS_PORT},${TROJAN_PORT},${VISION_PORT},${XHTTP_PORT}/tcp|${SS_PORT},${TUIC_PORT},${HY2_START}:${HY2_END}/udp
+ports=${tcp_ports}/tcp|${udp_ports}/udp
 EOF
   chmod 0644 "$tmp"
   mv -f "$tmp" "$UFW_PROFILE_FILE"

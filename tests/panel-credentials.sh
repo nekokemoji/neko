@@ -42,16 +42,22 @@ prepare_case() {
       jq '
         .network.mode = "ipv4-only"
         | .subscription.ipv6_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv6_domain = null
         | .subscription.ipv6_address = null
+        | .ports.cross = null
       ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
       ;;
     ipv6-only)
       jq '
         .network.mode = "ipv6-only"
         | .subscription.ipv4_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv4_domain = null
         | .subscription.ipv4_address = null
+        | .ports.cross = null
       ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
       ;;
     *) return 64 ;;
@@ -103,6 +109,8 @@ run_case() {
           5) printf "new-trojan-password-value-05" ;;
           6) printf "new-ipv4-subscription-token-06" ;;
           7) printf "new-ipv6-subscription-token-07" ;;
+          8) printf "new-ipv4-to-ipv6-token-08" ;;
+          9) printf "new-ipv6-to-ipv4-token-09" ;;
           *) return 70 ;;
         esac
       }
@@ -278,19 +286,31 @@ old_ipv4_token="$(jq -r '.subscription.ipv4_token' \
   "$WORK/emergency-dual/state.before.json")"
 old_ipv6_token="$(jq -r '.subscription.ipv6_token' \
   "$WORK/emergency-dual/state.before.json")"
+old_ipv4_to_ipv6_token="$(jq -r '.subscription.ipv4_to_ipv6_token' \
+  "$WORK/emergency-dual/state.before.json")"
+old_ipv6_to_ipv4_token="$(jq -r '.subscription.ipv6_to_ipv4_token' \
+  "$WORK/emergency-dual/state.before.json")"
 new_ipv4_token="$(jq -r '.subscription.ipv4_token' \
   "$WORK/emergency-dual/etc/state.json")"
 new_ipv6_token="$(jq -r '.subscription.ipv6_token' \
   "$WORK/emergency-dual/etc/state.json")"
+new_ipv4_to_ipv6_token="$(jq -r '.subscription.ipv4_to_ipv6_token' \
+  "$WORK/emergency-dual/etc/state.json")"
+new_ipv6_to_ipv4_token="$(jq -r '.subscription.ipv6_to_ipv4_token' \
+  "$WORK/emergency-dual/etc/state.json")"
 [[ "$new_ipv4_token" != "$old_ipv4_token" ]]
 [[ "$new_ipv6_token" != "$old_ipv6_token" ]]
 [[ "$new_ipv4_token" != "$new_ipv6_token" ]]
-[[ "$(<"$WORK/emergency-dual/urlsafe.count")" == 7 ]]
+[[ "$new_ipv4_to_ipv6_token" != "$old_ipv4_to_ipv6_token" ]]
+[[ "$new_ipv6_to_ipv4_token" != "$old_ipv6_to_ipv4_token" ]]
+[[ "$(<"$WORK/emergency-dual/urlsafe.count")" == 9 ]]
 jq -cS '
   del(
     .credentials,
     .subscription.ipv4_token,
-    .subscription.ipv6_token
+    .subscription.ipv6_token,
+    .subscription.ipv4_to_ipv6_token,
+    .subscription.ipv6_to_ipv4_token
   )
 ' "$WORK/emergency-dual/state.before.json" \
   > "$WORK/emergency-dual/before.public"
@@ -298,7 +318,9 @@ jq -cS '
   del(
     .credentials,
     .subscription.ipv4_token,
-    .subscription.ipv6_token
+    .subscription.ipv6_token,
+    .subscription.ipv4_to_ipv6_token,
+    .subscription.ipv6_to_ipv4_token
   )
 ' "$WORK/emergency-dual/etc/state.json" \
   > "$WORK/emergency-dual/after.public"
@@ -309,6 +331,8 @@ if grep -FRq -- "$old_ipv4_token" "$WORK/emergency-dual/etc"; then
 fi
 grep -Fq "$new_ipv4_token" "$WORK/emergency-dual/etc/config/Caddyfile"
 grep -Fq "$new_ipv6_token" "$WORK/emergency-dual/etc/config/Caddyfile"
+grep -Fq "$new_ipv4_to_ipv6_token" "$WORK/emergency-dual/etc/config/Caddyfile"
+grep -Fq "$new_ipv6_to_ipv4_token" "$WORK/emergency-dual/etc/config/Caddyfile"
 grep -Fq '旧订阅 URL 与旧节点凭据已全部失效' \
   "$WORK/emergency-dual/output"
 assert_old_credentials_absent_from_runtime emergency-dual

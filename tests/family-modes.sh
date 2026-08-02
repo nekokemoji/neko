@@ -29,16 +29,22 @@ prepare_mode() {
       jq '
         .network.mode = "ipv4-only"
         | .subscription.ipv6_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv6_domain = null
         | .subscription.ipv6_address = null
+        | .ports.cross = null
       ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
       ;;
     ipv6-only)
       jq '
         .network.mode = "ipv6-only"
         | .subscription.ipv4_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv4_domain = null
         | .subscription.ipv4_address = null
+        | .ports.cross = null
       ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
       ;;
     dual)
@@ -85,7 +91,7 @@ for mode in ipv4-only ipv6-only dual; do
       families=(v6)
       ;;
     dual)
-      families=(v4 v6)
+      families=(v4 v6 v4-to-v6 v6-to-v4)
       ;;
   esac
   for family in "${families[@]}"; do
@@ -230,7 +236,7 @@ bash -c '
   [[ "$NETWORK_MODE" == "$NETWORK_MODE_DUAL" ]]
 ' _ "$ROOT/install.sh" </dev/null
 
-printf '[地址族] Hysteria 监管器支持单进程与双进程……\n'
+printf '[地址族] Hysteria 监管器支持单进程与四线路进程组……\n'
 SUPERVISOR="$WORK/supervisor"
 mkdir -p "$SUPERVISOR/config"
 cat > "$SUPERVISOR/fake-hysteria" <<'EOF'
@@ -244,7 +250,14 @@ while (( $# )); do
   esac
 done
 printf '%s\n' "${config##*/}" >> "$NEKO_SUPERVISOR_LOG"
-exit 0
+expected="${NEKO_SUPERVISOR_EXPECTED:-1}"
+for ((attempt = 0; attempt < 200; attempt++)); do
+  mapfile -t started_configs < "$NEKO_SUPERVISOR_LOG"
+  started="${#started_configs[@]}"
+  (( started >= expected )) && exit 0
+  sleep 0.01
+done
+exit 1
 EOF
 chmod 0755 "$SUPERVISOR/fake-hysteria"
 printf 'listen: v4\n' > "$SUPERVISOR/config/hysteria-v4.yaml"
@@ -252,11 +265,32 @@ set +e
 NEKO_HYSTERIA_BINARY="$SUPERVISOR/fake-hysteria" \
   NEKO_CONFIG_DIR="$SUPERVISOR/config" \
   NEKO_SUPERVISOR_LOG="$SUPERVISOR/started" \
+  NEKO_SUPERVISOR_EXPECTED=1 \
   "$ROOT/runtime/hysteria-dual.sh"
 supervisor_rc=$?
 set -e
 (( supervisor_rc != 0 ))
 [[ "$(<"$SUPERVISOR/started")" == hysteria-v4.yaml ]]
+
+: > "$SUPERVISOR/started"
+printf 'listen: v6\n' > "$SUPERVISOR/config/hysteria-v6.yaml"
+printf 'listen: v4-to-v6\n' > "$SUPERVISOR/config/hysteria-v4-to-v6.yaml"
+printf 'listen: v6-to-v4\n' > "$SUPERVISOR/config/hysteria-v6-to-v4.yaml"
+set +e
+NEKO_HYSTERIA_BINARY="$SUPERVISOR/fake-hysteria" \
+  NEKO_CONFIG_DIR="$SUPERVISOR/config" \
+  NEKO_SUPERVISOR_LOG="$SUPERVISOR/started" \
+  NEKO_SUPERVISOR_EXPECTED=4 \
+  "$ROOT/runtime/hysteria-dual.sh"
+supervisor_rc=$?
+set -e
+(( supervisor_rc != 0 ))
+mapfile -t supervisor_started < <(sort "$SUPERVISOR/started")
+expected_supervisor_started=(
+  hysteria-v4-to-v6.yaml hysteria-v4.yaml
+  hysteria-v6-to-v4.yaml hysteria-v6.yaml
+)
+[[ "${supervisor_started[*]}" == "${expected_supervisor_started[*]}" ]]
 
 printf '[地址族] 控制面板按地址族重置 Token……\n'
 prepare_rotate_case() {
@@ -289,19 +323,31 @@ run_rotate_case() {
 
 prepare_rotate_case ipv4 dual
 old_v6_token="$(jq -r '.subscription.ipv6_token' "$WORK/rotate-ipv4/etc/state.json")"
+old_v6_to_ipv4_token="$(jq -r '.subscription.ipv6_to_ipv4_token' \
+  "$WORK/rotate-ipv4/etc/state.json")"
 run_rotate_case ipv4 $'1\ny'
 [[ "$(jq -r '.subscription.ipv4_token' "$WORK/rotate-ipv4/etc/state.json")" \
   == new-ipv4-token-value ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$WORK/rotate-ipv4/etc/state.json")" \
   == "$old_v6_token" ]]
+[[ "$(jq -r '.subscription.ipv4_to_ipv6_token' \
+  "$WORK/rotate-ipv4/etc/state.json")" == new-ipv4-token-value ]]
+[[ "$(jq -r '.subscription.ipv6_to_ipv4_token' \
+  "$WORK/rotate-ipv4/etc/state.json")" == "$old_v6_to_ipv4_token" ]]
 
 prepare_rotate_case ipv6 dual
 old_v4_token="$(jq -r '.subscription.ipv4_token' "$WORK/rotate-ipv6/etc/state.json")"
+old_v4_to_ipv6_token="$(jq -r '.subscription.ipv4_to_ipv6_token' \
+  "$WORK/rotate-ipv6/etc/state.json")"
 run_rotate_case ipv6 $'2\ny'
 [[ "$(jq -r '.subscription.ipv4_token' "$WORK/rotate-ipv6/etc/state.json")" \
   == "$old_v4_token" ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$WORK/rotate-ipv6/etc/state.json")" \
   == new-ipv6-token-value ]]
+[[ "$(jq -r '.subscription.ipv6_to_ipv4_token' \
+  "$WORK/rotate-ipv6/etc/state.json")" == new-ipv6-token-value ]]
+[[ "$(jq -r '.subscription.ipv4_to_ipv6_token' \
+  "$WORK/rotate-ipv6/etc/state.json")" == "$old_v4_to_ipv6_token" ]]
 
 prepare_rotate_case both dual
 run_rotate_case both $'3\ny'
@@ -309,6 +355,10 @@ run_rotate_case both $'3\ny'
   == new-both-token-value ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$WORK/rotate-both/etc/state.json")" \
   == new-both-token-value ]]
+[[ "$(jq -r '.subscription.ipv4_to_ipv6_token' \
+  "$WORK/rotate-both/etc/state.json")" == new-both-token-value ]]
+[[ "$(jq -r '.subscription.ipv6_to_ipv4_token' \
+  "$WORK/rotate-both/etc/state.json")" == new-both-token-value ]]
 
 prepare_rotate_case absent ipv4-only
 absent_hash="$(sha256sum "$WORK/rotate-absent/etc/state.json" | awk '{print $1}')"
@@ -335,6 +385,7 @@ prepare_add_case() {
     > "$target/var/lego/certificates/example.com.crt"
   printf 'dummy key\n' \
     > "$target/var/lego/certificates/example.com.key"
+  printf '<service>original</service>\n' > "$target/firewalld.xml"
 }
 
 run_add_case() {
@@ -346,6 +397,7 @@ run_add_case() {
     NEKO_ETC="$target/etc" NEKO_VAR="$target/var" \
     NEKO_STATE="$target/etc/state.json" NEKO_USER=root \
     NEKO_LIBEXEC="$ROOT" NEKO_PANEL_TMP_DIR="$target/tmp" \
+    FIREWALLD_SERVICE_FILE="$target/firewalld.xml" \
     bash -c '
       set -Eeuo pipefail
       source "$1"
@@ -419,6 +471,21 @@ run_add_case success success
   "$WORK/add-success/etc/state.json")" == new-ipv6-family-token ]]
 [[ "$(jq -r '.subscription.ipv6_address' \
   "$WORK/add-success/etc/state.json")" == ::1 ]]
+[[ "$(jq -r '.subscription.ipv4_to_ipv6_token' \
+  "$WORK/add-success/etc/state.json")" == new-ipv6-family-token ]]
+[[ "$(jq -r '.subscription.ipv6_to_ipv4_token' \
+  "$WORK/add-success/etc/state.json")" == new-ipv6-family-token ]]
+jq -e '
+  .ports.cross
+  | type == "object"
+    and (.hysteria2_end - .hysteria2_start == 127)
+    and ([.tuic, .ss2022, .anytls, .trojan,
+      .vless_reality_vision, .vless_reality_xhttp] | unique | length == 6)
+' "$WORK/add-success/etc/state.json" >/dev/null
+NEKO_ETC="$WORK/add-success/etc" NEKO_VAR="$WORK/add-success/var" \
+  NEKO_STATE="$WORK/add-success/etc/state.json" NEKO_USER=root \
+  bash -c 'source "$1"; load_state; network_mode_has_cross_routes' \
+    _ "$ROOT/lib/common.sh"
 [[ "$(find "$WORK/add-success/tmp" -maxdepth 1 -name 'neko-family-backup.*' \
   | wc -l | tr -d ' ')" == 0 ]]
 
@@ -474,10 +541,14 @@ mv -f -- \
 firewall_rollback_hash="$(
   sha256sum "$WORK/add-firewall-rollback/etc/state.json" | awk '{print $1}'
 )"
+firewall_profile_hash="$(sha256sum \
+  "$WORK/add-firewall-rollback/firewalld.xml" | awk '{print $1}')"
 run_add_case firewall-rollback firewall-rollback
 [[ "$(<"$WORK/add-firewall-rollback/rc")" != 0 ]]
 [[ "$(sha256sum "$WORK/add-firewall-rollback/etc/state.json" | awk '{print $1}')" \
   == "$firewall_rollback_hash" ]]
+[[ "$(sha256sum "$WORK/add-firewall-rollback/firewalld.xml" | awk '{print $1}')" \
+  == "$firewall_profile_hash" ]]
 grep -Fq -- \
   '--permanent --zone=new6 --add-service=neko-proxy' \
   "$WORK/add-firewall-rollback/firewall-calls"

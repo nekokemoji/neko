@@ -15,6 +15,7 @@ ACME_METHOD_CLOUDFLARE="cloudflare-dns-01"
 ACME_RATE_LIMIT_EXIT=75
 ACME_TIMEOUT_EXIT=124
 ACME_DEFAULT_TIMEOUT_SECONDS=600
+NEKO_STATE_SCHEMA=4
 NETWORK_MODE_IPV4="ipv4-only"
 NETWORK_MODE_IPV6="ipv6-only"
 NETWORK_MODE_DUAL="dual"
@@ -80,6 +81,10 @@ network_mode_has_ipv6() {
   esac
 }
 
+network_mode_has_cross_routes() {
+  [[ "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" == "$NETWORK_MODE_DUAL" ]]
+}
+
 network_mode_label() {
   case "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" in
     "$NETWORK_MODE_IPV4") printf '仅 IPv4' ;;
@@ -90,8 +95,8 @@ network_mode_label() {
 }
 
 network_mode_link_count() {
-  if [[ "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" == "$NETWORK_MODE_DUAL" ]]; then
-    printf '8'
+  if network_mode_has_cross_routes "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}"; then
+    printf '16'
   else
     printf '4'
   fi
@@ -748,6 +753,27 @@ initialize_port_reservations() {
   return 0
 }
 
+reserve_loaded_proxy_ports() {
+  local reserved_mode="${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" port
+  for ((port = HY2_START; port <= HY2_END; port++)); do
+    NEKO_RESERVED_PORTS["$port"]=1
+  done
+  for port in \
+    "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"; do
+    NEKO_RESERVED_PORTS["$port"]=1
+  done
+  if network_mode_has_cross_routes "$reserved_mode"; then
+    for ((port = CROSS_HY2_START; port <= CROSS_HY2_END; port++)); do
+      NEKO_RESERVED_PORTS["$port"]=1
+    done
+    for port in \
+      "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" "$CROSS_ANYTLS_PORT" \
+      "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" "$CROSS_XHTTP_PORT"; do
+      NEKO_RESERVED_PORTS["$port"]=1
+    done
+  fi
+}
+
 reserve_random_port() {
   local result_variable="$1" candidate attempts=0
   [[ "$result_variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "无效的端口变量名。"
@@ -861,12 +887,65 @@ state_value() {
   jq -er "$1" "$NEKO_STATE"
 }
 
+validate_proxy_port_layout() {
+  local index label port start end
+  local -a range_labels=("Hysteria2")
+  local -a range_starts=("$HY2_START")
+  local -a range_ends=("$HY2_END")
+  local -a port_labels=("TUIC" "SS2022" "AnyTLS" "Trojan" "VLESS Vision" "VLESS XHTTP")
+  local -a port_values=(
+    "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"
+  )
+  local -A seen_ports=()
+
+  if network_mode_has_cross_routes; then
+    range_labels+=("跨族 Hysteria2")
+    range_starts+=("$CROSS_HY2_START")
+    range_ends+=("$CROSS_HY2_END")
+    port_labels+=(
+      "跨族 TUIC" "跨族 SS2022" "跨族 AnyTLS" "跨族 Trojan"
+      "跨族 VLESS Vision" "跨族 VLESS XHTTP"
+    )
+    port_values+=(
+      "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" "$CROSS_ANYTLS_PORT"
+      "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" "$CROSS_XHTTP_PORT"
+    )
+  fi
+
+  for index in "${!range_labels[@]}"; do
+    label="${range_labels[$index]}"
+    start="${range_starts[$index]}"
+    end="${range_ends[$index]}"
+    [[ "$start" =~ ^[0-9]+$ && "$end" =~ ^[0-9]+$ ]] \
+      || die "state.json 中的 ${label} 端口范围格式无效。"
+    (( start >= 10000 && end <= 60000 && end - start == 127 )) \
+      || die "state.json 中的 ${label} 端口范围无效；必须是 10000-60000 内连续 128 个端口。"
+    for ((port = start; port <= end; port++)); do
+      [[ -z "${seen_ports[$port]+x}" ]] \
+        || die "state.json 中的代理端口 ${port} 重复。"
+      seen_ports["$port"]="$label"
+    done
+  done
+
+  for index in "${!port_labels[@]}"; do
+    label="${port_labels[$index]}"
+    port="${port_values[$index]}"
+    [[ "$port" =~ ^[0-9]+$ ]] \
+      || die "state.json 中的 ${label} 端口格式无效。"
+    (( port >= 10000 && port <= 60000 )) \
+      || die "state.json 中的 ${label} 端口不在 10000-60000。"
+    [[ -z "${seen_ports[$port]+x}" ]] \
+      || die "state.json 中的 ${label} 端口 ${port} 与 ${seen_ports[$port]} 冲突。"
+    seen_ports["$port"]="$label"
+  done
+}
+
 load_state() {
   local state_schema expected_ipv4_domain expected_ipv6_domain
   [[ -r "$NEKO_STATE" ]] || die "找不到安装状态：${NEKO_STATE}"
 
   state_schema="$(state_value '.schema')"
-  [[ "$state_schema" == "3" ]] \
+  [[ "$state_schema" == "$NEKO_STATE_SCHEMA" ]] \
     || die "安装状态 schema 为 ${state_schema}；请先运行当前版本的升级脚本。"
   DOMAIN="$(state_value '.domain')"
   ACME_EMAIL="$(state_value '.acme_email')"
@@ -875,6 +954,9 @@ load_state() {
   ACME_METHOD="$(jq -r '.acme.method // "http-01"' "$NEKO_STATE")"
   ACME_METHOD="$(normalize_acme_method "$ACME_METHOD")" \
     || die "state.json 中的 ACME 验证方式无效。"
+  NETWORK_MODE="$(jq -r '.network.mode // empty' "$NEKO_STATE")"
+  NETWORK_MODE="$(normalize_network_mode "$NETWORK_MODE")" \
+    || die "state.json 中的网络安装模式无效。"
   HY2_START="$(state_value '.ports.hysteria2_start')"
   HY2_END="$(state_value '.ports.hysteria2_end')"
   TUIC_PORT="$(state_value '.ports.tuic')"
@@ -883,6 +965,26 @@ load_state() {
   TROJAN_PORT="$(state_value '.ports.trojan')"
   VISION_PORT="$(state_value '.ports.vless_reality_vision')"
   XHTTP_PORT="$(state_value '.ports.vless_reality_xhttp')"
+  if network_mode_has_cross_routes; then
+    CROSS_HY2_START="$(state_value '.ports.cross.hysteria2_start')"
+    CROSS_HY2_END="$(state_value '.ports.cross.hysteria2_end')"
+    CROSS_TUIC_PORT="$(state_value '.ports.cross.tuic')"
+    CROSS_SS_PORT="$(state_value '.ports.cross.ss2022')"
+    CROSS_ANYTLS_PORT="$(state_value '.ports.cross.anytls')"
+    CROSS_TROJAN_PORT="$(state_value '.ports.cross.trojan')"
+    CROSS_VISION_PORT="$(state_value '.ports.cross.vless_reality_vision')"
+    CROSS_XHTTP_PORT="$(state_value '.ports.cross.vless_reality_xhttp')"
+  else
+    CROSS_HY2_START=""
+    CROSS_HY2_END=""
+    CROSS_TUIC_PORT=""
+    CROSS_SS_PORT=""
+    CROSS_ANYTLS_PORT=""
+    CROSS_TROJAN_PORT=""
+    CROSS_VISION_PORT=""
+    CROSS_XHTTP_PORT=""
+  fi
+  validate_proxy_port_layout
   HY2_PASSWORD="$(state_value '.credentials.hysteria2_password')"
   HY2_OBFS_PASSWORD="$(state_value '.credentials.hysteria2_obfs_password')"
   TUIC_UUID="$(state_value '.credentials.tuic_uuid')"
@@ -899,11 +1001,10 @@ load_state() {
   XHTTP_PUBLIC_KEY="$(state_value '.reality.xhttp_public_key')"
   XHTTP_SHORT_ID="$(state_value '.reality.xhttp_short_id')"
   XHTTP_PATH="$(state_value '.reality.xhttp_path')"
-  NETWORK_MODE="$(jq -r '.network.mode // empty' "$NEKO_STATE")"
-  NETWORK_MODE="$(normalize_network_mode "$NETWORK_MODE")" \
-    || die "state.json 中的网络安装模式无效。"
   SUB_TOKEN_IPV4="$(jq -r '.subscription.ipv4_token // empty' "$NEKO_STATE")"
   SUB_TOKEN_IPV6="$(jq -r '.subscription.ipv6_token // empty' "$NEKO_STATE")"
+  SUB_TOKEN_IPV4_TO_IPV6="$(jq -r '.subscription.ipv4_to_ipv6_token // empty' "$NEKO_STATE")"
+  SUB_TOKEN_IPV6_TO_IPV4="$(jq -r '.subscription.ipv6_to_ipv4_token // empty' "$NEKO_STATE")"
   SUBSCRIPTION_DOMAIN_IPV4="$(jq -r '.subscription.ipv4_domain // empty' "$NEKO_STATE")"
   SUBSCRIPTION_DOMAIN_IPV6="$(jq -r '.subscription.ipv6_domain // empty' "$NEKO_STATE")"
   SUBSCRIPTION_IPV4_ADDRESS="$(jq -r '.subscription.ipv4_address // empty' "$NEKO_STATE")"
@@ -937,6 +1038,15 @@ load_state() {
     SUB_TOKEN_IPV6=""
     SUBSCRIPTION_DOMAIN_IPV6=""
     SUBSCRIPTION_IPV6_ADDRESS=""
+  fi
+  if network_mode_has_cross_routes; then
+    [[ "$SUB_TOKEN_IPV4_TO_IPV6" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+      || die "state.json 中的 IPv4→IPv6 订阅令牌格式无效。"
+    [[ "$SUB_TOKEN_IPV6_TO_IPV4" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+      || die "state.json 中的 IPv6→IPv4 订阅令牌格式无效。"
+  else
+    SUB_TOKEN_IPV4_TO_IPV6=""
+    SUB_TOKEN_IPV6_TO_IPV4=""
   fi
   CERT_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.crt"
   KEY_FILE="${NEKO_VAR}/lego/certificates/${DOMAIN}.key"
@@ -990,18 +1100,28 @@ subscription_client_filename() {
 }
 
 subscription_url() {
-  local family="$1" client="$2" family_path token filename
+  local route="$1" client="$2" route_path token filename
   filename="$(subscription_client_filename "$client")" || return 1
-  case "$family" in
+  case "$route" in
     ipv4)
       network_mode_has_ipv4 || return 1
       token="$SUB_TOKEN_IPV4"
-      family_path=v4
+      route_path=v4
       ;;
     ipv6)
       network_mode_has_ipv6 || return 1
       token="$SUB_TOKEN_IPV6"
-      family_path=v6
+      route_path=v6
+      ;;
+    ipv4-to-ipv6)
+      network_mode_has_cross_routes || return 1
+      token="$SUB_TOKEN_IPV4_TO_IPV6"
+      route_path=v4-to-v6
+      ;;
+    ipv6-to-ipv4)
+      network_mode_has_cross_routes || return 1
+      token="$SUB_TOKEN_IPV6_TO_IPV4"
+      route_path=v6-to-v4
       ;;
     *)
       return 1
@@ -1009,27 +1129,38 @@ subscription_url() {
   esac
   [[ -n "$DOMAIN" && -n "$token" ]] || return 1
   printf 'https://%s/%s/%s/%s' \
-    "$DOMAIN" "$token" "$family_path" "$filename"
+    "$DOMAIN" "$token" "$route_path" "$filename"
 }
 
 show_subscription_links() {
-  local family client family_label client_label url
+  local route client route_label client_label url
   load_state
   printf '\n当前模式：%s\n' "$(network_mode_label)"
-  printf '下载入口：基础域名（只负责取回配置，节点连接与出口仍严格分族）\n'
-  for family in ipv4 ipv6; do
-    if [[ "$family" == ipv4 ]]; then
-      network_mode_has_ipv4 || continue
-      family_label=IPv4
-    else
-      network_mode_has_ipv6 || continue
-      family_label=IPv6
-    fi
+  printf '下载入口：基础域名（只负责取回配置；节点入口与出口按箭头严格固定）\n'
+  for route in ipv4 ipv6 ipv4-to-ipv6 ipv6-to-ipv4; do
+    case "$route" in
+      ipv4)
+        network_mode_has_ipv4 || continue
+        route_label='IPv4 → IPv4'
+        ;;
+      ipv6)
+        network_mode_has_ipv6 || continue
+        route_label='IPv6 → IPv6'
+        ;;
+      ipv4-to-ipv6)
+        network_mode_has_cross_routes || continue
+        route_label='IPv4 → IPv6'
+        ;;
+      ipv6-to-ipv4)
+        network_mode_has_cross_routes || continue
+        route_label='IPv6 → IPv4'
+        ;;
+    esac
     for client in mihomo stash shadowrocket sing-box; do
       client_label="$(subscription_client_label "$client")"
-      url="$(subscription_url "$family" "$client")"
+      url="$(subscription_url "$route" "$client")"
       printf '\n%s %s（严格）：\n%s\n' \
-        "$client_label" "$family_label" "$url"
+        "$client_label" "$route_label" "$url"
     done
   done
   printf '\n'
@@ -1133,5 +1264,12 @@ show_required_ports() {
   fi
   printf '%s 云防火墙 UDP：%s-%s, %s, %s\n' \
     "$family_label" "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT"
+  if network_mode_has_cross_routes; then
+    printf '双栈跨族线路 TCP：%s, %s, %s, %s, %s\n' \
+      "$CROSS_SS_PORT" "$CROSS_ANYTLS_PORT" "$CROSS_TROJAN_PORT" \
+      "$CROSS_VISION_PORT" "$CROSS_XHTTP_PORT"
+    printf '双栈跨族线路 UDP：%s-%s, %s, %s\n' \
+      "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT"
+  fi
   printf '仅回环 TCP：8443（不要对公网放行）\n'
 }

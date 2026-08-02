@@ -53,7 +53,7 @@ if grep -Fq 'https://' "$WORK/qrc.args"; then
   exit 1
 fi
 [[ "$panel_output" == *'查看当前严格订阅链接与二维码'* ]]
-[[ "$panel_output" == *'8. sing-box IPv6（严格）'* ]]
+[[ "$panel_output" == *'16. sing-box IPv6 → IPv4（严格）'* ]]
 [[ "$panel_output" == *"$expected_url"* ]]
 [[ "$panel_output" == *'二维码等同于订阅密码'* ]]
 
@@ -69,12 +69,18 @@ for mode in ipv4-only ipv6-only; do
     .network.mode = $mode
     | if $mode == "ipv4-only" then
         .subscription.ipv6_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv6_domain = null
         | .subscription.ipv6_address = null
+        | .ports.cross = null
       else
         .subscription.ipv4_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv4_domain = null
         | .subscription.ipv4_address = null
+        | .ports.cross = null
       end
   ' "$ROOT/tests/fixtures/state.json" > "$WORK/etc/state-${mode}.json"
   single_output="$(
@@ -87,8 +93,8 @@ for mode in ipv4-only ipv6-only; do
         bash -c 'source "$1"; subscription_qr_menu' \
           _ "$WORK/libexec/panel.sh" 2>&1
   )"
-  [[ "$single_output" == *"4. sing-box ${installed_family}（严格）"* ]]
-  [[ "$single_output" != *"Mihomo ${missing_family}（严格）"* ]]
+  [[ "$single_output" == *"4. sing-box ${installed_family} → ${installed_family}（严格）"* ]]
+  [[ "$single_output" != *"Mihomo ${missing_family} → ${missing_family}（严格）"* ]]
 done
 
 missing_output="$(

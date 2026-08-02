@@ -328,7 +328,8 @@ show_system_report() {
 
 load_diag_state() {
   [[ -r "$NEKO_STATE" ]] || return 1
-  jq -e '.schema == 3 and (.network.mode | type == "string")' \
+  jq -e --argjson schema "$NEKO_STATE_SCHEMA" \
+    '.schema == $schema and (.network.mode | type == "string")' \
     "$NEKO_STATE" >/dev/null 2>&1 || return 1
 
   DOMAIN="$(jq -r '.domain // empty' "$NEKO_STATE")"
@@ -359,7 +360,7 @@ show_neko_report() {
 
   diag_section "Neko 服务与证书"
   if ! load_diag_state; then
-    diag_skip "没有找到可读取的 Neko schema 3 安装状态。"
+    diag_skip "没有找到可读取的 Neko schema ${NEKO_STATE_SCHEMA} 安装状态。"
     return 0
   fi
 

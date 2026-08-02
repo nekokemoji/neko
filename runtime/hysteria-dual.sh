@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # Run every configured Hysteria address-family instance as one systemd service.
-# A single-stack install starts one child. A dual-stack install starts both and
-# stops the remaining child if either exits, so systemd can restart the group.
+# A single-stack install starts one child. A dual-stack install starts the two
+# same-family and two cross-family children, then stops the remaining children
+# if any one exits so systemd can restart the complete group.
 
 set -Eeuo pipefail
 
@@ -35,7 +36,9 @@ stop_service() {
 trap stop_service INT TERM
 trap stop_children EXIT
 
-for config_file in hysteria-v4.yaml hysteria-v6.yaml; do
+for config_file in \
+  hysteria-v4.yaml hysteria-v6.yaml \
+  hysteria-v4-to-v6.yaml hysteria-v6-to-v4.yaml; do
   [[ -s "$CONFIG_DIR/$config_file" ]] || continue
   "$HYSTERIA" server --disable-update-check \
     --config "$CONFIG_DIR/$config_file" &
@@ -43,7 +46,7 @@ for config_file in hysteria-v4.yaml hysteria-v6.yaml; do
 done
 
 if (( ${#pids[@]} == 0 )); then
-  printf '[错误] 没有找到可用的 Hysteria IPv4/IPv6 配置。\n' >&2
+  printf '[错误] 没有找到可用的 Hysteria 线路配置。\n' >&2
   exit 1
 fi
 

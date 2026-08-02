@@ -42,12 +42,19 @@ render_sing_box() {
     --arg anytls_password "$ANYTLS_PASSWORD" \
     --argjson trojan_port "$TROJAN_PORT" \
     --arg trojan_password "$TROJAN_PASSWORD" \
-    'def family_inbounds($suffix; $listen): [
+    --argjson cross_tuic_port "${CROSS_TUIC_PORT:-null}" \
+    --argjson cross_ss_port "${CROSS_SS_PORT:-null}" \
+    --argjson cross_anytls_port "${CROSS_ANYTLS_PORT:-null}" \
+    --argjson cross_trojan_port "${CROSS_TROJAN_PORT:-null}" \
+    'def family_inbounds(
+      $suffix; $listen; $route_tuic_port; $route_ss_port;
+      $route_anytls_port; $route_trojan_port
+    ): [
         {
           type: "tuic",
           tag: ("tuic-" + $suffix + "-in"),
           listen: $listen,
-          listen_port: $tuic_port,
+          listen_port: $route_tuic_port,
           users: [{uuid: $tuic_uuid, password: $tuic_password}],
           congestion_control: "bbr",
           zero_rtt_handshake: false,
@@ -63,7 +70,7 @@ render_sing_box() {
           type: "shadowsocks",
           tag: ("ss2022-" + $suffix + "-in"),
           listen: $listen,
-          listen_port: $ss_port,
+          listen_port: $route_ss_port,
           method: "2022-blake3-aes-128-gcm",
           password: $ss_password
         },
@@ -71,7 +78,7 @@ render_sing_box() {
           type: "anytls",
           tag: ("anytls-" + $suffix + "-in"),
           listen: $listen,
-          listen_port: $anytls_port,
+          listen_port: $route_anytls_port,
           users: [{password: $anytls_password}],
           tls: {
             enabled: true,
@@ -85,7 +92,7 @@ render_sing_box() {
           type: "trojan",
           tag: ("trojan-" + $suffix + "-in"),
           listen: $listen,
-          listen_port: $trojan_port,
+          listen_port: $route_trojan_port,
           users: [{password: $trojan_password}],
           tls: {
             enabled: true,
@@ -97,20 +104,47 @@ render_sing_box() {
       ];
     def has_v4: ($mode == "ipv4-only" or $mode == "dual");
     def has_v6: ($mode == "ipv6-only" or $mode == "dual");
-    def v4_inbound_tags: [
+    def has_cross: ($mode == "dual");
+    def same_v4_inbound_tags: [
       "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"
     ];
-    def v6_inbound_tags: [
+    def same_v6_inbound_tags: [
       "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"
     ];
+    def cross_v4_to_v6_inbound_tags: [
+      "tuic-v4-to-v6-in", "ss2022-v4-to-v6-in",
+      "anytls-v4-to-v6-in", "trojan-v4-to-v6-in"
+    ];
+    def cross_v6_to_v4_inbound_tags: [
+      "tuic-v6-to-v4-in", "ss2022-v6-to-v4-in",
+      "anytls-v6-to-v4-in", "trojan-v6-to-v4-in"
+    ];
+    def v4_egress_inbound_tags:
+      same_v4_inbound_tags
+      + (if has_cross then cross_v6_to_v4_inbound_tags else [] end);
+    def v6_egress_inbound_tags:
+      same_v6_inbound_tags
+      + (if has_cross then cross_v4_to_v6_inbound_tags else [] end);
     {
       log: {level: "info", timestamp: true},
       dns: {
         servers: [{type: "local", tag: "local"}]
       },
       inbounds:
-        ((if has_v4 then family_inbounds("v4"; $listen_v4) else [] end)
-        + (if has_v6 then family_inbounds("v6"; $listen_v6) else [] end)),
+        ((if has_v4 then family_inbounds(
+          "v4"; $listen_v4; $tuic_port; $ss_port; $anytls_port; $trojan_port
+        ) else [] end)
+        + (if has_v6 then family_inbounds(
+          "v6"; $listen_v6; $tuic_port; $ss_port; $anytls_port; $trojan_port
+        ) else [] end)
+        + (if has_cross then family_inbounds(
+          "v4-to-v6"; $listen_v4; $cross_tuic_port; $cross_ss_port;
+          $cross_anytls_port; $cross_trojan_port
+        ) else [] end)
+        + (if has_cross then family_inbounds(
+          "v6-to-v4"; $listen_v6; $cross_tuic_port; $cross_ss_port;
+          $cross_anytls_port; $cross_trojan_port
+        ) else [] end)),
       outbounds:
         ((if has_v4 then [{
           type: "direct",
@@ -128,35 +162,35 @@ render_sing_box() {
         rules:
           ([{network: "tcp", port: 25, action: "reject"}]
           + (if has_v4 then [{
-            inbound: v4_inbound_tags,
+            inbound: v4_egress_inbound_tags,
             action: "resolve",
             server: "local",
             strategy: "ipv4_only"
           }] else [] end)
           + (if has_v6 then [{
-            inbound: v6_inbound_tags,
+            inbound: v6_egress_inbound_tags,
             action: "resolve",
             server: "local",
             strategy: "ipv6_only"
           }] else [] end)
           + [{ip_is_private: true, action: "reject"}]
           + (if has_v4 then [{
-            inbound: v4_inbound_tags,
+            inbound: v4_egress_inbound_tags,
             ip_version: 6,
             action: "reject"
           }] else [] end)
           + (if has_v6 then [{
-            inbound: v6_inbound_tags,
+            inbound: v6_egress_inbound_tags,
             ip_version: 4,
             action: "reject"
           }] else [] end)
           + (if has_v4 then [{
-            inbound: v4_inbound_tags,
+            inbound: v4_egress_inbound_tags,
             action: "route",
             outbound: "direct-v4"
           }] else [] end)
           + (if has_v6 then [{
-            inbound: v6_inbound_tags,
+            inbound: v6_egress_inbound_tags,
             action: "route",
             outbound: "direct-v6"
           }] else [] end)),
@@ -180,10 +214,12 @@ render_xray() {
     --arg xhttp_private "$XHTTP_PRIVATE_KEY" \
     --arg xhttp_sid "$XHTTP_SHORT_ID" \
     --arg xhttp_path "$XHTTP_PATH" \
-    'def vision_inbound($suffix; $listen): {
+    --argjson cross_vision_port "${CROSS_VISION_PORT:-null}" \
+    --argjson cross_xhttp_port "${CROSS_XHTTP_PORT:-null}" \
+    'def vision_inbound($suffix; $listen; $route_vision_port): {
         tag: ("vless-reality-vision-" + $suffix + "-in"),
         listen: $listen,
-        port: $vision_port,
+        port: $route_vision_port,
         protocol: "vless",
         settings: {
           clients: [{id: $vision_uuid, flow: "xtls-rprx-vision"}],
@@ -203,10 +239,10 @@ render_xray() {
         },
         sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
       };
-    def xhttp_inbound($suffix; $listen): {
+    def xhttp_inbound($suffix; $listen; $route_xhttp_port): {
         tag: ("vless-reality-xhttp-" + $suffix + "-in"),
         listen: $listen,
-        port: $xhttp_port,
+        port: $route_xhttp_port,
         protocol: "vless",
         settings: {
           clients: [{id: $xhttp_uuid}],
@@ -232,16 +268,23 @@ render_xray() {
       };
     def has_v4: ($mode == "ipv4-only" or $mode == "dual");
     def has_v6: ($mode == "ipv6-only" or $mode == "dual");
+    def has_cross: ($mode == "dual");
     {
       log: {loglevel: "warning"},
       inbounds:
         ((if has_v4 then [
-          vision_inbound("v4"; $listen_v4),
-          xhttp_inbound("v4"; $listen_v4)
+          vision_inbound("v4"; $listen_v4; $vision_port),
+          xhttp_inbound("v4"; $listen_v4; $xhttp_port)
         ] else [] end)
         + (if has_v6 then [
-          vision_inbound("v6"; $listen_v6),
-          xhttp_inbound("v6"; $listen_v6)
+          vision_inbound("v6"; $listen_v6; $vision_port),
+          xhttp_inbound("v6"; $listen_v6; $xhttp_port)
+        ] else [] end)
+        + (if has_cross then [
+          vision_inbound("v4-to-v6"; $listen_v4; $cross_vision_port),
+          xhttp_inbound("v4-to-v6"; $listen_v4; $cross_xhttp_port),
+          vision_inbound("v6-to-v4"; $listen_v6; $cross_vision_port),
+          xhttp_inbound("v6-to-v4"; $listen_v6; $cross_xhttp_port)
         ] else [] end)),
       outbounds:
         ((if has_v4 then [{
@@ -281,12 +324,22 @@ render_xray() {
           }]
           + (if has_v4 then [{
             type: "field",
-            inboundTag: ["vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"],
+            inboundTag: ([
+              "vless-reality-vision-v4-in", "vless-reality-xhttp-v4-in"
+            ] + (if has_cross then [
+              "vless-reality-vision-v6-to-v4-in",
+              "vless-reality-xhttp-v6-to-v4-in"
+            ] else [] end)),
             outboundTag: "direct-v4"
           }] else [] end)
           + (if has_v6 then [{
             type: "field",
-            inboundTag: ["vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"],
+            inboundTag: ([
+              "vless-reality-vision-v6-in", "vless-reality-xhttp-v6-in"
+            ] + (if has_cross then [
+              "vless-reality-vision-v4-to-v6-in",
+              "vless-reality-xhttp-v4-to-v6-in"
+            ] else [] end)),
             outboundTag: "direct-v6"
           }] else [] end))
       }
@@ -351,6 +404,8 @@ render_hysteria() {
   rm -f -- \
     "${NEKO_CONFIG_DIR}/hysteria-v4.yaml" \
     "${NEKO_CONFIG_DIR}/hysteria-v6.yaml" \
+    "${NEKO_CONFIG_DIR}/hysteria-v4-to-v6.yaml" \
+    "${NEKO_CONFIG_DIR}/hysteria-v6-to-v4.yaml" \
     "${NEKO_CONFIG_DIR}/hysteria.yaml"
   if network_mode_has_ipv4; then
     render_hysteria_family \
@@ -363,6 +418,16 @@ render_hysteria() {
       "${NEKO_CONFIG_DIR}/hysteria-v6.yaml" \
       "[${SUBSCRIPTION_IPV6_ADDRESS}]:${HY2_START}-${HY2_END}" \
       6 bindIPv6 "$SUBSCRIPTION_IPV6_ADDRESS"
+  fi
+  if network_mode_has_cross_routes; then
+    render_hysteria_family \
+      "${NEKO_CONFIG_DIR}/hysteria-v4-to-v6.yaml" \
+      "${SUBSCRIPTION_IPV4_ADDRESS}:${CROSS_HY2_START}-${CROSS_HY2_END}" \
+      6 bindIPv6 "$SUBSCRIPTION_IPV6_ADDRESS"
+    render_hysteria_family \
+      "${NEKO_CONFIG_DIR}/hysteria-v6-to-v4.yaml" \
+      "[${SUBSCRIPTION_IPV6_ADDRESS}]:${CROSS_HY2_START}-${CROSS_HY2_END}" \
+      4 bindIPv4 "$SUBSCRIPTION_IPV4_ADDRESS"
   fi
 }
 
@@ -472,6 +537,12 @@ EOF
     if network_mode_has_ipv6; then
       render_caddy_subscription_handlers "$SUB_TOKEN_IPV6" v6 v6
     fi
+    if network_mode_has_cross_routes; then
+      render_caddy_subscription_handlers \
+        "$SUB_TOKEN_IPV4_TO_IPV6" v4-to-v6 v4-to-v6
+      render_caddy_subscription_handlers \
+        "$SUB_TOKEN_IPV6_TO_IPV4" v6-to-v4 v6-to-v4
+    fi
     cat <<EOF
 	handle {
 		respond "Welcome" 200
@@ -502,6 +573,9 @@ EOF
 render_sing_box_client() {
   local target="$1" server="$2" dns_server="$3"
   local dns_strategy="$4" rejected_ip_version="$5"
+  local route_hy2_start="$6" route_hy2_end="$7" route_tuic_port="$8"
+  local route_ss_port="$9" route_anytls_port="${10}" route_trojan_port="${11}"
+  local route_vision_port="${12}"
 
   jq -n \
     --arg domain "$DOMAIN" \
@@ -509,19 +583,19 @@ render_sing_box_client() {
     --arg dns_server "$dns_server" \
     --arg dns_strategy "$dns_strategy" \
     --argjson rejected_ip_version "$rejected_ip_version" \
-    --arg hy2_ports "${HY2_START}:${HY2_END}" \
+    --arg hy2_ports "${route_hy2_start}:${route_hy2_end}" \
     --arg hy2_password "$HY2_PASSWORD" \
     --arg hy2_obfs_password "$HY2_OBFS_PASSWORD" \
-    --argjson tuic_port "$TUIC_PORT" \
+    --argjson tuic_port "$route_tuic_port" \
     --arg tuic_uuid "$TUIC_UUID" \
     --arg tuic_password "$TUIC_PASSWORD" \
-    --argjson ss_port "$SS_PORT" \
+    --argjson ss_port "$route_ss_port" \
     --arg ss_password "$SS_PASSWORD" \
-    --argjson anytls_port "$ANYTLS_PORT" \
+    --argjson anytls_port "$route_anytls_port" \
     --arg anytls_password "$ANYTLS_PASSWORD" \
-    --argjson trojan_port "$TROJAN_PORT" \
+    --argjson trojan_port "$route_trojan_port" \
     --arg trojan_password "$TROJAN_PASSWORD" \
-    --argjson vision_port "$VISION_PORT" \
+    --argjson vision_port "$route_vision_port" \
     --arg vision_uuid "$VISION_UUID" \
     --arg vision_public_key "$VISION_PUBLIC_KEY" \
     --arg vision_short_id "$VISION_SHORT_ID" \
@@ -690,14 +764,16 @@ render_sing_box_client() {
 }
 
 render_proxy_nodes() {
-  local server="$1" ip_version="$2"
+  local server="$1" ip_version="$2" route_hy2_start="$3" route_hy2_end="$4"
+  local route_tuic_port="$5" route_ss_port="$6" route_anytls_port="$7"
+  local route_trojan_port="$8" route_vision_port="$9"
   cat <<EOF
   - name: "HY2"
     type: hysteria2
     server: "${server}"
     ip-version: ${ip_version}
-    port: ${HY2_START}
-    ports: "${HY2_START}-${HY2_END}"
+    port: ${route_hy2_start}
+    ports: "${route_hy2_start}-${route_hy2_end}"
     hop-interval: 30
     password: "${HY2_PASSWORD}"
     obfs: salamander
@@ -709,7 +785,7 @@ render_proxy_nodes() {
     type: tuic
     server: "${server}"
     ip-version: ${ip_version}
-    port: ${TUIC_PORT}
+    port: ${route_tuic_port}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
     sni: "${DOMAIN}"
@@ -723,7 +799,7 @@ render_proxy_nodes() {
     type: ss
     server: "${server}"
     ip-version: ${ip_version}
-    port: ${SS_PORT}
+    port: ${route_ss_port}
     cipher: "2022-blake3-aes-128-gcm"
     password: "${SS_PASSWORD}"
     udp: true
@@ -731,7 +807,7 @@ render_proxy_nodes() {
     type: anytls
     server: "${server}"
     ip-version: ${ip_version}
-    port: ${ANYTLS_PORT}
+    port: ${route_anytls_port}
     password: "${ANYTLS_PASSWORD}"
     sni: "${DOMAIN}"
     alpn: [h2, http/1.1]
@@ -742,7 +818,7 @@ render_proxy_nodes() {
     type: trojan
     server: "${server}"
     ip-version: ${ip_version}
-    port: ${TROJAN_PORT}
+    port: ${route_trojan_port}
     password: "${TROJAN_PASSWORD}"
     sni: "${DOMAIN}"
     udp: true
@@ -751,7 +827,7 @@ render_proxy_nodes() {
     type: vless
     server: "${server}"
     ip-version: ${ip_version}
-    port: ${VISION_PORT}
+    port: ${route_vision_port}
     uuid: "${VISION_UUID}"
     encryption: ""
     network: tcp
@@ -768,13 +844,13 @@ EOF
 }
 
 render_xhttp_node() {
-  local server="$1" ip_version="$2"
+  local server="$1" ip_version="$2" route_xhttp_port="$3"
   cat <<EOF
   - name: "VLESS-Reality-XHTTP"
     type: vless
     server: "${server}"
     ip-version: ${ip_version}
-    port: ${XHTTP_PORT}
+    port: ${route_xhttp_port}
     uuid: "${XHTTP_UUID}"
     encryption: ""
     network: xhttp
@@ -795,7 +871,9 @@ EOF
 }
 
 render_stash_yaml() {
-  local target="$1" server="$2"
+  local target="$1" server="$2" route_hy2_start="$3" route_hy2_end="$4"
+  local route_tuic_port="$5" route_ss_port="$6" route_anytls_port="$7"
+  local route_trojan_port="$8" route_vision_port="$9"
   write_atomic "$target" <<EOF
 mixed-port: 7890
 allow-lan: false
@@ -807,8 +885,8 @@ proxies:
   - name: "HY2"
     type: hysteria2
     server: "${server}"
-    port: ${HY2_START}
-    ports: "${HY2_START}-${HY2_END}"
+    port: ${route_hy2_start}
+    ports: "${route_hy2_start}-${route_hy2_end}"
     hop-interval: 30
     auth: "${HY2_PASSWORD}"
     obfs: salamander
@@ -820,7 +898,7 @@ proxies:
     type: tuic
     version: 5
     server: "${server}"
-    port: ${TUIC_PORT}
+    port: ${route_tuic_port}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
     sni: "${DOMAIN}"
@@ -829,14 +907,14 @@ proxies:
   - name: "SS2022"
     type: ss
     server: "${server}"
-    port: ${SS_PORT}
+    port: ${route_ss_port}
     cipher: "2022-blake3-aes-128-gcm"
     password: "${SS_PASSWORD}"
     udp: true
   - name: "AnyTLS"
     type: anytls
     server: "${server}"
-    port: ${ANYTLS_PORT}
+    port: ${route_anytls_port}
     password: "${ANYTLS_PASSWORD}"
     sni: "${DOMAIN}"
     alpn: [h2, http/1.1]
@@ -844,7 +922,7 @@ proxies:
   - name: "Trojan-TLS"
     type: trojan
     server: "${server}"
-    port: ${TROJAN_PORT}
+    port: ${route_trojan_port}
     password: "${TROJAN_PASSWORD}"
     sni: "${DOMAIN}"
     udp: true
@@ -852,7 +930,7 @@ proxies:
   - name: "VLESS-Reality-Vision"
     type: vless
     server: "${server}"
-    port: ${VISION_PORT}
+    port: ${route_vision_port}
     uuid: "${VISION_UUID}"
     network: tcp
     tls: true
@@ -877,6 +955,9 @@ EOF
 
 render_client_yaml() {
   local target="$1" include_xhttp="$2" server="$3" ip_version="$4" names
+  local route_hy2_start="$5" route_hy2_end="$6" route_tuic_port="$7"
+  local route_ss_port="$8" route_anytls_port="$9" route_trojan_port="${10}"
+  local route_vision_port="${11}" route_xhttp_port="${12}"
   if [[ "$include_xhttp" == "yes" ]]; then
     names='[HY2, TUIC-v5, SS2022, AnyTLS, Trojan-TLS, VLESS-Reality-Vision, VLESS-Reality-XHTTP]'
   else
@@ -893,8 +974,11 @@ ipv6: true
 
 proxies:
 EOF
-    render_proxy_nodes "$server" "$ip_version"
-    [[ "$include_xhttp" == "yes" ]] && render_xhttp_node "$server" "$ip_version"
+    render_proxy_nodes "$server" "$ip_version" \
+      "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
+      "$route_anytls_port" "$route_trojan_port" "$route_vision_port"
+    [[ "$include_xhttp" == "yes" ]] \
+      && render_xhttp_node "$server" "$ip_version" "$route_xhttp_port"
     cat <<EOF
 
 proxy-groups:
@@ -909,7 +993,9 @@ EOF
 }
 
 render_shadowrocket() {
-  local target="$1" server="$2"
+  local target="$1" server="$2" route_hy2_start="$3" route_hy2_end="$4"
+  local route_tuic_port="$5" route_ss_port="$6" route_anytls_port="$7"
+  local route_trojan_port="$8" route_vision_port="$9" route_xhttp_port="${10}"
   # The strict variants use an IP literal so Shadowrocket cannot resolve or
   # fall back to the other address family. TLS SNI, REALITY serverName and
   # XHTTP Host remain bound to the certificate domain.
@@ -918,9 +1004,9 @@ proxies:
   - name: "HY2"
     type: hysteria2
     server: "${server}"
-    port: ${HY2_START}
-    ports: "${HY2_START}-${HY2_END}"
-    port-range: "${HY2_START}-${HY2_END}"
+    port: ${route_hy2_start}
+    ports: "${route_hy2_start}-${route_hy2_end}"
+    port-range: "${route_hy2_start}-${route_hy2_end}"
     hop-interval: 30
     password: "${HY2_PASSWORD}"
     obfs: salamander
@@ -932,7 +1018,7 @@ proxies:
     type: tuic
     version: 5
     server: "${server}"
-    port: ${TUIC_PORT}
+    port: ${route_tuic_port}
     uuid: "${TUIC_UUID}"
     password: "${TUIC_PASSWORD}"
     sni: "${DOMAIN}"
@@ -943,14 +1029,14 @@ proxies:
   - name: "SS2022"
     type: ss
     server: "${server}"
-    port: ${SS_PORT}
+    port: ${route_ss_port}
     cipher: "2022-blake3-aes-128-gcm"
     password: "${SS_PASSWORD}"
     udp: true
   - name: "AnyTLS"
     type: anytls
     server: "${server}"
-    port: ${ANYTLS_PORT}
+    port: ${route_anytls_port}
     password: "${ANYTLS_PASSWORD}"
     sni: "${DOMAIN}"
     alpn: [h2, http/1.1]
@@ -959,7 +1045,7 @@ proxies:
   - name: "Trojan-TLS"
     type: trojan
     server: "${server}"
-    port: ${TROJAN_PORT}
+    port: ${route_trojan_port}
     password: "${TROJAN_PASSWORD}"
     sni: "${DOMAIN}"
     udp: true
@@ -967,7 +1053,7 @@ proxies:
   - name: "VLESS-Reality-Vision"
     type: vless
     server: "${server}"
-    port: ${VISION_PORT}
+    port: ${route_vision_port}
     uuid: "${VISION_UUID}"
     encryption: ""
     network: tcp
@@ -983,7 +1069,7 @@ proxies:
   - name: "VLESS-Reality-XHTTP"
     type: vless
     server: "${server}"
-    port: ${XHTTP_PORT}
+    port: ${route_xhttp_port}
     uuid: "${XHTTP_UUID}"
     encryption: ""
     network: xhttp
@@ -1003,6 +1089,31 @@ proxies:
 EOF
 }
 
+render_subscription_route() {
+  local profile="$1" server="$2" ingress_ip_version="$3" dns_server="$4"
+  local dns_strategy="$5" rejected_ip_version="$6"
+  local route_hy2_start="$7" route_hy2_end="$8" route_tuic_port="$9"
+  local route_ss_port="${10}" route_anytls_port="${11}" route_trojan_port="${12}"
+  local route_vision_port="${13}" route_xhttp_port="${14}"
+
+  render_client_yaml "${NEKO_SUB_DIR}/mihomo-${profile}.yaml" yes \
+    "$server" "$ingress_ip_version" \
+    "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" "$route_xhttp_port"
+  # Stash does not implement XHTTP; each strict route has six nodes.
+  render_stash_yaml "${NEKO_SUB_DIR}/stash-${profile}.yaml" "$server" \
+    "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port"
+  render_shadowrocket "${NEKO_SUB_DIR}/shadowrocket-${profile}.txt" "$server" \
+    "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" "$route_xhttp_port"
+  # Official sing-box Remote Profiles are complete JSON configurations.
+  render_sing_box_client "${NEKO_SUB_DIR}/sing-box-${profile}.json" \
+    "$server" "$dns_server" "$dns_strategy" "$rejected_ip_version" \
+    "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port"
+}
+
 render_subscriptions() {
   mkdir -p "$NEKO_SUB_DIR"
   rm -f -- \
@@ -1013,26 +1124,38 @@ render_subscriptions() {
     "${NEKO_SUB_DIR}/shadowrocket-v4.txt" \
     "${NEKO_SUB_DIR}/shadowrocket-v6.txt" \
     "${NEKO_SUB_DIR}/sing-box-v4.json" \
-    "${NEKO_SUB_DIR}/sing-box-v6.json"
+    "${NEKO_SUB_DIR}/sing-box-v6.json" \
+    "${NEKO_SUB_DIR}/mihomo-v4-to-v6.yaml" \
+    "${NEKO_SUB_DIR}/mihomo-v6-to-v4.yaml" \
+    "${NEKO_SUB_DIR}/stash-v4-to-v6.yaml" \
+    "${NEKO_SUB_DIR}/stash-v6-to-v4.yaml" \
+    "${NEKO_SUB_DIR}/shadowrocket-v4-to-v6.txt" \
+    "${NEKO_SUB_DIR}/shadowrocket-v6-to-v4.txt" \
+    "${NEKO_SUB_DIR}/sing-box-v4-to-v6.json" \
+    "${NEKO_SUB_DIR}/sing-box-v6-to-v4.json"
   if network_mode_has_ipv4; then
-    render_client_yaml "${NEKO_SUB_DIR}/mihomo-v4.yaml" yes \
-      "$SUBSCRIPTION_IPV4_ADDRESS" ipv4
-    # Stash does not implement XHTTP; each strict subscription has six nodes.
-    render_stash_yaml "${NEKO_SUB_DIR}/stash-v4.yaml" "$SUBSCRIPTION_IPV4_ADDRESS"
-    render_shadowrocket \
-      "${NEKO_SUB_DIR}/shadowrocket-v4.txt" "$SUBSCRIPTION_IPV4_ADDRESS"
-    # Official sing-box Remote Profiles are complete JSON configurations.
-    render_sing_box_client "${NEKO_SUB_DIR}/sing-box-v4.json" \
-      "$SUBSCRIPTION_IPV4_ADDRESS" "1.1.1.1" "ipv4_only" 6
+    render_subscription_route v4 "$SUBSCRIPTION_IPV4_ADDRESS" ipv4 \
+      "1.1.1.1" ipv4_only 6 \
+      "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" \
+      "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"
   fi
   if network_mode_has_ipv6; then
-    render_client_yaml "${NEKO_SUB_DIR}/mihomo-v6.yaml" yes \
-      "$SUBSCRIPTION_IPV6_ADDRESS" ipv6
-    render_stash_yaml "${NEKO_SUB_DIR}/stash-v6.yaml" "$SUBSCRIPTION_IPV6_ADDRESS"
-    render_shadowrocket \
-      "${NEKO_SUB_DIR}/shadowrocket-v6.txt" "$SUBSCRIPTION_IPV6_ADDRESS"
-    render_sing_box_client "${NEKO_SUB_DIR}/sing-box-v6.json" \
-      "$SUBSCRIPTION_IPV6_ADDRESS" "2606:4700:4700::1111" "ipv6_only" 4
+    render_subscription_route v6 "$SUBSCRIPTION_IPV6_ADDRESS" ipv6 \
+      "2606:4700:4700::1111" ipv6_only 4 \
+      "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" \
+      "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"
+  fi
+  if network_mode_has_cross_routes; then
+    render_subscription_route v4-to-v6 "$SUBSCRIPTION_IPV4_ADDRESS" ipv4 \
+      "2606:4700:4700::1111" ipv6_only 4 \
+      "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" \
+      "$CROSS_ANYTLS_PORT" "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" \
+      "$CROSS_XHTTP_PORT"
+    render_subscription_route v6-to-v4 "$SUBSCRIPTION_IPV6_ADDRESS" ipv6 \
+      "1.1.1.1" ipv4_only 6 \
+      "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" \
+      "$CROSS_ANYTLS_PORT" "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" \
+      "$CROSS_XHTTP_PORT"
   fi
 }
 

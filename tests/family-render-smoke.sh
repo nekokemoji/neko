@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
+export LC_ALL=C
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-family-render.XXXXXX")"
@@ -17,16 +18,22 @@ prepare_state() {
       jq '
         .network.mode = "ipv4-only"
         | .subscription.ipv6_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv6_domain = null
         | .subscription.ipv6_address = null
+        | .ports.cross = null
       ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
       ;;
     ipv6-only)
       jq '
         .network.mode = "ipv6-only"
         | .subscription.ipv4_token = null
+        | .subscription.ipv4_to_ipv6_token = null
+        | .subscription.ipv6_to_ipv4_token = null
         | .subscription.ipv4_domain = null
         | .subscription.ipv4_address = null
+        | .ports.cross = null
       ' "$ROOT/tests/fixtures/state.json" > "$target/etc/state.json"
       ;;
     dual)
@@ -48,6 +55,18 @@ render_mode() {
       render_all
     ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
 }
+
+invalid="$WORK/invalid-cross-port"
+mkdir -p "$invalid/etc"
+jq '.ports.cross.tuic = .ports.tuic' \
+  "$ROOT/tests/fixtures/state.json" > "$invalid/etc/state.json"
+if NEKO_ETC="$invalid/etc" NEKO_VAR="$invalid/var" \
+  NEKO_STATE="$invalid/etc/state.json" NEKO_USER=root \
+  bash -c 'source "$1"; load_state' _ "$ROOT/lib/common.sh" \
+    >/dev/null 2>&1; then
+  printf '状态加载错误接受了同族/跨族重复端口。\n' >&2
+  exit 1
+fi
 
 assert_family() {
   local target="$1" family="$2" address="$3"
@@ -85,6 +104,8 @@ for mode in ipv4-only ipv6-only dual; do
       assert_family "$target" v4 127.0.0.1 ::1
       [[ -s "$target/etc/config/hysteria-v4.yaml" ]]
       [[ ! -e "$target/etc/config/hysteria-v6.yaml" ]]
+      [[ ! -e "$target/etc/config/hysteria-v4-to-v6.yaml" ]]
+      [[ ! -e "$target/etc/config/hysteria-v6-to-v4.yaml" ]]
       jq -e '
         (.inbounds | length) == 4
         and ([.inbounds[].tag] | all(endswith("-v4-in")))
@@ -111,6 +132,8 @@ for mode in ipv4-only ipv6-only dual; do
       assert_family "$target" v6 ::1 127.0.0.1
       [[ ! -e "$target/etc/config/hysteria-v4.yaml" ]]
       [[ -s "$target/etc/config/hysteria-v6.yaml" ]]
+      [[ ! -e "$target/etc/config/hysteria-v4-to-v6.yaml" ]]
+      [[ ! -e "$target/etc/config/hysteria-v6-to-v4.yaml" ]]
       jq -e '
         (.inbounds | length) == 4
         and ([.inbounds[].tag] | all(endswith("-v6-in")))
@@ -130,20 +153,42 @@ for mode in ipv4-only ipv6-only dual; do
         "$target/etc/config/Caddyfile"
       ;;
     dual)
-      [[ "${#files[@]}" == 8 ]]
+      [[ "${#files[@]}" == 16 ]]
       [[ -s "$target/etc/config/hysteria-v4.yaml" ]]
       [[ -s "$target/etc/config/hysteria-v6.yaml" ]]
+      [[ -s "$target/etc/config/hysteria-v4-to-v6.yaml" ]]
+      [[ -s "$target/etc/config/hysteria-v6-to-v4.yaml" ]]
+      grep -Fq 'mode: 6' "$target/etc/config/hysteria-v4-to-v6.yaml"
+      grep -Fq 'bindIPv6: ::1' "$target/etc/config/hysteria-v4-to-v6.yaml"
+      grep -Fq 'mode: 4' "$target/etc/config/hysteria-v6-to-v4.yaml"
+      grep -Fq 'bindIPv4: 127.0.0.1' "$target/etc/config/hysteria-v6-to-v4.yaml"
       jq -e '
-        (.inbounds | length) == 8
+        (.inbounds | length) == 16
         and [.outbounds[].tag] == ["direct-v4", "direct-v6"]
+        and ([.route.rules[]
+          | select(.outbound == "direct-v6")
+          | .inbound[]] | index("tuic-v4-to-v6-in") != null)
+        and ([.route.rules[]
+          | select(.outbound == "direct-v4")
+          | .inbound[]] | index("tuic-v6-to-v4-in") != null)
       ' "$target/etc/config/sing-box.json" >/dev/null
       jq -e '
-        (.inbounds | length) == 4
+        (.inbounds | length) == 8
         and [.outbounds[].tag] == ["direct-v4", "direct-v6", "blocked"]
+        and ([.routing.rules[]
+          | select(.outboundTag == "direct-v6")
+          | .inboundTag[]] | index("vless-reality-vision-v4-to-v6-in") != null)
+        and ([.routing.rules[]
+          | select(.outboundTag == "direct-v4")
+          | .inboundTag[]] | index("vless-reality-vision-v6-to-v4-in") != null)
       ' "$target/etc/config/xray.json" >/dev/null
       grep -Fq '/test-subscription-token/v4/mihomo.yaml' \
         "$target/etc/config/Caddyfile"
       grep -Fq '/test-subscription-token/v6/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
+      grep -Fq '/test-v4-to-v6-token/v4-to-v6/mihomo.yaml' \
+        "$target/etc/config/Caddyfile"
+      grep -Fq '/test-v6-to-v4-token/v6-to-v4/mihomo.yaml' \
         "$target/etc/config/Caddyfile"
       ;;
   esac
