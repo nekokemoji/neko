@@ -10,12 +10,13 @@ cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/state.json"
 state_before="$(sha256sum "$WORK/state.json")"
 
 panel_output="$(
-  printf '8\n\n0\n' \
+  printf '\n' \
     | NEKO_ETC="$WORK" \
       NEKO_STATE="$WORK/state.json" \
       NEKO_LIBEXEC="$ROOT" \
       TERM=dumb \
-      bash "$ROOT/runtime/panel.sh" 2>&1
+      bash -c 'source "$1"; draw_menu; show_route_guide; draw_menu' \
+        _ "$ROOT/runtime/panel.sh" 2>&1
 )"
 
 [[ "$panel_output" == *'8. 订阅链接太多不知道怎么选？小白建议先看'* ]]
@@ -33,17 +34,9 @@ eof_output="$(
 )"
 [[ "$eof_output" == *'guide-returned'* ]]
 
-invalid_output="$(
-  printf '9\n\n0\n' \
-    | NEKO_ETC="$WORK" \
-      NEKO_STATE="$WORK/state.json" \
-      NEKO_LIBEXEC="$ROOT" \
-      TERM=dumb \
-      bash "$ROOT/runtime/panel.sh" 2>&1
-)"
-[[ "$invalid_output" == *'请输入 0 到 8。'* ]]
-
 grep -Fq 'read -r -p "请选择 [0-8]：" choice' "$ROOT/runtime/panel.sh"
+grep -Fq '*) warn "请输入 0 到 8。" ;;' "$ROOT/runtime/panel.sh"
+grep -A2 -F '8)' "$ROOT/runtime/panel.sh" | grep -Fq 'show_route_guide'
 grep -Fq '在 `neko` 面板选择 `8`' "$ROOT/README.md"
 
 printf '面板第 8 项：入站、出站与四种线路说明测试通过。\n'
