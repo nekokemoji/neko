@@ -1,164 +1,51 @@
 # Neko
 
-> 不只把代理协议装上，也帮你看懂这台 VPS 到底怎么样。
+> 入口坏了换入口，出口有问题换出口；装完以后，还能看懂这台 VPS 到底值不值得用。
 
-Neko 是一套面向独立公网 VPS 的终端部署与维护工具。它一次安装
-Hysteria2、TUIC v5、Shadowsocks 2022、AnyTLS、Trojan TLS、
-VLESS REALITY Vision 和 VLESS REALITY XHTTP，并为 Mihomo、Stash、Shadowrocket、sing-box
-生成订阅。
+你好，欢迎使用 Neko。
 
-项目没有网页面板。安装完成后，输入 `neko` 就能打开中文终端菜单。
+你可能只是想在 VPS 上装几个节点，但 Neko 不只负责“装上协议”。它还会帮你判断
+IPv4 被墙或“送中”以后有没有另一条路，以及这台 VPS 的 IP、线路和服务到底怎么样。
 
-## 为什么选择 Neko
+Neko 一次安装 Hysteria2、TUIC v5、Shadowsocks 2022、AnyTLS、Trojan TLS、
+VLESS REALITY Vision 和 VLESS REALITY XHTTP，并为 Mihomo、Stash、Shadowrocket、
+sing-box 生成订阅。
 
-Neko 最想解决的不是“再多装几个协议”，而是下面两个实际问题：
+项目没有需要暴露到公网的网页面板。安装完成后，输入 `neko` 就能打开中文终端菜单。
 
-| 核心能力 | 小白能得到什么 | 熟悉网络的人能得到什么 |
-|---|---|---|
-| **VPS 一站式体检** | 不用再找一堆脚本，就能看硬件、服务、IP 风险、六个地区三网延迟、100 包丢包率和线路参考结论 | 可查看多数据库证据、BGP/RPKI/PTR、ASN 路径、源地址绑定后的真实出口和分地区路由 |
-| **四方向严格 IPv4 / IPv6** | 单栈只走本族；双栈还可明确选择 IPv4→IPv6 或 IPv6→IPv4，不可用时直接失败 | 客户端入口与服务端出口分别受节点地址、监听、解析、路由和源地址绑定约束 |
+## Neko 最值得用的地方
 
-不少同类脚本把重点放在“协议能否安装”。Neko 在此基础上，把安装后的
-**VPS 是否值得用、IP 是否存在明显风险、线路更适合哪个地区、服务是否健康**
-也放进同一个面板。它不是大型跑分脚本的替代品，也不会拿一次测速冒充永久结论；
-默认体检只读、轻量，外部数据源失败也不会影响代理服务。
+| 你遇到的问题 | Neko 能做什么 |
+|---|---|
+| VPS 的 IPv4 无法连接 | 如果本地和 VPS 的 IPv6 仍然可用，可以尝试 `IPv6→IPv4`：用 IPv6 进入原 VPS，再用兼容性更好的 IPv4 出站 |
+| IPv4 被“送中”或 IP 信誉异常 | 保持入口不变，把出口切换到 IPv6，例如 `IPv4→IPv6` 或 `IPv6→IPv6` |
+| 不知道 VPS 线路好不好 | 从当前真实 IPv4/IPv6 源地址，测试六个地区的电信、联通、移动回程、末个响应节点延迟和每线 100 包丢包样本 |
+| 不知道 IP 是否干净 | 交叉查询多个 IP 数据库，并显示 BGP、RPKI、ASN、PTR、注册信息及数据源分歧 |
+| 担心一键脚本装到一半 | 安装、升级、补装和凭据轮换都先检查、再验证；失败或中断时尽量恢复旧配置和服务 |
 
-除此之外，Neko 还提供：
-
-- IPv4-only、IPv6-only、双栈三种安装方式，可在面板中补装缺少的地址族；
-- 4 类客户端订阅：单栈 4 条，双栈四个线路方向共 16 条；
-- 本地生成订阅二维码，不把完整订阅链接交给在线二维码网站；
-- Cloudflare DNS-01 和 HTTP-01 两种证书验证方式；
-- 订阅 URL、节点凭据分开轮换，泄露时可以按影响范围处理；
-- 安装、升级、补装、端点刷新和凭据轮换均带检查与失败回滚；
-- Debian、Ubuntu、Rocky Linux、AlmaLinux 的 amd64 / arm64 自动化测试。
-
-## 小白视频教程
-
-面向小白的安装视频**目前还没有录制完成**。视频会从准备 VPS、获得并托管域名、
-配置 DNS、运行 Neko、导入订阅一直讲到第一次 VPS 体检。发布后会立刻在这里补上
-X 视频链接，不会让你在旧说明里到处找。
-
-这个项目不会写完就丢。无论你只是照着步骤安装，还是会检查核心配置，我都会继续
-跟进受支持的系统、冻结核心和客户端格式；重要改动先测试再发布，README 和视频说明
-也会一起更新。
-
----
-
-## 第一部分：小白照着做
-
-如果你只想安装并使用，读完这一部分就够了。
-
-### 1. 先确认你的 VPS 能不能装
-
-支持以下系统和架构：
-
-| 系统 | 版本 | 架构 |
-|---|---|---|
-| Debian | 12、13 | amd64、arm64 |
-| Ubuntu | 24.04、26.04 | amd64、arm64 |
-| Rocky Linux | 9.x、10.x | amd64、arm64 |
-| AlmaLinux | 9.x、10.x | amd64、arm64 |
-
-还必须满足：
-
-- 是完整 VPS，使用 systemd；普通 Docker 容器不是安装目标；
-- 你要安装的地址族有真实公网地址，并且这个地址属于 VPS 网卡；
-- 对应地址族有默认路由；
-- 不是只给内网地址、靠商家端口映射的 NAT VPS；
-- 安装时能访问系统软件源和项目固定的 GitHub 下载地址。
-
-脚本不会把不存在的 IPv6“变出来”，也不会为了安装成功而把 IPv6 节点偷偷改成
-IPv4。
-
-### 2. 选择 IPv4、IPv6，还是都装
-
-安装一开始会询问：
+这里最重要的不是“支持 IPv6”这五个字，而是 **入站和出站可以独立选择**：
 
 ```text
-1. 只安装严格 IPv4
-2. 只安装严格 IPv6
-3. 同时安装严格 IPv4 与 IPv6
+你的设备 ── 入站 IPv4/IPv6 ──> VPS ── 出站 IPv4/IPv6 ──> 目标网站
 ```
 
-| 你的 VPS 情况 | 建议选择 | 结果 |
-|---|---|---|
-| 只有公网 IPv4 | 1 | 4 条严格 IPv4 订阅 |
-| 只有公网 IPv6 | 2 | 4 条严格 IPv6 订阅 |
-| IPv4、IPv6 都正常 | 3 | IPv4→IPv4、IPv6→IPv6、IPv4→IPv6、IPv6→IPv4 各 4 条，共 16 条 |
-| 两种地址都有，但暂时只想用一种 | 先装需要的一种 | 以后可从面板补装另一种 |
+入口出现问题，就更换箭头左边；出口地址出现问题，就更换箭头右边。
 
-严格模式的含义很直接：
+> IPv6 不是永久解封保证。使用 IPv6 入站需要本地与 VPS 都有可用 IPv6；使用严格
+> IPv6 出站时，目标网站也必须支持 IPv6。
 
-- IPv4→IPv4 从客户端连接 VPS 到 VPS 访问网站，全程只能用 IPv4；
-- IPv6→IPv6 全程只能用 IPv6；
-- IPv4→IPv6 固定用 IPv4 连接 VPS，再固定从 VPS 的 IPv6 出口访问目标；
-- IPv6→IPv4 固定用 IPv6 连接 VPS，再固定从 VPS 的 IPv4 出口访问目标；
-- 目标网站没有对应地址族时，访问失败是正确结果；
-- 入口或出口都不自动回退，避免显示的线路方向与真实流量不一致。
+## 准备好了，开始安装
 
-### 3. 准备域名和 DNS
+支持 Debian 12/13、Ubuntu 24.04/26.04、Rocky Linux 9/10、AlmaLinux 9/10，
+架构支持 amd64 和 arm64。
 
-安装时输入的是**基础域名**，例如：
+开始前只需要确认三件事：
 
-```text
-node.example.com
-```
+1. 这是带 systemd 的完整公网 VPS，不是普通 Docker 容器或端口映射 NAT VPS；
+2. 准备一个基础域名，例如 `node.example.com`；
+3. 以 root 登录，或确保系统有可用的 `sudo`。
 
-不要输入 `v4.node.example.com` 或 `v6.node.example.com`。脚本会根据基础域名自动使用
-`v4.`、`v6.` 专用订阅域名。
-
-假设 VPS 的地址是 `VPS_IPv4` 和 `VPS_IPv6`，请按安装方式创建记录：
-
-| 安装方式 | 需要创建的 DNS 记录 | 必须删除 |
-|---|---|---|
-| 只装 IPv4 | `node`：1 条 A；`v4.node`：同一条 A | 这两个名称的 AAAA 和 CNAME |
-| 只装 IPv6 | `node`：1 条 AAAA；`v6.node`：同一条 AAAA | 这两个名称的 A 和 CNAME |
-| IPv4 + IPv6 | `node`：1 条 A + 1 条 AAAA；`v4.node`：1 条 A；`v6.node`：1 条 AAAA | `v4.node` 的 AAAA/CNAME；`v6.node` 的 A/CNAME |
-
-以 Cloudflare 为例，名称填写 `node`、`v4.node`、`v6.node`，内容填写 VPS 的公网
-IP。所有记录都必须是 **仅 DNS（灰色云朵）**，不能打开橙色代理。
-
-为什么要求这么严格？因为 `v4.` 必须只把客户端送到 VPS 的 IPv4，`v6.` 必须只送到
-IPv6。CNAME、Cloudflare 橙云或多余记录都会改变实际连接地址，脚本会直接拒绝继续。
-
-单栈安装不需要提前创建没有启用的那一族。例如只装 IPv4 时，不需要创建 `v6.node`；
-以后从面板补装 IPv6 前再创建即可。
-
-### 4. 选择证书方式
-
-#### 推荐：Cloudflare DNS-01
-
-这种方式由脚本临时在 DNS 中放入验证码，Let’s Encrypt 不需要从公网连接 VPS 的
-80 端口。它对 IPv6 入站不稳定、云安全组复杂或单栈 VPS 更友好。
-
-在 Cloudflare 创建一个专用 API Token，只给：
-
-- `Zone / Zone / Read`
-- `Zone / DNS / Edit`
-- Zone Resources 只包含本项目使用的那个域名
-
-不要使用 Global API Key，也不要给整个账户的无关权限。安装时粘贴 Token 后，终端
-不显示任何字符是正常的；直接按回车即可。Token 会以 root-only 文件保存供续期使用，
-不会写进订阅、命令行或普通日志。
-
-同一个 Cloudflare Token 可以用于同一授权 zone 下的多台 VPS；是否分开创建 Token
-取决于你是否希望单独撤销权限。为了降低一次泄露的影响，多台正式服务器使用各自的
-受限 Token 更稳妥。
-
-#### 兼容选项：HTTP-01
-
-这种方式不需要 Cloudflare，也不需要 Token，但基础域名和所有已启用订阅域名都必须
-从公网通过 TCP 80 访问到这台 VPS。双栈时，Let’s Encrypt 的 IPv4、IPv6 验证都必须
-成功。
-
-如果商家的 IPv6 入站路由、云安全组或上游网络有问题，HTTP-01 可能出现
-`Network unreachable`。这不代表协议配置有问题；可以先修复入站网络，或者重新安装时
-选择 DNS-01。
-
-### 5. 开始安装
-
-以 root 登录 VPS，完整复制下面的命令：
+如果域名和 DNS 已经准备好，完整复制下面的命令：
 
 ```bash
 TMP="$(mktemp)" && \
@@ -166,66 +53,127 @@ curl -fsSL --retry 4 https://raw.githubusercontent.com/nekokemoji/neko/main/boot
 bash "$TMP"
 ```
 
-入口会自动补齐 `tar`、`gzip` 等首次安装工具，不需要提前手动安装 `tar`。这条命令
-本身仍需要系统已有 `curl` 和 `mktemp`。
+这条入口命令本身需要系统已有 `curl` 和 `mktemp`；进入 Bootstrap 后，`tar`、`gzip`
+等精简系统可能缺少的首次安装工具会自动补齐。
 
-接下来按提示：
+Bootstrap 会下载固定的 Neko 1.9.0 源码版本；核心程序也固定版本并校验对应架构的
+SHA-256，不会在安装时临时解析不确定的 `latest`。
 
-1. 选择要安装的网络类型；
+还没有配置 DNS？先不要急，继续看下面的“第一次使用，照着做就行”。
+
+---
+
+## 第一部分：第一次使用，照着做就行
+
+### 1. 选择安装哪种网络
+
+安装器一开始会询问：
+
+```text
+1. 只安装严格 IPv4
+2. 只安装严格 IPv6
+3. 同时安装严格 IPv4 与 IPv6
+```
+
+| VPS 情况 | 建议选择 | 安装结果 |
+|---|---|---|
+| 只有公网 IPv4 | 1 | 4 条严格 IPv4 订阅 |
+| 只有公网 IPv6 | 2 | 4 条严格 IPv6 订阅 |
+| IPv4、IPv6 都正常 | 3 | 四个线路方向各 4 条，共 16 条 |
+| 两种地址都有，但暂时只想用一种 | 先装需要的一种 | 以后可从面板补装另一种 |
+
+脚本不会把不存在的 IPv6“变出来”，也不会为了显示安装成功，把 IPv6 节点偷偷改成
+IPv4。所选地址必须真实属于 VPS 网卡，并且拥有对应默认路由。
+
+### 2. 配置域名与 DNS
+
+安装时请输入**基础域名**：
+
+```text
+node.example.com
+```
+
+不要输入 `v4.node.example.com` 或 `v6.node.example.com`。Neko 会自动使用 `v4.`、
+`v6.` 专用域名来验证和固定地址族。
+
+假设 VPS 地址为 `VPS_IPv4` 和 `VPS_IPv6`：
+
+| 安装方式 | 需要创建的记录 | 必须删除 |
+|---|---|---|
+| 只装 IPv4 | `node`：A；`v4.node`：同一条 A | 这两个名称的 AAAA 和 CNAME |
+| 只装 IPv6 | `node`：AAAA；`v6.node`：同一条 AAAA | 这两个名称的 A 和 CNAME |
+| IPv4 + IPv6 | `node`：A + AAAA；`v4.node`：A；`v6.node`：AAAA | `v4.node` 的 AAAA/CNAME；`v6.node` 的 A/CNAME |
+
+以 Cloudflare 为例，所有记录都必须是 **仅 DNS（灰色云朵）**，不能打开橙色代理。
+每个专用域名只能保留一条对应地址族记录。
+
+要求严格是为了保证：`v4.` 只把客户端送到 VPS 的 IPv4，`v6.` 只送到 IPv6。
+CNAME、橙云或多余记录都会改变真实入口，安装器会拒绝继续。
+
+单栈安装不需要提前创建未启用的那一族。例如只装 IPv4 时，不需要创建 `v6.node`；
+以后补装 IPv6 前再创建即可。
+
+### 3. 选择证书方式
+
+默认推荐 **Cloudflare DNS-01**：Let’s Encrypt 不需要从公网连接 VPS 的 TCP 80，
+更适合单栈、IPv6 入站不稳定或云安全组较复杂的 VPS。
+
+Cloudflare Token 只需要：
+
+- `Zone / Zone / Read`
+- `Zone / DNS / Edit`
+- Zone Resources 只包含本项目使用的域名
+
+不要使用 Global API Key。粘贴 Token 时终端不显示字符是正常的，直接按回车即可。
+
+不使用 Cloudflare 也可以选择 **HTTP-01**，但基础域名和所有已启用专用域名都必须能
+通过公网 TCP 80 访问当前 VPS；双栈时 IPv4、IPv6 验证都必须成功。
+
+<details>
+<summary>证书方式的安全与失败处理</summary>
+
+Cloudflare Token 保存为 root-only 文件：凭据目录权限为 `0700`，文件权限为 `0600`。
+它不会写进订阅、命令行或普通日志，续期也会沿用安装时选择的验证方式。
+
+HTTP-01 只在验证时临时开放本机 TCP 80；firewalld 临时规则带超时保护，并会在成功、
+失败或正常中断时清理。
+
+证书申请与续期有总时限。Let’s Encrypt 返回 `rateLimited` 时，脚本会显示可解析到的
+恢复时间并停止，不会反复申请、自动更换域名或偷偷切换验证方式。
+
+</details>
+
+### 4. 运行安装
+
+回到上面的安装命令，按提示完成：
+
+1. 选择网络类型；
 2. 输入基础域名；
 3. 输入 ACME 邮箱；
-4. 选择证书方式，默认是 Cloudflare DNS-01；
-5. DNS-01 模式下粘贴 Token；
-6. 核对摘要，输入 `y`。
+4. 选择证书方式；
+5. DNS-01 模式下粘贴 Cloudflare Token；
+6. 核对摘要并输入 `y`。
 
-安装器会检查 DNS、地址、默认路由、端口和证书，再渲染配置并用真实冻结核心验证。
-任何关键步骤失败都会停止；不会带着半套配置假装安装成功。
+安装器会检查 DNS、地址归属、默认路由、端口、证书和程序哈希，生成配置后再用冻结的
+sing-box、Xray 与 Caddy 真实校验。关键步骤失败时会停止，不会带着半套配置假装成功。
 
-高级用户也可以下载仓库后使用参数：
+高级用户的非交互安装参数见后面的“专业用户”部分。
 
-```bash
-sudo bash install.sh \
-  --domain node.example.com \
-  --email admin@example.com \
-  --network-mode dual
-```
+### 5. 放行云安全组
 
-`--network-mode` 可取 `ipv4-only`、`ipv6-only` 或 `dual`。完全非交互的 DNS-01
-安装应使用只有 root 可读的 Token 文件，不要把 Token 直接写在命令行参数中：
-
-```bash
-sudo install -m 0600 /path/to/token-file /root/neko-cloudflare-token
-sudo bash install.sh \
-  --domain node.example.com \
-  --email admin@example.com \
-  --network-mode ipv4-only \
-  --acme-method cloudflare-dns-01 \
-  --cloudflare-token-file /root/neko-cloudflare-token \
-  --yes
-```
-
-HTTP-01 非交互安装可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不会
-跳过 DNS、地址族、路由、端口、哈希、配置或证书检查。如果既没有 Token 文件，也没有
-明确指定 `--acme-method`，安装器会停止并显示用法，不会擅自改用 HTTP-01。
-
-完全没有 IPv4/NAT64 出口的纯 IPv6 VPS，如果无法访问软件源或固定下载地址，会在
-下载阶段明确失败。这是安装依赖的可达性问题，不代表运行时允许跨地址族回退。
-
-### 6. 放行云安全组
-
-安装完成时会显示本机实际随机端口。云厂商控制台的安全组需要放行：
+安装结束时会显示这台 VPS 实际使用的随机端口。请在云厂商控制台放行精确列表：
 
 | 类型 | 端口 |
 |---|---|
-| TCP | 443、SS2022、AnyTLS、Trojan TLS、Vision、XHTTP；双栈还要放行显示的跨族第二组端口 |
-| UDP | Hysteria2 的完整 128 端口区间、TUIC、SS2022；双栈还要放行跨族第二组区间/端口 |
-| TCP 80 | 仅 HTTP-01 必须公网放行 |
-| TCP 8443 | **不要公网放行**，它只应监听 `127.0.0.1` |
+| TCP | 443、SS2022、AnyTLS、Trojan、Vision、XHTTP；双栈还包括跨族第二组端口 |
+| UDP | Hysteria2 的完整 128 端口区间、TUIC、SS2022；双栈还包括跨族第二组区间/端口 |
+| TCP 80 | 只有 HTTP-01 必须公网放行 |
+| TCP 8443 | **不要公网放行**，它只监听 `127.0.0.1` |
 
-脚本会管理正在使用的 firewalld 或 UFW 中属于 Neko 的规则，但无法替你修改云厂商
-网页里的安全组。
+Neko 会管理正在使用的 firewalld 或 UFW 中属于自己的规则，但无法替你修改云厂商网页
+里的安全组。
 
-### 7. 导入订阅
+### 6. 导入订阅
 
 输入：
 
@@ -233,31 +181,92 @@ HTTP-01 非交互安装可改用 `--acme-method http-01`。`--yes` 只跳过最�
 sudo neko
 ```
 
-选择 `1` 查看订阅链接和二维码。每个可用线路方向会生成 4 条：
+选择 `1` 查看订阅链接和二维码。
 
-| 客户端 | 格式 | 节点数 |
+| 客户端 | 订阅格式 | 每个线路方向的节点数 |
 |---|---|---:|
 | Mihomo | YAML | 7 |
 | Stash | YAML | 6 |
 | Shadowrocket | Base64 文本订阅 | 7 |
 | sing-box | 官方 Remote Profile JSON | 6 |
 
-只装一个地址族时共 4 条，双栈时四个方向共 16 条。sing-box 订阅少一个 XHTTP 节点，是因为
-当前冻结版本的 sing-box 官方 V2Ray Transport 不支持 XHTTP，并不是生成遗漏。
+如果双栈模式出现 16 条链接，不要慌：
 
-二维码在 VPS 本地生成，不调用在线二维码接口。iPad 可以截图后用“照片”识别，也可以
-直接复制完整链接。二维码和链接都相当于订阅密码，不要公开分享。
+```text
+4 个线路方向 × 4 种客户端格式 = 16 条订阅链接
+```
 
-面板显示的是基础域名上的通用下载链接。双栈 VPS 上，客户端可以通过当前可用的
-IPv4 或 IPv6 先取回订阅；订阅里的节点仍使用所选入口的 IPv4 / IPv6 字面量，服务端
-再强制使用箭头右侧的出口地址族。早期版本的 `v4.` / `v6.` 下载链接继续可用，
-升级后如遇到纯 IPv6 下载域名无法导入，可从面板重新复制通用链接。
+先找到自己使用的客户端，再选择一个线路方向即可。通常只需要导入一条；想比较线路时
+再导入其他方向。
 
-“使用 sing-box 内核”不等于一定支持 sing-box 官方 Remote Profile。客户端还需要实现
-对应导入方式和配置字段；遇到导入失败时，先确认链接复制完整，并查看该客户端使用的
-内核版本。
+二维码在 VPS 本地生成，不调用在线二维码网站。二维码和完整订阅链接都相当于密码，
+不要公开分享。qrc 下载或终端显示失败时，文字链接仍然可用，代理服务不会受影响。
 
-### 8. 用内置体检看懂这台 VPS
+Stash 和 sing-box 每份少一个 XHTTP 节点，是当前冻结版本与客户端格式的明确兼容性
+取舍，不是订阅生成遗漏。
+
+### 7. 四种线路怎么选
+
+箭头左边是入站，箭头右边是出站：
+
+```text
+IPv6→IPv4 = 你的设备通过 IPv6 连接 VPS，再由 VPS 通过 IPv4 访问网站
+```
+
+| 线路 | 适合什么时候使用 |
+|---|---|
+| `IPv4→IPv4` | 默认推荐，兼容性最好，适合绝大多数日常使用 |
+| `IPv6→IPv4` | IPv6 入站更好，或者 VPS 的 IPv4 入口被墙、IPv6 仍能连接 |
+| `IPv4→IPv6` | IPv4 入站正常，但希望换成 IPv6 出口地址 |
+| `IPv6→IPv6` | 入站和出站都希望使用 IPv6，且目标网站支持 IPv6 |
+
+#### IPv4 被墙：尝试更换入口
+
+“VPS 的 IPv4 被墙”通常是指通过 IPv4 无法正常连接这个地址，并不一定代表整台 VPS
+或它的 IPv6 同时失效。
+
+如果本地与 VPS 都有可用 IPv6，可以尝试：
+
+```text
+IPv4→IPv4  改为  IPv6→IPv4
+```
+
+这样只更换入口，VPS 访问网站时仍使用兼容性更好的 IPv4。很多情况下可以先继续使用
+原来的服务器，不必立刻换 VPS 或增加 CDN。
+
+它不是永久保证：本地没有 IPv6、VPS IPv6 不可达、IPv6 也被阻断，或者相关连接特征
+同时受到影响时，这条线路仍可能失败。
+
+#### IPv4 被“送中”：尝试更换出口
+
+网站看到的是出站公网 IP。同一台 VPS 的 IPv4 和 IPv6 是两个不同地址，地理位置库和
+风险数据库对它们的记录可能不同。
+
+如果 IPv4 出口被错误识别，可以保持当前入口，只更换右边：
+
+```text
+IPv4→IPv4  改为  IPv4→IPv6
+IPv6→IPv4  改为  IPv6→IPv6
+```
+
+切换后，目标网站看到的是 VPS 的 IPv6。它可能改善由 IPv4 地理位置或信誉记录造成的
+限制，但不能保证解决所有问题；账号地区、Cookie、设备位置和服务政策也可能参与判断。
+
+Google 搜索页面底部的位置可以作为参考。如果它明确写着“根据您的互联网地址”，说明
+该结果可能与出口 IP 有关，但仍不能把它当作唯一证据。
+
+严格 IPv6 出站只能访问支持 IPv6 的目标。遇到只有 IPv4 的网站时，请改用右边为 IPv4
+的线路。
+
+#### 怎样公平比较线路
+
+- 比较入站：测试 `IPv4→IPv4` 和 `IPv6→IPv4`，保持右边相同；
+- 比较出站：测试 `IPv4→IPv4` 和 `IPv4→IPv6`，保持左边相同；
+- 尽量在相同时间、相同本地网络和相同目标下比较延迟与稳定性。
+
+一句话记住：**左边决定怎么连接 VPS，右边决定 VPS 怎么连接网站。**
+
+### 8. 用内置体检看懂 VPS
 
 在 `neko` 面板选择 `7`：
 
@@ -269,85 +278,229 @@ IPv4 或 IPv6 先取回订阅；订阅里的节点仍使用所选入口的 IPv4 
 5. 轻量性能（需输入 BENCH）
 ```
 
-第一次建议选 `1`。你会看到：
+第一次建议选择 `1`。它会检查：
 
 - CPU、内存、磁盘、虚拟化、拥塞控制和时间同步；
-- Neko 四个服务、证书覆盖和续期定时器；
-- DNS、默认路由、本机地址、真实 IPv4/IPv6 出口；
-- 多个公开数据库对 IP 位置、网络类型和风险标签的交叉结果；
+- Neko 四个服务、证书覆盖、有效期和续期定时器；
+- DNS、默认路由、本机地址以及绑定源地址后的真实 IPv4/IPv6 出口；
+- 多个公开数据库中的位置、网络类型和风险标签；
 - BGP 前缀、ASN、RPKI、注册信息和 PTR；
-- 外部数据源能提供时的通俗结论。
+- 已完成检查的通俗小结。
 
-想看线路时选 `4`，再选择广东、上海、北京、四川、湖北、辽宁或全部地区。报告会分别
-测试电信、联通、移动，并在每个地区末尾集中显示最后有响应节点的延迟、100 包
-ICMP 丢包样本和线路判断。
+想看线路时选择 `4`，再选广东、上海、北京、四川、湖北、辽宁或全部地区。Neko 会按
+当前已安装的精确 IPv4/IPv6 源地址，分别测试电信、联通、移动。
 
-需要正确理解结果：
+请正确理解结果：
 
-- 这是 **VPS 发往国内参考目标** 的路径，行业里通常称为回程；
-- 广东适合观察香港/华南方向，上海代表华东，北京代表华北，四川代表西南，湖北补充
-  华中，辽宁补充东北；
-- 测试目标是该地区运营商的参考地址，不等于你的家庭宽带、某个区县或手机当前位置；
-- 显示的是 traceroute 最后有响应节点的一次延迟，不是带宽、晚高峰速度或永久保证；
-- 丢包率来自这台 VPS 向每个参考目标发送的 100 个 ICMP 包；若目标禁止或限制 ICMP，
-  100% 无响应不能单独证明代理线路实际丢包；
-- 结果把 IIJ、SoftBank、NTT、KDDI、PCCW、HGC、GSL、Level 3、Cogent、Arelion、
-  Hurricane Electric 等主要国际网络，与三网运营商网络分开显示；其他网络优先采用
-  NextTrace 已返回的 `owner` / `isp` 名称，缺少名称时只保留 ASN；
-- ASN 可以辅助判断 163、CN2、169、9929、CMI、CMNET、CMIN2，但“出现某个国际
-  网络 ASN”不等于购买了该运营商的优化产品，仅凭 AS4809 也不能可靠区分 CN2 GT
-  和 GIA；
-- 数据库没有统一的“原生 IP”权威字段。Neko 会显示一致和分歧，不会根据单个网站
-  武断地下结论。
+- 测试方向是 **VPS → 国内参考目标的回程**，不是你家宽带到 VPS 的去程；
+- 延迟是最后一个有响应路由节点的本次样本，不是带宽或晚高峰速度；
+- 每条线路固定发送 100 个 ICMP 包；目标禁止或限制 ICMP 时，100% 无响应不能单独证明代理线路实际丢包；
+- ASN 可以辅助识别 163、CN2、169、9929、CMI、CMNET、CMIN2，但单个 ASN 不能证明具体优化产品；
+- “原生 IP”“住宅 IP”“解锁”没有跨数据库通用的权威定义，Neko 会显示证据和分歧，不会硬猜。
 
-某个外部数据库、Cloudflare、RIPEstat 或路由目标超时，只会显示“未测/提醒”，不会
-停止或修改代理服务。
+外部数据库、Cloudflare、RIPEstat、NextTrace 或路由目标失败时只会显示“提醒/未测”，
+不会停止或修改代理服务。
 
-### 9. 面板每个功能有什么用
+### 9. 终端面板能做什么
 
-| 选项 | 功能 | 例子 |
+| 选项 | 功能 | 常见用途 |
 |---:|---|---|
-| 1 | 查看订阅链接和二维码 | 换手机后重新导入 |
-| 2 | 开启 BBRv1 | 检查并启用系统自带 BBR，不安装第三方内核 |
-| 3 | 管理订阅与节点访问 | 链接泄露时只换 URL；旧设备要撤销时换节点凭据 |
-| 4 | 刷新地址族端点 | VPS 换了公网 IP，先改 DNS，再让 Neko 安全更新绑定地址 |
-| 5 | IPv4/IPv6 安装管理 | 原来只装 IPv4，后来补齐 IPv6 后再补装 |
-| 6 | 卸载 | 删除 Neko 服务和 Neko 自己创建的规则 |
-| 7 | VPS 硬件、IP、网络体检 | 看 IP 风险、证书、服务、六地区三网线路和 100 包丢包率 |
+| 1 | 查看订阅链接和二维码 | 新设备导入、比较四种线路 |
+| 2 | 开启 BBRv1 | 使用系统自带 BBR，不安装第三方内核 |
+| 3 | 订阅与节点访问管理 | 分别轮换订阅 URL、节点凭据，或紧急全部换新 |
+| 4 | 刷新已安装地址族端点 | VPS 公网 IP 变化后，安全更新绑定地址 |
+| 5 | IPv4/IPv6 安装管理 | 单栈安装以后补装缺少的地址族 |
+| 6 | 卸载全部协议 | 删除 Neko 服务、数据和自己创建的防火墙规则 |
+| 7 | VPS 硬件、IP 与网络体检 | 查看服务、IP、BGP、六地区三网回程和丢包 |
 
-第 3 项的三种操作不要混淆：
+订阅 URL 与节点凭据分开管理：
 
 | 操作 | 旧订阅 URL | 已导入的旧节点 | 什么时候用 |
 |---|---|---|---|
 | 重置订阅 URL | 失效 | 继续可用 | 只怀疑链接被看到 |
-| 重置全部节点凭据 | 不变 | 全部失效 | 要撤销旧设备，但继续使用原订阅地址 |
+| 重置全部节点凭据 | 不变 | 全部失效 | 撤销旧设备，但保留订阅地址 |
 | 紧急全部换新 | 失效 | 全部失效 | 链接和节点都可能泄露 |
 
-四个方向的下载令牌分别存储。按入口重置 URL 时，IPv4 会同时换新 IPv4→IPv4 与
-IPv4→IPv6，IPv6 会同时换新 IPv6→IPv6 与 IPv6→IPv4；未选入口保持不变。协议凭据
-由四个方向共同使用，因此“重置全部节点凭据”会一起撤销全部旧节点，避免漏掉入口。
+这些操作都会先备份和校验。服务启动失败或操作意外中断时会恢复旧状态；只有恢复本身
+也失败，才会保留 root-only 备份并要求停止后续操作。
 
-第 4 项不会替你修改 DNS。它只在新 DNS、默认路由和新地址归属全部正确时更新；
-地址没变就不重启，失败会恢复原状态。
+---
 
-第 5 项只补装缺少的地址族，不提供从双栈删除单族，避免误删正在使用的订阅。补装前
-先按第 3 节补齐新地址族的 DNS。
+## 第二部分：给专业用户看的实现、边界与验证
 
-### 10. 常见问题
+### 项目定位
+
+Neko 把三类工作放在同一套有状态流程里：
+
+1. 部署七种互补协议，并输出四类客户端订阅；
+2. 用端到端规则实现四方向严格 IPv4/IPv6；
+3. 在不引入常驻探针的前提下，提供硬件、服务、IP、BGP 和地区线路诊断。
+
+它不是大型跑分脚本的替代品，也不是多用户商业面板。默认体检只读、轻量，外部证据
+失败时降级；关键配置使用冻结核心验证，维护操作尽量保持可回滚。
+
+### 协议与订阅矩阵
+
+| 协议 | 服务端核心 | 传输 | Mihomo | Stash | Shadowrocket | sing-box |
+|---|---|---|:---:|:---:|:---:|:---:|
+| Hysteria2 | Hysteria | UDP + 128 端口跳跃 | ✓ | ✓ | ✓ | ✓ |
+| TUIC v5 | sing-box | UDP | ✓ | ✓ | ✓ | ✓ |
+| Shadowsocks 2022 | sing-box | TCP + UDP | ✓ | ✓ | ✓ | ✓ |
+| AnyTLS | sing-box | TCP + TLS | ✓ | ✓ | ✓ | ✓ |
+| Trojan TLS | sing-box | TCP + TLS | ✓ | ✓ | ✓ | ✓ |
+| VLESS REALITY Vision | Xray | TCP/RAW | ✓ | ✓ | ✓ | ✓ |
+| VLESS REALITY XHTTP | Xray | TCP/XHTTP | ✓ | — | ✓ | — |
+
+sing-box 输出的是可直接添加为 Remote Profile 的完整官方 JSON，包含 TUN、DNS、路由、
+选择器和六个代理出站，不是节点列表或在线转换接口，并由冻结的 sing-box 真实执行
+`check`。
+
+TUIC、Trojan 等节点即使使用 IP 字面量作为服务器，也保留基础域名 SNI 并正常验证
+证书，不开启 `skip-cert-verify`。Trojan 使用独立随机端口，不与订阅网站共用 TCP 443。
+
+### 四方向严格模式
+
+| 线路 | 节点入口与监听 | 目标解析与异族拒绝 | 服务端出口 |
+|---|---|---|---|
+| IPv4→IPv4 | VPS IPv4 / 精确 IPv4 监听 | 只取 IPv4，拒绝 IPv6 | 绑定 IPv4 源地址 |
+| IPv6→IPv6 | VPS IPv6 / 精确 IPv6 监听 | 只取 IPv6，拒绝 IPv4 | 绑定 IPv6 源地址 |
+| IPv4→IPv6 | VPS IPv4 / 精确 IPv4 监听 | 只取 IPv6，拒绝 IPv4 | 绑定 IPv6 源地址 |
+| IPv6→IPv4 | VPS IPv6 / 精确 IPv6 监听 | 只取 IPv4，拒绝 IPv6 | 绑定 IPv4 源地址 |
+
+具体约束包括：
+
+- Mihomo 写入 `ip-version: ipv4` / `ipv6`；
+- sing-box Remote Profile 只使用所选族 DNS，拒绝另一族，并且没有 DIRECT 回退出站；
+- sing-box 服务端设置同族解析策略、异族拒绝与 `inet4_bind_address` / `inet6_bind_address`；
+- Xray 为四个方向生成独立入站，并使用精确 `listen`、`sendThrough` 与 `ForceIPv4` / `ForceIPv6`；
+- Hysteria 双栈生成四份配置，使用对应 `mode` 与 `bindIPv4` / `bindIPv6`；
+- 四个 Hysteria 子进程作为一组监管，任一退出时停止其余进程，再由 systemd 重启整组。
+
+入口或出口不可用时都会明确失败，不会自动换成另一族。只绑定出站源地址不足以阻止
+目标中的异族 IP 字面量，因此显式异族拒绝是必要边界。
+
+Neko 能控制自己生成的配置和 VPS 端行为，但不能控制运营商 DNS64/NAT64、系统级
+VPN、透明代理或客户端私自改写。
+
+### 安全默认值与事务维护
+
+三套代理核心默认拒绝客户端访问：
+
+- 私有、回环、链路本地和云元数据等非公网地址；
+- TCP 25。
+
+这降低了订阅被导入不可信设备后扫描 VPS 内网或滥发 SMTP 的风险。
+
+安装、升级、补装地址族、刷新端点、重置订阅 URL、轮换节点凭据和紧急全部换新都会：
+
+1. 获取维护锁并检查状态；
+2. 备份状态、配置、证书、服务和 Neko 自己的防火墙规则；
+3. 原子写入新状态并重新渲染；
+4. 用冻结核心检查配置；
+5. 重启服务并确认持续运行；
+6. 失败或正常中断时恢复旧状态。
+
+firewalld 规则只添加到对应默认路由网卡所属 zone；UFW 使用独立 `NekoProxy` 应用规则。
+未知的自定义 nftables/iptables 不会被擅自改写，卸载也只清理 Neko 创建的规则。
+
+### 参数安装与完全非交互
+
+下面的参数形式仍会询问证书方式并要求最终确认：
+
+```bash
+sudo bash install.sh \
+  --domain node.example.com \
+  --email admin@example.com \
+  --network-mode dual
+```
+
+`--network-mode` 可取 `ipv4-only`、`ipv6-only` 或 `dual`。
+
+完全非交互的 Cloudflare DNS-01 安装需要 `--yes`，并应使用 root-only Token 文件，
+不要把 Token 放进命令行参数：
+
+```bash
+sudo install -m 0600 /path/to/token-file /root/neko-cloudflare-token
+sudo bash install.sh \
+  --domain node.example.com \
+  --email admin@example.com \
+  --network-mode dual \
+  --acme-method cloudflare-dns-01 \
+  --cloudflare-token-file /root/neko-cloudflare-token \
+  --yes
+```
+
+HTTP-01 可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不会跳过 DNS、地址、
+路由、端口、哈希、配置或证书检查。
+
+### 固定版本与测试证据
+
+当前 Neko 版本为 **1.9.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
+lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256。
+
+本地完整测试：
+
+```bash
+bash tests/fetch-pinned-tools.sh
+bash tests/run.sh
+```
+
+测试覆盖三种安装模式、4/4/16 份订阅、四方向真实核心解析、严格 DNS 与异族拒绝、
+Cloudflare DNS-01、HTTP-01、证书扩展、令牌与凭据轮换、端点刷新、补装、升级迁移、
+二维码解码、体检降级以及失败回滚。
+
+GitHub Actions 的发行版用户空间矩阵覆盖 Debian 12/13、Ubuntu 24.04/26.04、Rocky
+Linux 9/10、AlmaLinux 9/10 的 amd64 与 arm64，共 16 个组合。专用 VM 工作流还会在
+8 个官方 amd64 云镜像的完整 QEMU/systemd 环境中运行四线路渲染、ACME 保护和 unit
+解析/启动。
+
+完整 VM 仍不能替代真实公网 DNS、ACME、云安全组和移动客户端。自动化已经验证什么、
+仍需真实 VPS 验证什么，请看 [TESTING.md](TESTING.md)。
+
+### 体检的数据源与隐私
+
+IP 质量并行交叉查询 ipapi.is、proxycheck.io、ipwho.is 和 ipquery.io；RIPEstat 用于
+BGP 前缀、源 ASN、RIS 可见性、RPKI 和注册资料；线路使用固定 NextTrace Tiny 与
+oneclickvirt/nt3 的省级双栈参考目标。
+
+联网体检会把被检测的公网 IP 发送给这些公开数据源，但不会读取或输出订阅令牌、协议
+密码、证书私钥或 Cloudflare Token。公开截图前仍应遮挡公网 IP。
+
+默认体检不跑高流量公网测速。CPU 和 128 MiB 磁盘轻量测试必须明确输入 `BENCH` 才会
+运行；临时文件在成功、失败或中断时都会清理。
+
+## 升级
+
+在最新源码目录执行：
+
+```bash
+sudo bash upgrade.sh
+```
+
+升级会保留端口、协议凭据、REALITY 参数、订阅令牌、旧 URL 和证书方式。升级前会备份
+状态、配置、程序、systemd 单元和证书；核心校验、证书或服务启动失败时自动回滚。
+
+证书续期由 `neko-renew.timer` 每天检查一次并随机延迟：
+
+```bash
+systemctl status neko-renew.timer
+journalctl -u neko-renew.service --since '7 days ago'
+```
+
+## 常见问题
 
 | 现象 | 通常原因 | 怎么处理 |
 |---|---|---|
-| 提示专用域名有多余 A/AAAA | 记录建错、输入了 `v4.`/`v6.` 域名或 DNS 缓存未更新 | 输入基础域名；按表删除异族记录和 CNAME；保持灰云 |
-| DNS 查询看到 Cloudflare 的 `13.*`、`76.*` 等地址 | 打开了橙云代理 | 改成“仅 DNS”并等待公共 DNS 更新 |
-| HTTP-01 的 IPv6 显示 `Network unreachable` | 上游 IPv6 入站、路由或安全组不可达 | 修复网络，或使用 DNS-01 |
-| Let’s Encrypt 返回 429 / `rateLimited` | 相同域名组合短时间签发次数过多 | 按脚本显示的 UTC 恢复时间再试，不要反复重装 |
-| 严格 IPv6 不能打开只有 A 记录的网站 | 正常的严格行为 | 改用严格 IPv4 订阅 |
-| 旧版 `v6.` 订阅链接无法导入，但 IPv4 正常 | 客户端当前网络无法访问纯 IPv6 下载域名 | 升级 Neko，再从面板复制基础域名上的通用链接 |
-| sing-box/Karing 导入失败 | 链接没复制完整、客户端导入方式或内核版本不兼容 | 重新复制完整链接，并确认支持官方 Remote Profile |
-| 二维码没显示 | 可选 qrc 下载、终端宽度或运行环境不满足 | 直接复制文字链接；代理服务不受影响 |
-| 体检某一项“未测” | 免费公开数据源或目标暂时不可达 | 稍后再测；不影响已安装服务 |
+| 专用域名存在多余 A/AAAA | 记录建错、输入了专用域名或 DNS 缓存未更新 | 输入基础域名；删除异族记录和 CNAME |
+| DNS 出现 Cloudflare 的 `13.*`、`76.*` 等地址 | 打开了橙云代理 | 改为“仅 DNS”并等待公共 DNS 更新 |
+| HTTP-01 的 IPv6 显示 `Network unreachable` | IPv6 入站、路由或安全组不可达 | 修复网络，或使用 DNS-01 |
+| Let’s Encrypt 返回 429 / `rateLimited` | 相同域名组合短时间签发过多 | 等待脚本显示的 UTC 恢复时间，不要反复重装 |
+| 严格 IPv6 无法打开只有 A 记录的网站 | 目标不支持 IPv6，属于正常严格行为 | 改用右边为 IPv4 的订阅 |
+| sing-box/Karing 导入失败 | 链接不完整或客户端 Remote Profile 支持不同 | 重新复制完整链接并确认客户端版本 |
+| 二维码没有显示 | qrc 下载、终端宽度或环境不满足 | 直接复制文字链接，代理服务不受影响 |
+| 体检某项显示“未测” | 免费数据源或目标暂时不可达 | 稍后再测，不影响已安装服务 |
 
-发生故障时，可以安全地检查：
+安全检查命令：
 
 ```bash
 systemctl is-active neko-caddy neko-sing-box neko-xray neko-hysteria
@@ -360,396 +513,28 @@ ip -6 route show default
 请不要公开 Cloudflare Token、完整订阅 URL、完整 `/etc/neko/state.json`、证书私钥、
 SSH 密码或 SSH 私钥。
 
-### 11. 升级
+<details>
+<summary>上游官方资料与诊断数据源</summary>
 
-在最新源码目录执行：
-
-```bash
-sudo bash upgrade.sh
-```
-
-升级会保留端口、协议密码、UUID、REALITY 参数、订阅令牌、旧版下载 URL 和安装时
-选择的证书方式。面板可能输出兼容性更好的新 URL 路径，但原链接仍继续提供同一份
-订阅。升级前会备份状态、配置、程序、systemd 单元和证书；核心校验、证书或服务启动
-失败时自动回滚。
-
-证书续期由 `neko-renew.timer` 每天检查一次并随机延迟。查看状态：
-
-```bash
-systemctl status neko-renew.timer
-journalctl -u neko-renew.service --since '7 days ago'
-```
-
-如果你只想安装使用，可以在这里停下。下面是设计、边界和验证细节。
-
----
-
-## 第二部分：给想弄明白的人
-
-### 项目定位与设计取舍
-
-Neko 把三类工作放在同一套有状态、可回滚的流程里：
-
-1. 部署七种互补协议，并输出四类客户端订阅；
-2. 用端到端规则实现真正可验证的 IPv4 / IPv6 分离；
-3. 在不引入常驻探针的前提下，提供硬件、服务、IP、BGP 和地区线路诊断。
-
-因此它与只关注协议数量的安装脚本、只关注跑分的 VPS 测试脚本都不完全相同。Neko
-选择较保守的范围：运行链路固定版本、关键改变真实核心校验、失败回滚；诊断默认只读、
-外部证据降级；不会为了结果“看起来能用”而关闭证书验证或允许跨地址族回退。
-
-当前 Neko 版本为 **1.9.0**。`versions.env` 冻结：
-
-| 组件 | 版本 | 用途 |
-|---|---:|---|
-| Xray | 26.3.27 | VLESS REALITY Vision / XHTTP |
-| sing-box | 1.13.14 | TUIC、SS2022、AnyTLS、Trojan 与配置验证 |
-| Hysteria | 2.10.0 | Hysteria2 |
-| Caddy | 2.11.4 | 订阅与本地 REALITY 目标 |
-| lego | 5.2.2 | ACME |
-| Mihomo | 1.19.29 | CI 中验证生成订阅 |
-| qrc | 0.9.0 | 可选本地二维码 |
-| NextTrace Tiny | 1.7.1 | 可选线路探测 |
-
-所有下载都来自精确 tag 并校验对应架构 SHA-256，不解析不确定的 `latest`。qrc 和
-NextTrace 属于可选组件；下载、校验或运行失败不会让安装、升级或代理服务失败。
-
-### 订阅与协议矩阵
-
-单栈只生成本族的 4 份订阅；双栈生成四个线路方向，每个方向有独立下载令牌和 4 份
-订阅，共 16 份：
-
-| 线路方向 | URL 路径前缀 | 节点入口 | 服务端出口 |
-|---|---|---|---|
-| IPv4→IPv4 | `/<IPv4令牌>/v4/` | VPS IPv4 | VPS IPv4 |
-| IPv6→IPv6 | `/<IPv6令牌>/v6/` | VPS IPv6 | VPS IPv6 |
-| IPv4→IPv6 | `/<IPv4到IPv6令牌>/v4-to-v6/` | VPS IPv4 | VPS IPv6 |
-| IPv6→IPv4 | `/<IPv6到IPv4令牌>/v6-to-v4/` | VPS IPv6 | VPS IPv4 |
-
-路径前缀后按客户端追加 `mihomo.yaml`、`stash.yaml`、`shadowrocket.txt` 或
-`sing-box.json`。Mihomo/Shadowrocket 每份 7 个节点，Stash/sing-box 每份 6 个节点。
-
-基础域名是订阅文件的通用控制面入口；双栈时可通过任一可用地址族下载。Caddy 仍保留
-`v4.` / `v6.` 主机上的旧路径，因此升级不会让已有同族订阅失效。令牌和完整线路路径
-共同决定返回哪份配置，即使旧版本迁移后 IPv4/IPv6 同族令牌相同也不会混淆。
-
-协议分工：
-
-| 协议 | 服务端核心 | 传输 | 四类订阅 |
-|---|---|---|---|
-| Hysteria2 | Hysteria | UDP + 128 端口跳跃区间 | 全部 |
-| TUIC v5 | sing-box | UDP | 全部 |
-| Shadowsocks 2022 | sing-box | TCP + UDP | 全部 |
-| AnyTLS | sing-box | TCP + TLS | 全部 |
-| Trojan TLS | sing-box | TCP + TLS | 全部 |
-| VLESS REALITY Vision | Xray | TCP/RAW | 全部 |
-| VLESS REALITY XHTTP | Xray | TCP/XHTTP | Mihomo、Shadowrocket |
-
-Stash 和 sing-box 当前各 6 个节点，是因为它们没有包含 XHTTP；这属于明确的兼容性
-取舍，不通过伪造字段强塞不支持的协议。TUIC 和 Trojan 即使在订阅中使用 IP 字面量
-作为服务器，也显式保留基础域名 SNI，不开启 `skip-cert-verify`。
-Trojan 使用独立随机 TCP 端口，并复用现有 SAN 域名证书；不会新增域名、Token 或
-证书维护任务，也不会与订阅网站共用 TCP 443。
-
-sing-box 文件是可直接添加为 Remote Profile 的完整官方 JSON 配置，不是节点列表或
-转换接口。它包含 TUN、DNS、路由、选择器和六个代理出站，并由冻结的 sing-box
-真实执行 `check`。
-
-### 严格 IPv4 / IPv6 是怎样实现的
-
-“严格”分别固定客户端入口与服务端出口：
-
-| 线路 | 节点 `server` / 服务端监听 | 目标解析与异族拒绝 | 服务端出站 |
-|---|---|---|---|
-| IPv4→IPv4 | VPS IPv4 / 精确 IPv4 监听 | 只取 IPv4，拒绝 IPv6 | 绑定 IPv4 源地址 |
-| IPv6→IPv6 | VPS IPv6 / 精确 IPv6 监听 | 只取 IPv6，拒绝 IPv4 | 绑定 IPv6 源地址 |
-| IPv4→IPv6 | VPS IPv4 / 精确 IPv4 监听 | 只取 IPv6，拒绝 IPv4 | 绑定 IPv6 源地址 |
-| IPv6→IPv4 | VPS IPv6 / 精确 IPv6 监听 | 只取 IPv4，拒绝 IPv6 | 绑定 IPv4 源地址 |
-
-四个方向都正常验证基础域名证书或 REALITY `serverName`/XHTTP Host；入口或出口不可用
-时都直接失败，不会换成另一族。订阅文件下载属于控制面，仍使用可经 IPv4 或 IPv6
-访问的基础域名。
-
-“严格”约束的是客户端连接代理节点、服务端解析与出口的数据面，不要求用户必须先有
-IPv6 才能下载一份 IPv6 配置。专用 `v4.` 只有 A、`v6.` 只有 AAAA，继续用于旧版
-直连下载链接、证书兼容和地址族验证；新面板链接使用基础域名解决“IPv4 网络无法导入
-IPv6 订阅”的循环依赖。
-
-具体实现包括：
-
-- Mihomo 写入 `ip-version: ipv4` / `ipv6`；
-- sing-box Remote Profile 只使用所选族 DNS，路由拒绝另一族，且没有 DIRECT
-  回退出站；
-- sing-box 服务端设置同族解析策略、拒绝异族字面量，并用
-  `inet4_bind_address` / `inet6_bind_address` 约束出口；
-- Xray 为四个方向生成独立入站，按入口精确 `listen`，按出口使用 `sendThrough` 和
-  `ForceIPv4` / `ForceIPv6`；
-- Hysteria 单栈生成一个配置；双栈生成两个同族和两个跨族配置，分别使用对应的
-  `mode: 4` / `mode: 6` 与 `bindIPv4` / `bindIPv6`；
-- 四个双栈 Hysteria 子进程由同一个 systemd 服务监管，任一退出时停止其余进程，再由
-  systemd 重启整组，避免只剩半套线路。
-
-只设置 IPv6 出站源地址并不足以拒绝目标中的 IPv4 字面量，因此显式异族拒绝规则是
-必要安全边界，不能删除。
-
-脚本能控制自己生成的配置和 VPS 端行为，但不能控制运营商 DNS64/NAT64、系统级
-VPN、透明代理或客户端私自改写。验证严格模式时应实时查询测试目标的 A/AAAA，不能
-永久假设某个网站只有一种记录。
-
-### DNS、地址与安装硬门槛
-
-安装器对每个启用的专用域名要求：
-
-- 恰好 1 条对应族记录；
-- 没有异族记录或 CNAME；
-- 与基础域名对应记录一致；
-- 地址真实配置在本机网卡，能够用于监听和出站源地址绑定；
-- 对应地址族存在默认路由；
-- IPv6 模式下内核启用 IPv6。
-
-它还检查 TCP 80、443、8443 占用情况，冻结程序身份和哈希，真实核心配置解析，以及
-服务重启后的持续运行状态。NAT VPS 是不同网络模型，不能通过删除“公网地址属于本机”
-检查来伪装支持。
-
-### ACME 与证书生命周期
-
-Cloudflare DNS-01 是默认推荐方式。Token 保存于：
-
-```text
-/var/lib/neko/credentials/cloudflare-dns-api-token
-```
-
-凭据目录为 root 所有 `0700`，文件为 root 所有 `0600`。续期沿用安装方式，不会
-偷偷切回 HTTP-01。
-
-需要轮换 Token 时，先创建权限相同的新 Token，再安全覆盖文件并立即试跑续期：
-
-```bash
-install -o root -g root -m 0600 /root/new-cloudflare-token \
-  /var/lib/neko/credentials/cloudflare-dns-api-token
-systemctl start neko-renew.service
-journalctl -u neko-renew.service -n 80 --no-pager
-```
-
-确认续期服务成功后，再到 Cloudflare 撤销旧 Token。
-
-HTTP-01 是显式兼容选项，要求所有启用域名都能通过公网 TCP 80 到达当前 VPS。首次
-验证前，脚本只临时开放本机 80 端口；firewalld 规则带 10 分钟过期保护，并在成功、
-失败或正常中断时清理。
-
-证书是一张覆盖基础域名和全部已启用专用域名的 SAN 证书。申请与续期有 10 分钟总
-时限。lego 返回 `rateLimited` 时，脚本解析并显示官方 `retry after`，立即退出等待：
-
-- 首次安装清理本次创建内容；
-- 升级和补装恢复旧证书、配置与服务；
-- 自动续期失败保留现有证书，等待定时器以后重试。
-
-脚本不会反复申请、自动更换域名或切换验证方式来绕过 CA 限制。
-
-Cloudflare 返回 `9109: Invalid access token` 时，说明它拒绝了当前 Token，脚本会保留
-原始错误并直接说明应检查 Token 类型、有效性、两项最小权限和 Zone 范围。这个错误
-不是 Debian 版本或 DNS 记录本身造成的；修正 Token 后重新运行即可。
-
-### 服务、端口与安全默认值
-
-Caddy 在基础域名发布通用订阅路径，并在 `v4.` / `v6.` 主机保留旧路径；公网订阅
-只启用 HTTP/1.1 和 HTTP/2，因此 443 只需 TCP。REALITY 的本地目标为
-`127.0.0.1:8443`，由 Caddy 加载同一张公开可信 SAN 证书；8443 不对公网监听。
-DNS-01 不依赖公网 TCP 80，但 Caddy 仍可能在本机监听 80 处理普通 HTTP 跳转，因此
-本机规则中保留 80 不等于证书偷偷改用了 HTTP-01。
-
-三套核心默认拒绝客户端访问：
-
-- 私有、回环和链路本地地址；
-- 云元数据等非公网地址；
-- TCP 25。
-
-这降低了订阅被导入不可信设备后扫描 VPS 内网或滥发 SMTP 的风险。需要访问内网或
-SMTP 的用户应自行审计并修改渲染器，而不是直接删除所有安全规则。
-
-本机防火墙只操作 Neko 自己的规则：
-
-- firewalld：添加到所选地址族默认路由网卡所属 zone，reload 后查询确认；
-- UFW：创建独立 `NekoProxy` 应用规则；
-- 未知自定义 nftables / iptables：不擅自改写；
-- 云厂商安全组：只给出端口清单，不假装已经修改。
-
-旧安装缺少 Trojan 时，升级会补充独立 Trojan 端口和密码。升级到 1.9.0 时，旧双栈
-安装还会分配第二组互不碰撞的跨族端口与两个跨族订阅令牌；原同族端口、凭据、令牌和
-URL 不变。Neko 自己的 firewalld/UFW 配置在同一事务内扩展；后续校验或服务启动失败
-时，旧防火墙配置也一起恢复。卸载只清理 Neko 创建的规则，补装失败也不会删除用户
-原先存在的放行规则。
-
-### 有状态维护与回滚
-
-以下操作都先备份，再原子更新状态、重新渲染、用冻结核心检查并重启四个服务：
-
-- 安装和升级；
-- 补装 IPv4 / IPv6；
-- 刷新端点；
-- 重置订阅 URL；
-- 轮换全部节点凭据；
-- 紧急全部换新。
-
-任一步失败或正常中断都会恢复旧状态、旧配置和旧服务。只有自动恢复本身也失败时，
-才保留 root-only 备份并明确要求停止后续操作。
-
-端点刷新只读取现有域名并检查新地址，不修改 DNS。没有变化就不重写配置、不重启。
-地址族管理只允许添加缺少的一族，暂不提供容易误删入口的单族卸载。
-
-从尚未引入地址族状态模型的旧版本升级时，旧安装按双栈迁移，因此升级前仍要保证
-基础、`v4.`、`v6.` 三个名称符合双栈 DNS。旧共享下载令牌会同时成为 IPv4 和 IPv6
-同族令牌，路径中的 `v4` / `v6` 会区分通用下载内容，原严格链接也继续有效。schema 4
-只新增跨族端口集和两个新 URL，不改动原线路身份；只有最早期单域名旧订阅需要重新
-导入。
-
-### 体检的数据来源、结论与边界
-
-默认完整体检由五部分组成：
-
-| 部分 | 主要内容 | 是否联网 |
-|---|---|---|
-| 系统与硬件 | CPU、内存、Swap、磁盘、虚拟化、拥塞控制、时间同步 | 否 |
-| Neko 健康 | 状态权限、四服务、证书签发者/到期/SAN、续期定时器 | 否 |
-| 严格网络 | DNS、路由、本机地址、MTU、绑定源地址后的 HTTPS 出口 | 是 |
-| IP 质量与注册 | 位置、网络类型、风险标签、ASN、BGP、RPKI、RIR、PTR | 是 |
-| 通俗小结 | 正常、提醒、未测以及数据源一致/分歧 | 视前项 |
-
-IP 质量并行交叉查询 ipapi.is、proxycheck.io、ipwho.is 和免密钥的 ipquery.io。
-RIPEstat 用于前缀、源 ASN、RIS 可见性、RPKI 和注册资料。注册国家不等于实际机房，
-Cloudflare 边缘位置也不等于商家销售地区。
-
-“原生”“住宅”“广播”“解锁”没有一个跨数据库、跨服务通用的权威定义。Neko 输出
-证据和一致数，不把营销标签包装成事实；“当前未见风险”也不代表未来不会变化。
-
-线路测试使用固定版本 NextTrace Tiny 和固定核对过的 nt3 省级双栈参考目标。它从
-当前已安装的精确 IPv4/IPv6 源地址，向广东、上海、北京、四川、湖北、辽宁三网目标
-运行少量 TCP 路径探测，并为每条线路固定发送 100 个 ICMP 包计算本次丢包样本。
-每个地址族的三条运营商线路并行，最多同时进行三组 ICMP 样本；地区与地址族之间
-按选择顺序执行，避免把 VPS 瞬间打满。`ping` 只使用 `-c 100` 控制发包数量，不再
-同时设置会在丢包时引发超发的内部 deadline；每组另有 33 秒外层硬时限，防止进程
-卡住。正常情况下每组约 21 秒。双栈选择全部六地时共 36 条路径和 36 组丢包样本；
-若目标连续超时，整组测试可能接近 7 分钟。
-
-报告显示：
-
-- 末个有响应节点延迟；
-- 每条线路 100 包的丢包率和收到/发送数量；
-- 主要国际网络与三网运营商网络的分层结论；
-- 经过清理和长度限制的网络名称路径；已知主流 ASN 使用稳定短名，其他 ASN 使用
-  NextTrace 本次返回的 `owner` / `isp`，不会为识别名称额外访问新的数据源；
-- 精简 ASN 路径；
-- 电信 163/CN2、联通 169/9929、移动 CMI/CMNET/CMIN2 的辅助判断；
-- 每个地区三家运营商的集中结论。
-
-它不声称测到真实用户的去程，也不声称预测晚高峰、带宽或未来路由。ICMP 可能被
-目标禁止或限速，所以 100% 无响应会保留数值并明确提示“不足以单独证明线路丢包”。
-发包统计不是恰好 100、`ping` 缺失或输出无法可靠解析时显示“测试异常/未测”，不会
-拿部分样本冒充完整结果，也不会中断其他线路。目标或元数据服务拒绝探测时同样只
-降级，不根据缺失数据硬猜。
-网络名称来自本次路径元数据，可能缺失或误判；完整 ASN 路径继续作为原始证据保留。
-
-CPU / 磁盘轻量测试必须输入 `BENCH` 才运行：CPU 默认单线程约 3 秒；磁盘在
-`/var/tmp` 写入 128 MiB 并执行 `fdatasync`，完成、失败或中断都清理临时文件。
-默认体检不跑性能测试，也不做高流量公网测速。
-
-所有联网查询都有秒级超时。报告不会读取或输出订阅令牌、协议密码、证书私钥或
-Cloudflare Token，但会把被检测的公网 IP 发送给上述公开数据库；公开截图前仍应
-遮挡公网 IP。
-
-### 测试范围与兼容性
-
-本地完整测试：
-
-```bash
-bash tests/fetch-pinned-tools.sh
-bash tests/run.sh
-```
-
-测试使用真实冻结的 Xray、sing-box、Hysteria、Caddy、lego、Mihomo、qrc 和
-NextTrace Tiny，覆盖：
-
-- IPv4-only、IPv6-only、dual 三种服务端配置；
-- 4 / 4 / 16 份订阅及四方向 Remote Profile 真实核心解析；
-- 严格 DNS、CNAME 与异族地址拒绝；
-- Cloudflare DNS-01、HTTP-01、超时和 CA 限流；
-- 单栈证书扩展到双栈；
-- Token 权限、环境隔离和秘密不出现在输出中；
-- 服务端同族出口和错误地址族阻断；
-- 升级迁移、令牌/凭据轮换、端点刷新、补装和失败回滚；
-- 二维码真实生成、图像转换、独立解码和原 URL 核对；
-- 体检离线/联网、数据库一致/分歧/失败、RIPEstat、路线判断和清理。
-
-GitHub Actions 在 Debian 12/13、Ubuntu 24.04/26.04、Rocky 9/10、Alma 9/10
-的 amd64 / arm64 用户空间中运行平台、语法和三种模式渲染，共 16 个组合。专用
-`agent/vm-validation/**` 分支另在 8 个官方 amd64 云镜像的 QEMU 完整 VM 中强制确认
-PID 1 为 systemd，再运行四线路渲染、ACME 保护和真实 unit 解析/启动。
-
-完整 VM 仍不等于带真实公网 DNS 的 VPS。真实 ACME、公网双栈、云安全组、重启/卸载
-循环，以及 Stash / Shadowrocket 真机导入仍需要在可重装 VPS 和真实客户端做最终
-验收。详细范围见 [TESTING.md](TESTING.md)。
-
-### 主要文件
-
-```text
-bootstrap.sh             固定源码提交的一行安装入口
-install.sh               安装、硬门槛与失败回滚
-upgrade.sh               旧版本到当前状态模型的可回滚升级
-versions.env             固定版本与双架构 SHA-256
-lib/common.sh            系统、DNS、端口与状态逻辑
-lib/render.sh            服务端配置与 4/16 份客户端订阅
-lib/firewall.sh          firewalld/UFW 可逆规则
-runtime/panel.sh         neko 终端面板
-runtime/diagnostics.sh   硬件、服务、IP、BGP 与线路体检
-runtime/renew.sh         当前地址族 SAN 证书续期
-runtime/hysteria-dual.sh Hysteria 单进程/四进程监管
-systemd/                 服务与定时器
-tests/                   本地与 CI 测试
-```
-
-### 上游官方资料
-
-- [Cloudflare DNS-only](https://developers.cloudflare.com/dns/proxy-status/)、
-  [创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
+- [Cloudflare DNS-only](https://developers.cloudflare.com/dns/proxy-status/) 与 [API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)
 - [Let’s Encrypt Challenge Types](https://letsencrypt.org/docs/challenge-types/)
-- [lego CLI](https://go-acme.github.io/lego/usage/cli/) 与
-  [Cloudflare DNS provider](https://go-acme.github.io/lego/dns/cloudflare/)
-- [sing-box Remote Profile](https://sing-box.sagernet.org/clients/general/) 与
-  [JSON 配置](https://sing-box.sagernet.org/configuration/)
-- [sing-box Hysteria2](https://sing-box.sagernet.org/configuration/outbound/hysteria2/)、
-  [TUIC](https://sing-box.sagernet.org/configuration/outbound/tuic/)、
-  [Shadowsocks](https://sing-box.sagernet.org/configuration/outbound/shadowsocks/)、
-  [AnyTLS](https://sing-box.sagernet.org/configuration/outbound/anytls/)、
-  [Trojan](https://sing-box.sagernet.org/configuration/outbound/trojan/)、
-  [VLESS](https://sing-box.sagernet.org/configuration/outbound/vless/)
-- [Hysteria2 服务端完整配置](https://v2.hysteria.network/docs/advanced/Full-Server-Config/)
-  与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
-- [Xray REALITY](https://xtls.github.io/en/config/transports/reality.html)、
-  [XHTTP](https://xtls.github.io/en/config/transports/xhttp.html) 与
-  [targetStrategy/sendThrough](https://xtls.github.io/en/config/outbound.html)
-- [Mihomo TUIC](https://wiki.metacubex.one/en/config/proxies/tuic/)、
-  [Mihomo Trojan](https://wiki.metacubex.one/en/config/proxies/trojan/)、
-  [Stash 代理协议](https://stash.wiki/en/proxy-protocols/proxy-types)
-- [Caddy 自定义 TLS 证书](https://caddyserver.com/docs/caddyfile/directives/tls)
-- [qrc](https://github.com/fumiyas/qrc)、[NextTrace](https://github.com/nxtrace/NTrace-core)
-- [RIPEstat Data API](https://stat.ripe.net/docs/data-api/)、
-  [ipapi.is](https://ipapi.is/developers.html)、
-  [proxycheck.io](https://github.com/proxycheck/proxycheck-php)、
-  [ipwho.is](https://ipwhois.io/documentation)、
-  [ipquery.io](https://ipquery.io/)
-- [oneclickvirt/nt3 省级三网目标注册表](https://github.com/oneclickvirt/nt3)
+- [sing-box 配置与 Remote Profile](https://sing-box.sagernet.org/)
+- [Hysteria2 服务端配置](https://v2.hysteria.network/docs/advanced/Full-Server-Config/) 与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
+- [Xray REALITY](https://xtls.github.io/en/config/transports/reality.html)、[XHTTP](https://xtls.github.io/en/config/transports/xhttp.html) 与 [出站策略](https://xtls.github.io/en/config/outbound.html)
+- [Caddy TLS](https://caddyserver.com/docs/caddyfile/directives/tls)
+- [NextTrace](https://github.com/nxtrace/NTrace-core)、[RIPEstat](https://stat.ripe.net/docs/data-api/) 与 [oneclickvirt/nt3](https://github.com/oneclickvirt/nt3)
 
-体检范围也参考了 [YABS](https://github.com/masonr/yet-another-bench-script) 与
-[ECS](https://github.com/oneclickvirt/ecs) 的公开功能分类；Neko 没有复制或执行它们
-的整套脚本。
+</details>
 
-### 使用边界
+## 使用边界
 
 请只在你有权管理的服务器和网络中使用，并遵守所在地法律、服务商条款和组织政策。
-严格地址族、证书验证、默认内网阻断和 TCP 25 拒绝都是项目的安全边界，不会为了
-“看起来都能访问”而默认放宽。
 
-如果你发现某个系统、客户端或网络环境与文档不一致，欢迎提供**去除敏感信息**后的
-系统版本、错误行和服务日志。不要提交 Token、完整订阅 URL、完整 `state.json`、
-证书私钥或 SSH 凭据。项目会持续维护，但每一次修复仍以可复现、可测试和可回滚为
-前提。
+严格地址族、证书验证、默认内网阻断和 TCP 25 拒绝都是项目的安全边界，不会为了
+“看起来什么都能访问”而默认放宽。
+
+如果系统、客户端或网络环境与文档不一致，欢迎提供去除敏感信息后的系统版本、错误行
+和服务日志。项目会持续维护，但每一次修复仍以可复现、可测试和可回滚为前提。
+
+面向第一次使用者的完整视频教程仍在准备中；在视频发布以前，这份 README 会继续保持
+可独立完成安装与排错。
