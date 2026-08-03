@@ -35,6 +35,9 @@ NEKO_DIAG_PING="${NEKO_DIAG_PING:-ping}"
 NEKO_DIAG_PACKET_LOSS_COUNT=100
 NEKO_DIAG_PACKET_LOSS_INTERVAL=0.2
 NEKO_DIAG_PACKET_LOSS_TIMEOUT=33
+NEKO_DIAG_ROUTE_PREFLIGHT_COUNT=3
+NEKO_DIAG_ROUTE_PREFLIGHT_INTERVAL=0.2
+NEKO_DIAG_ROUTE_PREFLIGHT_TIMEOUT=7
 NEKO_DIAG_ROUTE_V4_CT="${NEKO_DIAG_ROUTE_V4_CT:-gd-ct-v4.ip.zstaticcdn.com}"
 NEKO_DIAG_ROUTE_V4_CU="${NEKO_DIAG_ROUTE_V4_CU:-gd-cu-v4.ip.zstaticcdn.com}"
 NEKO_DIAG_ROUTE_V4_CM="${NEKO_DIAG_ROUTE_V4_CM:-gd-cm-v4.ip.zstaticcdn.com}"
@@ -51,6 +54,7 @@ DIAG_SKIP_COUNT=0
 DIAG_BENCH_FILE=""
 DIAG_QUALITY_DIR=""
 DIAG_ROUTE_DIR=""
+DIAG_OWNER_BASHPID="$BASHPID"
 ROUTE_COMPLETED_COUNT=0
 ROUTE_FAILED_COUNT=0
 PACKET_LOSS_COMPLETED_COUNT=0
@@ -62,9 +66,15 @@ declare -A ROUTE_SUMMARY_LATENCY=()
 declare -A ROUTE_SUMMARY_LINE=()
 declare -A ROUTE_SUMMARY_STATUS=()
 declare -A ROUTE_SUMMARY_PACKET_LOSS=()
+declare -A ROUTE_SUMMARY_PACKET_STATS=()
+declare -A ROUTE_SUMMARY_LOSS_PERCENT=()
+declare -A ROUTE_SUMMARY_P95=()
 
 diag_cleanup() {
   local base="${NEKO_DIAG_TMP_DIR%/}"
+  # Process substitutions inherit EXIT traps.  Only the shell running the
+  # report owns its temporary directory; parser children must leave it alone.
+  [[ "$BASHPID" == "$DIAG_OWNER_BASHPID" ]] || return 0
   if [[ -n "$DIAG_BENCH_FILE" && -n "$base" \
     && "$DIAG_BENCH_FILE" == "$base"/.neko-disk-bench.* ]]; then
     rm -f -- "$DIAG_BENCH_FILE"
@@ -1228,10 +1238,30 @@ run_packet_loss_probe() {
   outer_timeout="$NEKO_DIAG_PACKET_LOSS_TIMEOUT"
   # Do not add ping -w: combined with -c it may send past 100 after loss.
   timeout --kill-after=2 "$outer_timeout" \
-    "$NEKO_DIAG_PING" "$family_flag" -n -q \
+    "$NEKO_DIAG_PING" "$family_flag" -n \
     -I "$source_address" \
     -c "$NEKO_DIAG_PACKET_LOSS_COUNT" \
     -i "$NEKO_DIAG_PACKET_LOSS_INTERVAL" \
+    -W 1 \
+    -- "$target" \
+    > "$output_file" 2> "${output_file}.err"
+}
+
+run_route_preflight_probe() {
+  local family="$1" source_address="$2" target="$3" output_file="$4"
+  local family_flag
+
+  (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )) || return 0
+  if [[ "$family" == ipv4 ]]; then
+    family_flag=-4
+  else
+    family_flag=-6
+  fi
+  timeout --kill-after=2 "$NEKO_DIAG_ROUTE_PREFLIGHT_TIMEOUT" \
+    "$NEKO_DIAG_PING" "$family_flag" -n -q \
+    -I "$source_address" \
+    -c "$NEKO_DIAG_ROUTE_PREFLIGHT_COUNT" \
+    -i "$NEKO_DIAG_ROUTE_PREFLIGHT_INTERVAL" \
     -W 1 \
     -- "$target" \
     > "$output_file" 2> "${output_file}.err"
@@ -1262,12 +1292,80 @@ packet_loss_counts() {
   printf '%s\t%s\n' "$transmitted" "$received"
 }
 
+packet_latency_metrics() {
+  local file="$1"
+
+  [[ -s "$file" ]] || return 1
+  awk '
+    {
+      for (field_index = 1; field_index <= NF; field_index++) {
+        if ($field_index ~ /^time=[0-9]+([.][0-9]+)?$/) {
+          value = $field_index
+          sub(/^time=/, "", value)
+          print value
+        } else if ($field_index ~ /^time<[0-9]+([.][0-9]+)?$/) {
+          value = $field_index
+          sub(/^time</, "", value)
+          # iputils commonly prints time<1 ms.  Use half of the bound instead
+          # of pretending it was exactly zero or exactly the upper bound.
+          printf "%.6f\n", value / 2
+        }
+      }
+    }' "$file" 2>/dev/null \
+    | sort -n \
+    | awk '
+      {
+        samples[++count] = $1
+        sum += $1
+        sum_squared += $1 * $1
+      }
+      END {
+        if (count < 1) exit 1
+        if (count % 2 == 1) {
+          p50 = samples[(count + 1) / 2]
+        } else {
+          p50 = (samples[count / 2] + samples[count / 2 + 1]) / 2
+        }
+        p95_index = int((95 * count + 99) / 100)
+        variance = sum_squared / count - (sum / count) * (sum / count)
+        if (variance < 0) variance = 0
+        printf "%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%.2f\t%d\n", \
+          samples[1], sum / count, p50, samples[p95_index], \
+          samples[count], sqrt(variance), count
+      }'
+}
+
+packet_latency_display() {
+  local file="$1" metrics minimum average p50 p95 maximum variation count
+
+  metrics="$(packet_latency_metrics "$file")" || return 1
+  IFS=$'\t' read -r minimum average p50 p95 maximum variation count \
+    <<< "$metrics"
+  printf '最小 %s｜平均 %s｜P50 %s｜P95 %s｜最大 %s｜波动 %s ms（%s 个响应）' \
+    "$minimum" "$average" "$p50" "$p95" "$maximum" "$variation" "$count"
+}
+
 packet_loss_sample() {
-  local file="$1" counts transmitted received loss
+  local file="$1" preflight_file="${2:-}"
+  local counts transmitted received loss preflight_counts
 
   counts="$(packet_loss_counts "$file")" || {
+    if [[ -n "$preflight_file" ]]; then
+      preflight_counts="$(packet_loss_counts "$preflight_file")" || true
+      if [[ -n "$preflight_counts" ]]; then
+        IFS=$'\t' read -r transmitted received <<< "$preflight_counts"
+        if (( transmitted == NEKO_DIAG_ROUTE_PREFLIGHT_COUNT \
+          && received == 0 )); then
+          printf 'no-reply\t未确认（预检 0/%d；目标可能禁 ICMP）\n' \
+            "$NEKO_DIAG_ROUTE_PREFLIGHT_COUNT"
+          return 0
+        fi
+      fi
+    fi
     if [[ -s "$file" ]]; then
       printf 'invalid\t测试异常（无法读取可靠统计）\n'
+    elif [[ -n "$preflight_counts" ]]; then
+      printf 'unavailable\t未测（100 包测试未完成）\n'
     else
       printf 'unavailable\t未测\n'
     fi
@@ -1364,6 +1462,97 @@ route_target() {
     printf '%s-%s-%s.ip.zstaticcdn.com' \
       "$region" "$carrier" "${family/ipv/v}"
   fi
+}
+
+route_backup_target() {
+  local region="$1" family="$2" carrier="$3"
+  local family_token override_name override_value legacy_name
+
+  if [[ "$family" == ipv4 ]]; then
+    family_token=V4
+  else
+    family_token=V6
+  fi
+  override_name="NEKO_DIAG_ROUTE_${region^^}_${family_token}_${carrier^^}_BACKUP"
+  override_value="${!override_name:-}"
+  if [[ -z "$override_value" && "$region" == gd ]]; then
+    legacy_name="NEKO_DIAG_ROUTE_${family_token}_${carrier^^}_BACKUP"
+    override_value="${!legacy_name:-}"
+  fi
+  printf '%s' "$override_value"
+}
+
+route_hostname_valid() {
+  local value="$1"
+  (( ${#value} >= 1 && ${#value} <= 253 )) || return 1
+  [[ "$value" != *..* && "$value" != *.-* && "$value" != *-.* ]] \
+    || return 1
+  [[ "$value" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]
+}
+
+route_target_valid() {
+  local family="$1" value="$2"
+  if [[ "$family" == ipv4 ]]; then
+    is_ipv4_literal "$value" && return 0
+    is_ipv6_literal "$value" && return 1
+  else
+    is_ipv6_literal "$value" && return 0
+    is_ipv4_literal "$value" && return 1
+  fi
+  route_hostname_valid "$value"
+}
+
+route_target_candidates() {
+  local region="$1" family="$2" carrier="$3"
+  local primary backup
+
+  primary="$(route_target "$region" "$family" "$carrier")"
+  backup="$(route_backup_target "$region" "$family" "$carrier")"
+  route_target_valid "$family" "$primary" && printf '%s\n' "$primary"
+  if [[ -n "$backup" && "$backup" != "$primary" ]] \
+    && route_target_valid "$family" "$backup"; then
+    printf '%s\n' "$backup"
+  fi
+}
+
+select_route_probe_target() {
+  local region="$1" family="$2" carrier="$3" source_address="$4"
+  local selection_file="$5" preflight_file="$6"
+  local candidate candidate_file counts transmitted received index=0
+  local first_candidate="" primary backup
+  local -a candidates=()
+
+  primary="$(route_target "$region" "$family" "$carrier")"
+  backup="$(route_backup_target "$region" "$family" "$carrier")"
+  route_target_valid "$family" "$primary" && candidates+=("$primary")
+  if [[ -n "$backup" && "$backup" != "$primary" ]] \
+    && route_target_valid "$family" "$backup"; then
+    candidates+=("$backup")
+  fi
+  (( ${#candidates[@]} > 0 )) || return 1
+  first_candidate="${candidates[0]}"
+  for candidate in "${candidates[@]}"; do
+    ((index += 1))
+    candidate_file="${preflight_file}.candidate-${index}"
+    run_route_preflight_probe \
+      "$family" "$source_address" "$candidate" "$candidate_file" || true
+    counts="$(packet_loss_counts "$candidate_file")" || true
+    [[ -n "$counts" ]] || continue
+    IFS=$'\t' read -r transmitted received <<< "$counts"
+    if (( transmitted == NEKO_DIAG_ROUTE_PREFLIGHT_COUNT && received > 0 )); then
+      mv -f -- "$candidate_file" "$preflight_file"
+      printf '%s\tresponsive\t%d\t%d\n' \
+        "$candidate" "$index" "${#candidates[@]}" > "$selection_file"
+      return 0
+    fi
+  done
+
+  if [[ -s "${preflight_file}.candidate-1" ]]; then
+    mv -f -- "${preflight_file}.candidate-1" "$preflight_file"
+  fi
+  printf '%s\tno-reply\t1\t%d\n' \
+    "$first_candidate" "${#candidates[@]}" > "$selection_file"
+  return 0
 }
 
 route_result_valid() {
@@ -1600,33 +1789,63 @@ classify_carrier_route() {
 
 show_carrier_route_result() {
   local region="$1" family="$2" carrier="$3" label="$4" file="$5"
-  local packet_loss_file="$6"
+  local packet_loss_file="$6" selection_file="$7"
+  local preflight_file="${packet_loss_file}.preflight"
   local asn_path network_path major_networks carrier_network
   local hop_count latency latency_display judgment key
-  local packet_loss_status packet_loss_display
+  local packet_loss_status packet_loss_display packet_stats="" metrics=""
+  local minimum average p50 p95 maximum variation response_count
+  local counts transmitted received loss_percent=""
+  local selection_status="" selection_index=1 candidate_count=1
   key="${region}:${family}:${carrier}"
   IFS=$'\t' read -r packet_loss_status packet_loss_display \
-    < <(packet_loss_sample "$packet_loss_file")
+    < <(packet_loss_sample "$packet_loss_file" "$preflight_file")
   packet_loss_display="${packet_loss_display:-未测}"
-  ROUTE_SUMMARY_PACKET_LOSS["$key"]="$packet_loss_display"
   if [[ "$packet_loss_status" == complete ]]; then
     ((PACKET_LOSS_COMPLETED_COUNT += 1))
+    counts="$(packet_loss_counts "$packet_loss_file")" || true
+    if [[ -n "$counts" ]]; then
+      IFS=$'\t' read -r transmitted received <<< "$counts"
+      loss_percent=$((transmitted - received))
+      ROUTE_SUMMARY_LOSS_PERCENT["$key"]="$loss_percent"
+    fi
+    metrics="$(packet_latency_metrics "$packet_loss_file")" || true
+    if [[ -n "$metrics" ]]; then
+      IFS=$'\t' read -r minimum average p50 p95 maximum variation \
+        response_count <<< "$metrics"
+      packet_stats="$(packet_latency_display "$packet_loss_file")" || true
+      ROUTE_SUMMARY_PACKET_STATS["$key"]="$packet_stats"
+      ROUTE_SUMMARY_P95["$key"]="$p95"
+    fi
   else
     ((PACKET_LOSS_FAILED_COUNT += 1))
+  fi
+  if [[ -s "$selection_file" ]]; then
+    IFS=$'\t' read -r _ selection_status selection_index \
+      candidate_count < "$selection_file"
   fi
 
   if ! route_result_valid "$file"; then
     ((ROUTE_FAILED_COUNT += 1, DIAG_SKIP_COUNT += 1))
     ROUTE_SUMMARY_STATUS["$key"]="failed"
+    ROUTE_SUMMARY_PACKET_LOSS["$key"]="$packet_loss_display"
     printf '  %s%s%s｜路径未完成｜丢包 %s\n' \
       "$C_YELLOW" "$label" "$C_RESET" "$packet_loss_display"
     printf '        原因：超时、无响应或线路元数据不可用\n'
+    if (( selection_index > 1 )); then
+      printf '        目标保护：主候选预检无响应，已切换第 %d/%d 个候选\n' \
+        "$selection_index" "$candidate_count"
+    elif [[ "$selection_status" == no-reply ]]; then
+      printf '        目标保护：全部 %d 个候选均未通过 3 包 ICMP 预检\n' \
+        "$candidate_count"
+    fi
     return 0
   fi
   hop_count="$(route_hop_count "$file")"
   if [[ ! "$hop_count" =~ ^[0-9]+$ ]] || (( hop_count == 0 )); then
     ((ROUTE_FAILED_COUNT += 1, DIAG_SKIP_COUNT += 1))
     ROUTE_SUMMARY_STATUS["$key"]="failed"
+    ROUTE_SUMMARY_PACKET_LOSS["$key"]="$packet_loss_display"
     printf '  %s%s%s｜路径未完成｜丢包 %s\n' \
       "$C_YELLOW" "$label" "$C_RESET" "$packet_loss_display"
     printf '        原因：没有收到有效路径响应\n'
@@ -1649,6 +1868,10 @@ show_carrier_route_result() {
   ROUTE_SUMMARY_STATUS["$key"]="ok"
   ROUTE_SUMMARY_LATENCY["$key"]="${latency:-未知}"
   ROUTE_SUMMARY_LINE["$key"]="$judgment"
+  if [[ "$packet_loss_status" == no-reply ]]; then
+    packet_loss_display="未确认（3 包预检无 ICMP；TCP 路由探测有响应）"
+  fi
+  ROUTE_SUMMARY_PACKET_LOSS["$key"]="$packet_loss_display"
   if [[ -n "$latency" ]]; then
     latency_display="${latency} ms"
   else
@@ -1663,19 +1886,26 @@ show_carrier_route_result() {
   fi
   printf '        ASN 路径：%s（%s 跳有响应）\n' \
     "${asn_path:-无 ASN 数据}" "$hop_count"
+  if [[ -n "$packet_stats" ]]; then
+    printf '        ICMP 时延：%s\n' "$packet_stats"
+  fi
+  if (( selection_index > 1 )); then
+    printf '        目标保护：主候选预检无响应，已切换第 %d/%d 个候选\n' \
+      "$selection_index" "$candidate_count"
+  elif [[ "$selection_status" == no-reply ]]; then
+    printf '        目标保护：全部 %d 个候选均未通过 3 包 ICMP 预检；未运行 100 包测试\n' \
+      "$candidate_count"
+  fi
 }
 
 show_carrier_routes_for_family() {
   local region="$1" family="$2" source_address="$3"
-  local pid
+  local selected_target selection_status
   local -a carriers=(ct cu cm) labels=(电信 联通 移动)
-  local -a targets=() files=() packet_loss_files=() pids=()
-  local index region_label
+  local -a files=() packet_loss_files=() selection_files=() pids=()
+  local index region_label pid
 
   region_label="$(route_region_label "$region")"
-  for index in 0 1 2; do
-    targets+=("$(route_target "$region" "$family" "${carriers[$index]}")")
-  done
   files=(
     "${DIAG_ROUTE_DIR}/${region}-${family}-ct.json"
     "${DIAG_ROUTE_DIR}/${region}-${family}-cu.json"
@@ -1686,21 +1916,57 @@ show_carrier_routes_for_family() {
     "${DIAG_ROUTE_DIR}/${region}-${family}-cu.ping"
     "${DIAG_ROUTE_DIR}/${region}-${family}-cm.ping"
   )
+  selection_files=(
+    "${DIAG_ROUTE_DIR}/${region}-${family}-ct.target"
+    "${DIAG_ROUTE_DIR}/${region}-${family}-cu.target"
+    "${DIAG_ROUTE_DIR}/${region}-${family}-cm.target"
+  )
 
   printf '\n%s【%s · %s 回程】%s\n' \
     "$C_BLUE" "$region_label" "${family/ipv/IPv}" "$C_RESET"
   for index in 0 1 2; do
+    if (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )); then
+      # Keep candidate selection in the report owner shell.  The three long
+      # 100-packet probes below still run in parallel; this short sequential
+      # preflight avoids cleanup races and makes fallback order deterministic.
+      select_route_probe_target \
+        "$region" "$family" "${carriers[$index]}" "$source_address" \
+        "${selection_files[$index]}" \
+        "${packet_loss_files[$index]}.preflight" || true
+    else
+      selected_target="$(
+        route_target_candidates \
+          "$region" "$family" "${carriers[$index]}" \
+          | awk 'NR == 1 {value=$0} END {if (value != "") print value}'
+      )"
+      if [[ -n "$selected_target" ]]; then
+        printf '%s\tunchecked\t1\t1\n' "$selected_target" \
+          > "${selection_files[$index]}"
+      fi
+    fi
+  done
+
+  for index in 0 1 2; do
+    selected_target=""
+    selection_status=""
+    if [[ -s "${selection_files[$index]}" ]]; then
+      IFS=$'\t' read -r selected_target selection_status _ \
+        < "${selection_files[$index]}"
+    fi
+    [[ -n "$selected_target" ]] || continue
     if (( ROUTE_TRACE_AVAILABLE == 1 )); then
       (
         run_nexttrace_probe \
-          "$family" "$source_address" "${targets[$index]}" "${files[$index]}"
+          "$family" "$source_address" "$selected_target" \
+          "${files[$index]}"
       ) &
       pids+=("$!")
     fi
-    if (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )); then
+    if (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )) \
+      && [[ "$selection_status" == responsive ]]; then
       (
         run_packet_loss_probe \
-          "$family" "$source_address" "${targets[$index]}" \
+          "$family" "$source_address" "$selected_target" \
           "${packet_loss_files[$index]}"
       ) &
       pids+=("$!")
@@ -1712,7 +1978,8 @@ show_carrier_routes_for_family() {
   for index in 0 1 2; do
     show_carrier_route_result \
       "$region" "$family" "${carriers[$index]}" "${labels[$index]}" \
-      "${files[$index]}" "${packet_loss_files[$index]}"
+      "${files[$index]}" "${packet_loss_files[$index]}" \
+      "${selection_files[$index]}"
   done
 }
 
@@ -1738,7 +2005,7 @@ show_route_region_summary() {
   local region="$1" region_label family carrier label key
   local -a families=(ipv4 ipv6)
   local -a carriers=(ct cu cm) labels=(电信 联通 移动)
-  local index status latency judgment packet_loss
+  local index status latency judgment packet_loss packet_stats
 
   region_label="$(route_region_label "$region")"
   printf '\n%s【%s · 本次延迟与丢包】%s\n' \
@@ -1755,6 +2022,7 @@ show_route_region_summary() {
       key="${region}:${family}:${carrier}"
       status="${ROUTE_SUMMARY_STATUS[$key]:-failed}"
       packet_loss="${ROUTE_SUMMARY_PACKET_LOSS[$key]:-未测}"
+      packet_stats="${ROUTE_SUMMARY_PACKET_STATS[$key]:-}"
       if [[ "$status" == ok ]]; then
         latency="${ROUTE_SUMMARY_LATENCY[$key]:-未知}"
         judgment="${ROUTE_SUMMARY_LINE[$key]:-线路未知}"
@@ -1763,12 +2031,121 @@ show_route_region_summary() {
           "${family/ipv/IPv}" "$label" "$latency" \
           "$packet_loss"
         printf '        线路：%s\n' "$judgment"
+        if [[ -n "$packet_stats" ]]; then
+          printf '        ICMP：%s\n' "$packet_stats"
+        fi
       else
         printf '  %s %s｜路径未测到｜丢包 %s\n' \
           "${family/ipv/IPv}" "$label" "$packet_loss"
+        if [[ -n "$packet_stats" ]]; then
+          printf '        ICMP：%s\n' "$packet_stats"
+        fi
       fi
     done
   done
+}
+
+compare_route_family_samples() {
+  local region="$1" carrier="$2"
+  local v4_key="${region}:ipv4:${carrier}"
+  local v6_key="${region}:ipv6:${carrier}"
+  local v4_loss="${ROUTE_SUMMARY_LOSS_PERCENT[$v4_key]:-}"
+  local v6_loss="${ROUTE_SUMMARY_LOSS_PERCENT[$v6_key]:-}"
+  local v4_p95="${ROUTE_SUMMARY_P95[$v4_key]:-}"
+  local v6_p95="${ROUTE_SUMMARY_P95[$v6_key]:-}"
+  local loss_delta latency_winner
+
+  if [[ ! "$v4_loss" =~ ^[0-9]+$ || ! "$v6_loss" =~ ^[0-9]+$ \
+    || ! "$v4_p95" =~ ^[0-9]+([.][0-9]+)?$ \
+    || ! "$v6_p95" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    printf 'unavailable\t缺少两族都完整的 100 包时延样本\n'
+    return 0
+  fi
+
+  loss_delta=$((v4_loss - v6_loss))
+  if (( loss_delta >= 2 )); then
+    printf 'ipv6\tIPv6 丢包更低（%d%% vs %d%%）\n' "$v6_loss" "$v4_loss"
+    return 0
+  elif (( loss_delta <= -2 )); then
+    printf 'ipv4\tIPv4 丢包更低（%d%% vs %d%%）\n' "$v4_loss" "$v6_loss"
+    return 0
+  fi
+
+  latency_winner="$(
+    awk -v v4="$v4_p95" -v v6="$v6_p95" '
+      BEGIN {
+        difference = v4 - v6
+        if (difference < 0) difference = -difference
+        lower = (v4 < v6 ? v4 : v6)
+        if (lower < 1) lower = 1
+        if (difference >= 10 && difference * 100 >= lower * 15) {
+          print (v4 < v6 ? "ipv4" : "ipv6")
+        }
+      }'
+  )"
+  case "$latency_winner" in
+    ipv4)
+      printf 'ipv4\t丢包接近，IPv4 P95 更低（%s ms vs %s ms）\n' \
+        "$v4_p95" "$v6_p95"
+      ;;
+    ipv6)
+      printf 'ipv6\t丢包接近，IPv6 P95 更低（%s ms vs %s ms）\n' \
+        "$v6_p95" "$v4_p95"
+      ;;
+    *)
+      printf 'close\t本次差异不足以形成稳妥结论（丢包 %d%%/%d%%，P95 %s/%s ms）\n' \
+        "$v4_loss" "$v6_loss" "$v4_p95" "$v6_p95"
+      ;;
+  esac
+}
+
+show_route_family_comparison() {
+  local region="$1" region_label carrier label outcome reason index
+  local ipv4_wins=0 ipv6_wins=0 close_count=0 unavailable_count=0
+  local -a carriers=(ct cu cm) labels=(电信 联通 移动)
+
+  network_mode_has_ipv4 "$NETWORK_MODE" || return 0
+  network_mode_has_ipv6 "$NETWORK_MODE" || return 0
+  region_label="$(route_region_label "$region")"
+  printf '\n%s【%s · IPv4 / IPv6 回程对比】%s\n' \
+    "$C_BLUE" "$region_label" "$C_RESET"
+  for index in 0 1 2; do
+    carrier="${carriers[$index]}"
+    label="${labels[$index]}"
+    IFS=$'\t' read -r outcome reason \
+      < <(compare_route_family_samples "$region" "$carrier")
+    case "$outcome" in
+      ipv4)
+        ((ipv4_wins += 1))
+        printf '  %s｜本次回程偏向 IPv4：%s\n' "$label" "$reason"
+        ;;
+      ipv6)
+        ((ipv6_wins += 1))
+        printf '  %s｜本次回程偏向 IPv6：%s\n' "$label" "$reason"
+        ;;
+      close)
+        ((close_count += 1))
+        printf '  %s｜两族接近：%s\n' "$label" "$reason"
+        ;;
+      *)
+        ((unavailable_count += 1))
+        printf '  %s｜暂不判断：%s\n' "$label" "$reason"
+        ;;
+    esac
+  done
+
+  if (( ipv4_wins >= 2 && ipv6_wins == 0 )); then
+    printf '  回程参考：本地区本轮偏向 IPv4；建议先在本地实测 IPv4→IPv4，再用 IPv6→IPv4 复核。\n'
+  elif (( ipv6_wins >= 2 && ipv4_wins == 0 )); then
+    printf '  回程参考：本地区本轮偏向 IPv6；建议先在本地实测 IPv6→IPv4，再用 IPv4→IPv4 复核。\n'
+  elif (( ipv4_wins > 0 && ipv6_wins > 0 )); then
+    printf '  回程参考：三网结果分化，没有适合所有运营商的统一地址族。\n'
+  elif (( close_count > 0 && unavailable_count < 3 )); then
+    printf '  回程参考：两族差异不够明显，暂不推荐只凭本轮切换。\n'
+  else
+    printf '  回程参考：有效对照不足，暂不推荐只凭本轮切换。\n'
+  fi
+  printf '  重要：这里只测 VPS → 国内参考目标，不是你的设备 → VPS；最终仍以本地两条订阅实测为准。\n'
 }
 
 show_route_report_summary() {
@@ -1783,8 +2160,9 @@ show_route_report_summary() {
   printf '  回程：已按所选地区测试（VPS → 国内参考目标）。\n'
   printf '  去程：未测试；它需要国内探针主动访问这台 VPS。\n'
   printf '  “末跳”是最后一个有响应路由节点的本次样本，不等同于带宽或晚高峰速度。\n'
-  printf '  “丢包”是 VPS → 参考目标的 ICMP 样本；目标禁 ICMP 或限速时可能显示 100%%。\n'
-  printf '  100%% ICMP 无响应不能单独证明代理线路实际丢包。\n'
+  printf '  “丢包/时延”来自 VPS → 参考目标的 ICMP 样本；P50/P95 与波动比单次末跳更适合观察稳定性。\n'
+  printf '  先用 3 包预检选择可响应候选，再运行固定 100 包；目标禁 ICMP 时会标为“未确认”。\n'
+  printf '  TCP 路由探测有响应只说明路径节点回应，不等于目标 TCP 80 已建立连接。\n'
   printf '  “主要国际网络”只说明本次响应路径出现该 ASN，不代表优化线路或质量保证。\n'
   printf '  ASN 只能辅助识别骨干；AS4809 不能单独证明 CN2 GT 或 GIA。\n'
 }
@@ -1814,6 +2192,9 @@ show_route_report() {
   ROUTE_SUMMARY_LINE=()
   ROUTE_SUMMARY_STATUS=()
   ROUTE_SUMMARY_PACKET_LOSS=()
+  ROUTE_SUMMARY_PACKET_STATS=()
+  ROUTE_SUMMARY_LOSS_PERCENT=()
+  ROUTE_SUMMARY_P95=()
 
   printf '\n%s========== Neko 三网线路检测 ==========%s\n' \
     "$C_BLUE" "$C_RESET"
@@ -1850,7 +2231,6 @@ show_route_report() {
     diag_skip "无法创建线路测试临时目录。"
     return 0
   }
-
   printf '  测试地区：'
   for region in "${regions[@]}"; do
     printf '%s%s' "$separator" "$(route_region_label "$region")"
@@ -1862,12 +2242,18 @@ show_route_report() {
   printf '  去程状态：%s未测试%s（需要国内探针 → 这台 VPS）。\n' \
     "$C_YELLOW" "$C_RESET"
   if (( ROUTE_PACKET_LOSS_AVAILABLE == 1 )); then
-    printf '  丢包样本：每条线路固定发送 %d 个 ICMP 包；三网并行，地区与地址族顺序执行。\n' \
-      "$NEKO_DIAG_PACKET_LOSS_COUNT"
+    printf '  丢包样本：每个候选先发 %d 包预检；通过后固定发送 %d 包并统计 P50/P95/波动。\n' \
+      "$NEKO_DIAG_ROUTE_PREFLIGHT_COUNT" "$NEKO_DIAG_PACKET_LOSS_COUNT"
   else
     printf '  丢包样本：未运行（系统缺少 ping）；路径检测仍会继续。\n'
   fi
   printf '  说明：结果只代表本次路径和样本；失败会显示“未测”，不会修改或停止 Neko。\n'
+  if ! network_mode_has_ipv4 "$NETWORK_MODE"; then
+    printf '  [自动跳过] 当前 Neko 安装未配置可用 IPv4；只测试 IPv6，不会报错退出。\n'
+  fi
+  if ! network_mode_has_ipv6 "$NETWORK_MODE"; then
+    printf '  [自动跳过] 当前 Neko 安装未配置可用 IPv6；只测试 IPv4，不会报错退出。\n'
+  fi
 
   for region in "${regions[@]}"; do
     if network_mode_has_ipv4 "$NETWORK_MODE"; then
@@ -1891,6 +2277,7 @@ show_route_report() {
       fi
     fi
     show_route_region_summary "$region"
+    show_route_family_comparison "$region"
   done
   rm -rf -- "$DIAG_ROUTE_DIR"
   DIAG_ROUTE_DIR=""
@@ -2036,10 +2423,10 @@ run_route_menu() {
     }
     if [[ "$selected_region" == all ]]; then
       region_text="广东、上海、北京、四川、湖北、辽宁"
-      duration_text="全部六地双栈在连续超时时可能接近 7 分钟"
+      duration_text="通常约 4 分钟，连续超时时可能接近 12 分钟"
     else
       region_text="$(route_region_label "$selected_region")"
-      duration_text="通常需要约半分钟"
+      duration_text="通常约 1 分钟，连续超时时可能接近 2 分钟"
     fi
     warn "将从 VPS 向${region_text}三网目标为每条线路发送 100 个 ICMP 包，并运行少量 TCP 路径探测；${duration_text}，不会修改服务。"
     read -r -p "输入 ROUTE 确认运行：" answer
@@ -2089,7 +2476,7 @@ interactive_menu() {
     printf '1. 一键完整体检（推荐，只读）\n'
     printf '2. 只看系统与硬件（离线、只读）\n'
     printf '3. 只查 Neko、IP 质量与 BGP（联网、只读）\n'
-    printf '4. 真实三网线路与丢包（约半分钟，明确确认后运行）\n'
+    printf '4. 真实三网线路与丢包（通常约 1 分钟，明确确认后运行）\n'
     printf '5. 轻量性能测试（明确确认后才运行）\n'
     printf '0. 返回\n\n'
     read -r -p "请选择 [0-5]：" choice

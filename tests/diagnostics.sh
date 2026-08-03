@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d "$ROOT/tests/diagnostics.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-diagnostics-test.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
 mkdir -p \
@@ -191,29 +191,49 @@ if [[ -n "${NEKO_DIAG_PING_ARGS_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "$NEKO_DIAG_PING_ARGS_LOG"
 fi
 [[ "${NEKO_DIAG_PING_FAIL:-0}" != 1 ]] || exit 2
-if [[ "${NEKO_DIAG_PING_MALFORMED:-0}" == 1 ]]; then
-  printf '100 packets transmitted, 101 received, invalid packet loss\n'
-  exit 0
-fi
 target="${*: -1}"
-transmitted=100
-received=100
+count=100
+previous=""
+for argument in "$@"; do
+  if [[ "$previous" == -c ]]; then
+    count="$argument"
+    break
+  fi
+  previous="$argument"
+done
+transmitted="$count"
+received="$count"
 if [[ " $* " == *' -w '* ]]; then
   transmitted=129
   received=102
-elif [[ "${NEKO_DIAG_PING_INCOMPLETE:-0}" == 1 ]]; then
+elif (( count == 100 )) && [[ "${NEKO_DIAG_PING_MALFORMED:-0}" == 1 ]]; then
+  printf '100 packets transmitted, 101 received, invalid packet loss\n'
+  exit 0
+elif (( count == 100 )) && [[ "${NEKO_DIAG_PING_INCOMPLETE:-0}" == 1 ]]; then
   transmitted=80
   received=75
 elif [[ "${NEKO_DIAG_PING_NO_REPLY:-0}" == 1 ]]; then
   received=0
+elif (( count == 3 )) && [[ "$target" == *primary-noicmp* \
+  || "$target" == 198.51.100.10 ]]; then
+  received=0
 else
-  case "$target" in
-    *-cu-*) received=98 ;;
-    *-cm-*) received=93 ;;
-  esac
+  if (( count == 100 )); then
+    case "$target" in
+      *-cu-*) received=98 ;;
+      *-cm-*) received=93 ;;
+    esac
+  fi
 fi
 loss=$((transmitted - received))
 printf 'PING %s (%s) 56(84) bytes of data.\n' "$target" "$target"
+base=20
+[[ "$target" == *-v6* || "$target" == *:* ]] && base=45
+for ((sequence = 1; sequence <= received; sequence++)); do
+  latency=$((base + (sequence - 1) % 5))
+  printf '64 bytes from %s: icmp_seq=%d ttl=50 time=%d.00 ms\n' \
+    "$target" "$sequence" "$latency"
+done
 printf '%d packets transmitted, %d received, %d%% packet loss, time 20000ms\n' \
   "$transmitted" "$received" "$loss"
 (( received > 0 )) || exit 1
@@ -364,7 +384,8 @@ grep -Fq '测试方向：回程（这台 VPS → 国内三网参考目标）' \
   <<< "$route_output"
 grep -Fq '去程状态：未测试' <<< "$route_output"
 grep -Fq '【广东 · IPv4 回程】' <<< "$route_output"
-grep -Fq '每条线路固定发送 100 个 ICMP 包' <<< "$route_output"
+grep -Fq '每个候选先发 3 包预检；通过后固定发送 100 包并统计 P50/P95/波动' \
+  <<< "$route_output"
 grep -Fq 'CN2（AS4809）' <<< "$route_output"
 grep -Fq '联通 9929/CUII（AS9929）' <<< "$route_output"
 grep -Fq '中国移动国际 CMI（AS58453）' <<< "$route_output"
@@ -381,12 +402,23 @@ grep -Fq 'IPv4 电信｜延迟 30.00 ms｜丢包 0%（100/100）' \
   <<< "$route_output"
 grep -Fq 'IPv6 移动｜延迟 30.00 ms｜丢包 7%（93/100）' \
   <<< "$route_output"
+grep -Fq 'ICMP 时延：最小 20.00｜平均 22.00｜P50 22.00｜P95 24.00｜最大 24.00｜波动 1.41 ms（100 个响应）' \
+  <<< "$route_output"
+grep -Fq 'ICMP：最小 45.00｜平均 47.00｜P50 47.00｜P95 49.00｜最大 49.00｜波动 1.41 ms（100 个响应）' \
+  <<< "$route_output"
+grep -Fq '【广东 · IPv4 / IPv6 回程对比】' <<< "$route_output"
+grep -Fq '电信｜本次回程偏向 IPv4：丢包接近，IPv4 P95 更低（24.00 ms vs 49.00 ms）' \
+  <<< "$route_output"
+grep -Fq '建议先在本地实测 IPv4→IPv4，再用 IPv6→IPv4 复核' \
+  <<< "$route_output"
+grep -Fq '不是你的设备 → VPS；最终仍以本地两条订阅实测为准' \
+  <<< "$route_output"
 grep -Fq '线路：主要国际网络：IIJ（AS2497）；运营商网络：中国移动国际 CMI（AS58453）' \
   <<< "$route_output"
 grep -Fq '已完成 6 条，未完成 0 条' <<< "$route_output"
 grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
   <<< "$route_output"
-grep -Fq '100% ICMP 无响应不能单独证明代理线路实际丢包' \
+grep -Fq '目标禁 ICMP 时会标为“未确认”' \
   <<< "$route_output"
 grep -Fq '不代表优化线路或质量保证' <<< "$route_output"
 if grep -Fq '【上海 ·' <<< "$route_output"; then
@@ -397,15 +429,19 @@ grep -Fq -- '--ipv4 --tcp --port 80 --source 192.0.2.44' \
   "$WORK/route-args.log"
 grep -Fq -- '--ipv6 --tcp --port 80 --source 2001:db8::44' \
   "$WORK/route-args.log"
-grep -Fq -- '-4 -n -q -I 192.0.2.44 -c 100 -i 0.2 -W 1 --' \
+grep -Fq -- '-4 -n -q -I 192.0.2.44 -c 3 -i 0.2 -W 1 --' \
   "$WORK/ping-args.log"
-grep -Fq -- '-6 -n -q -I 2001:db8::44 -c 100 -i 0.2 -W 1 --' \
+grep -Fq -- '-6 -n -q -I 2001:db8::44 -c 3 -i 0.2 -W 1 --' \
+  "$WORK/ping-args.log"
+grep -Fq -- '-4 -n -I 192.0.2.44 -c 100 -i 0.2 -W 1 --' \
+  "$WORK/ping-args.log"
+grep -Fq -- '-6 -n -I 2001:db8::44 -c 100 -i 0.2 -W 1 --' \
   "$WORK/ping-args.log"
 if grep -Eq -- '(^|[[:space:]])-w([[:space:]]|$)' "$WORK/ping-args.log"; then
   printf '固定 100 包检测不应再向 ping 传递 deadline。\n' >&2
   exit 1
 fi
-[[ "$(wc -l < "$WORK/ping-args.log")" -eq 6 ]]
+[[ "$(wc -l < "$WORK/ping-args.log")" -eq 12 ]]
 
 : > "$WORK/route-args.log"
 : > "$WORK/ping-args.log"
@@ -443,7 +479,7 @@ for target in \
   grep -Fq "$target" "$WORK/route-args.log"
 done
 [[ "$(wc -l < "$WORK/route-args.log")" -eq 36 ]]
-[[ "$(wc -l < "$WORK/ping-args.log")" -eq 36 ]]
+[[ "$(wc -l < "$WORK/ping-args.log")" -eq 72 ]]
 grep -Fq '已完成 36 条，未完成 0 条' <<< "$all_regions_output"
 grep -Fq '丢包样本：有效 36 组，异常/未测 0 组（每组固定 100 包）' \
   <<< "$all_regions_output"
@@ -534,6 +570,8 @@ ipv6_only_route_output="$(
 )"
 grep -Fq '【辽宁 · IPv6 回程】' <<< "$ipv6_only_route_output"
 grep -Fq '已完成 3 条，未完成 0 条' <<< "$ipv6_only_route_output"
+grep -Fq '当前 Neko 安装未配置可用 IPv4；只测试 IPv6，不会报错退出' \
+  <<< "$ipv6_only_route_output"
 if grep -Fq 'IPv4 回程' <<< "$ipv6_only_route_output"; then
   printf 'IPv6-only 线路测试不应运行 IPv4 探测。\n' >&2
   exit 1
@@ -565,11 +603,13 @@ ping_no_reply_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING_NO_REPLY=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '丢包 100%（0/100；目标可能禁 ICMP）' \
+grep -Fq '丢包 未确认（3 包预检无 ICMP；TCP 路由探测有响应）' \
   <<< "$ping_no_reply_output"
-grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
+grep -Fq '目标保护：全部 1 个候选均未通过 3 包 ICMP 预检；未运行 100 包测试' \
   <<< "$ping_no_reply_output"
-grep -Fq '100% ICMP 无响应不能单独证明代理线路实际丢包' \
+grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
+  <<< "$ping_no_reply_output"
+grep -Fq '目标禁 ICMP 时会标为“未确认”' \
   <<< "$ping_no_reply_output"
 
 ping_failed_output="$(
@@ -610,6 +650,38 @@ ping_excess_sample="$(
 )"
 [[ "$ping_excess_sample" == \
   $'invalid\t测试异常（发包统计 129/100）' ]]
+
+cat > "$WORK/ping-latency.txt" <<'EOF'
+64 bytes from test: icmp_seq=1 ttl=50 time=10.00 ms
+64 bytes from test: icmp_seq=2 ttl=50 time=20.00 ms
+64 bytes from test: icmp_seq=3 ttl=50 time=30.00 ms
+64 bytes from test: icmp_seq=4 ttl=50 time=40.00 ms
+64 bytes from test: icmp_seq=5 ttl=50 time=100.00 ms
+5 packets transmitted, 5 received, 0% packet loss, time 1000ms
+EOF
+latency_metrics="$(
+  env "${common_env[@]}" bash -c '
+    source "$1"
+    packet_latency_metrics "$2"
+  ' _ "$ROOT/runtime/diagnostics.sh" "$WORK/ping-latency.txt"
+)"
+[[ "$latency_metrics" == $'10.00\t40.00\t30.00\t100.00\t100.00\t31.62\t5' ]]
+
+: > "$WORK/route-args.log"
+: > "$WORK/ping-args.log"
+backup_target_output="$(
+  env "${common_env[@]}" \
+    NEKO_DIAG_ROUTE_GD_V4_CT=primary-noicmp.example \
+    NEKO_DIAG_ROUTE_GD_V4_CT_BACKUP=backup-v4.example \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '目标保护：主候选预检无响应，已切换第 2/2 个候选' \
+  <<< "$backup_target_output"
+grep -Fq 'backup-v4.example' "$WORK/route-args.log"
+grep -Fq -- '-4 -n -q -I 192.0.2.44 -c 3 -i 0.2 -W 1 -- primary-noicmp.example' \
+  "$WORK/ping-args.log"
+grep -Fq -- '-4 -n -I 192.0.2.44 -c 100 -i 0.2 -W 1 -- backup-v4.example' \
+  "$WORK/ping-args.log"
 
 ping_missing_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING="$WORK/missing-ping" \
@@ -660,4 +732,4 @@ fi
 grep -Fq '7. VPS 硬件、IP 与网络体检' "$ROOT/runtime/panel.sh"
 grep -Fq 'open_diagnostics' "$ROOT/runtime/panel.sh"
 
-printf 'VPS 体检：硬件、IP 质量、BGP、双栈三网线路、100 包丢包降级与轻量测试通过。\n'
+printf 'VPS 体检：硬件、IP 质量、BGP、双栈三网线路、100 包统计、降级与轻量测试通过。\n'
