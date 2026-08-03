@@ -102,6 +102,24 @@ family=ipv4
 if [[ -n "${NEKO_DIAG_CURL_ARGS_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "$NEKO_DIAG_CURL_ARGS_LOG"
 fi
+case "${*: -1}" in
+  http://*.ip.zstaticcdn.com:*|https://*.ip.zstaticcdn.com:*|\
+  http://*noicmp.example:*|https://*noicmp.example:*|\
+  http://backup-v4.example:*|https://backup-v4.example:*)
+    if [[ "${NEKO_DIAG_TCP_ALL_FAIL:-0}" == 1 ]] \
+      || { [[ "${NEKO_DIAG_TCP_443_FAIL:-0}" == 1 ]] \
+        && [[ "${*: -1}" == https://*:443/ ]]; }; then
+      printf '0.010000\t0.000000\n'
+      exit 28
+    fi
+    if [[ "${NEKO_DIAG_TCP_MALFORMED:-0}" == 1 ]]; then
+      printf 'not-a-time\n'
+      exit 0
+    fi
+    printf '0.010000\t0.130000\n'
+    exit 0
+    ;;
+esac
 case "$*" in
   *'api.ipapi.is'*)
     if [[ "$family" == ipv4 ]]; then
@@ -278,6 +296,8 @@ common_env=(
   "NEKO_DIAG_CURL_ARGS_LOG=$WORK/curl-args.log"
   "NEKO_DIAG_ROUTE_ARGS_LOG=$WORK/route-args.log"
   "NEKO_DIAG_PING_ARGS_LOG=$WORK/ping-args.log"
+  "NEKO_DIAG_TCP_INTERVAL=0"
+  "NEKO_DIAG_TCP_PORTS=80"
 )
 
 system_output="$(
@@ -382,45 +402,45 @@ route_output="$(
 grep -Fq '测试地区：广东' <<< "$route_output"
 grep -Fq '测试方向：回程（这台 VPS → 国内三网参考目标）' \
   <<< "$route_output"
-grep -Fq '去程状态：未测试' <<< "$route_output"
 grep -Fq '【广东 · IPv4 回程】' <<< "$route_output"
-grep -Fq '每个候选先发 3 包预检；通过后固定发送 100 包并统计 P50/P95/波动' \
+grep -Fq '先发 3 包 ICMP 预检；通过后固定发送 100 包' \
   <<< "$route_output"
+grep -Fq 'ICMP 不回应时改测 100 次独立连接' <<< "$route_output"
 grep -Fq 'CN2（AS4809）' <<< "$route_output"
 grep -Fq '联通 9929/CUII（AS9929）' <<< "$route_output"
 grep -Fq '中国移动国际 CMI（AS58453）' <<< "$route_output"
-grep -Fq '主要国际网络：IIJ（AS2497）；运营商网络：CN2（AS4809）' \
+grep -Fq '线路判断：IIJ（AS2497） → CN2（AS4809）' \
   <<< "$route_output"
-grep -Fq '网络识别：IIJ（AS2497） → CN2（AS4809）' <<< "$route_output"
-grep -Fq '电信｜末跳 30.00 ms｜丢包 0%（100/100）' \
+grep -Fq 'ASN 路径：AS2497 → AS4809（2 跳响应）' <<< "$route_output"
+grep -Fq '平均延迟：22.00 ms｜P95 延迟：24.00 ms' \
   <<< "$route_output"
-grep -Fq '联通｜末跳 30.00 ms｜丢包 2%（98/100）' \
+grep -Fq 'ICMP 丢包率：0%（100/100）' \
   <<< "$route_output"
-grep -Fq '移动｜末跳 30.00 ms｜丢包 7%（93/100）' \
+grep -Fq 'ICMP 丢包率：2%（98/100）' \
   <<< "$route_output"
-grep -Fq 'IPv4 电信｜延迟 30.00 ms｜丢包 0%（100/100）' \
+grep -Fq 'ICMP 丢包率：7%（93/100）' \
   <<< "$route_output"
-grep -Fq 'IPv6 移动｜延迟 30.00 ms｜丢包 7%（93/100）' \
+grep -Fq '平均延迟：47.00 ms｜P95 延迟：49.00 ms' \
   <<< "$route_output"
-grep -Fq 'ICMP 时延：最小 20.00｜平均 22.00｜P50 22.00｜P95 24.00｜最大 24.00｜波动 1.41 ms（100 个响应）' \
+grep -Fq '线路判断：IIJ（AS2497） → 中国移动国际 CMI（AS58453）' \
   <<< "$route_output"
-grep -Fq 'ICMP：最小 45.00｜平均 47.00｜P50 47.00｜P95 49.00｜最大 49.00｜波动 1.41 ms（100 个响应）' \
+grep -Fq 'ASN 路径：有效 6 条，未测 0 条' \
   <<< "$route_output"
-grep -Fq '【广东 · IPv4 / IPv6 回程对比】' <<< "$route_output"
-grep -Fq '电信｜本次回程偏向 IPv4：丢包接近，IPv4 P95 更低（24.00 ms vs 49.00 ms）' \
+grep -Fq '质量样本：ICMP 6 组，TCP 0 组，未测/异常 0 组' \
   <<< "$route_output"
-grep -Fq '建议先在本地实测 IPv4→IPv4，再用 IPv6→IPv4 复核' \
+grep -Fq 'TCP 显示的是连接成功率，不冒充网络层丢包率' \
   <<< "$route_output"
-grep -Fq '不是你的设备 → VPS；最终仍以本地两条订阅实测为准' \
-  <<< "$route_output"
-grep -Fq '线路：主要国际网络：IIJ（AS2497）；运营商网络：中国移动国际 CMI（AS58453）' \
-  <<< "$route_output"
-grep -Fq '已完成 6 条，未完成 0 条' <<< "$route_output"
-grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
-  <<< "$route_output"
-grep -Fq '目标禁 ICMP 时会标为“未确认”' \
-  <<< "$route_output"
-grep -Fq '不代表优化线路或质量保证' <<< "$route_output"
+for removed_text in \
+  'IPv4 / IPv6 回程对比' \
+  '末跳' \
+  '网络识别：' \
+  'P50' \
+  '本地实测 IPv4→IPv4'; do
+  if grep -Fq "$removed_text" <<< "$route_output"; then
+    printf '小白线路报告不应再显示：%s\n' "$removed_text" >&2
+    exit 1
+  fi
+done
 if grep -Fq '【上海 ·' <<< "$route_output"; then
   printf '默认 --routes 不应自动测试全部地区。\n' >&2
   exit 1
@@ -480,8 +500,8 @@ for target in \
 done
 [[ "$(wc -l < "$WORK/route-args.log")" -eq 36 ]]
 [[ "$(wc -l < "$WORK/ping-args.log")" -eq 72 ]]
-grep -Fq '已完成 36 条，未完成 0 条' <<< "$all_regions_output"
-grep -Fq '丢包样本：有效 36 组，异常/未测 0 组（每组固定 100 包）' \
+grep -Fq 'ASN 路径：有效 36 条，未测 0 条' <<< "$all_regions_output"
+grep -Fq '质量样本：ICMP 36 组，TCP 0 组，未测/异常 0 组' \
   <<< "$all_regions_output"
 
 region_number_output="$(
@@ -510,9 +530,7 @@ classification_output="$(
     printf "\n"
     classify_major_networks "AS12956 → AS17676 → AS176760"
     printf "\n"
-    route_network_label AS4725 ""
-    printf "\n"
-    route_network_label AS24970 "Fallback Transit"
+    classify_major_networks "AS1239"
     printf "\n"
   ' _ "$ROOT/runtime/diagnostics.sh"
 )"
@@ -526,26 +544,9 @@ grep -Fxq 'Cogent（AS174） → Arelion（AS1299） → IIJ（AS2497） → KDD
   <<< "$classification_output"
 grep -Fxq 'Telxius（AS12956） → SoftBank（AS17676）' \
   <<< "$classification_output"
-grep -Fxq 'SoftBank ODN（AS4725）' <<< "$classification_output"
-grep -Fxq 'Fallback Transit（AS24970）' <<< "$classification_output"
+grep -Fxq 'SprintLink（AS1239）' <<< "$classification_output"
 if grep -Fq 'IIJ（AS24970）' <<< "$classification_output"; then
   printf '相似但不同的 ASN 不应被识别为 IIJ。\n' >&2
-  exit 1
-fi
-
-cat > "$WORK/route-network.json" <<'EOF'
-{"Hops":[[{"Success":true,"Geo":{"asnumber":"61112","owner":"AkileCloud AKILE LTD"}}],[{"Success":true,"Geo":{"asnumber":"2497","owner":"错误别名"}}],[{"Success":true,"Geo":{"asnumber":"64520","owner":""}}],[{"Success":true,"Geo":{"asnumber":"64520","isp":"Fallback\tTransit\u001b\n"}}],[{"Success":true,"Geo":{"asnumber":"17676"}}],[{"Success":true,"Geo":{"asnumber":"4134"}}]]}
-EOF
-network_path_output="$(
-  env "${common_env[@]}" bash -c '
-    source "$1"
-    route_network_path "$2"
-  ' _ "$ROOT/runtime/diagnostics.sh" "$WORK/route-network.json"
-)"
-grep -Fxq 'AkileCloud AKILE LTD（AS61112） → IIJ（AS2497） → Fallback Transit（AS64520） → SoftBank（AS17676） → 电信 163（AS4134）' \
-  <<< "$network_path_output"
-if LC_ALL=C grep -q $'\033' <<< "$network_path_output"; then
-  printf '线路网络名称不应保留终端控制字符。\n' >&2
   exit 1
 fi
 
@@ -556,7 +557,7 @@ ipv4_only_route_output="$(
     bash "$ROOT/runtime/diagnostics.sh" --routes hb
 )"
 grep -Fq '【湖北 · IPv4 回程】' <<< "$ipv4_only_route_output"
-grep -Fq '已完成 3 条，未完成 0 条' <<< "$ipv4_only_route_output"
+grep -Fq 'ASN 路径：有效 3 条，未测 0 条' <<< "$ipv4_only_route_output"
 if grep -Fq 'IPv6 回程' <<< "$ipv4_only_route_output"; then
   printf 'IPv4-only 线路测试不应运行 IPv6 探测。\n' >&2
   exit 1
@@ -569,7 +570,7 @@ ipv6_only_route_output="$(
     bash "$ROOT/runtime/diagnostics.sh" --routes ln
 )"
 grep -Fq '【辽宁 · IPv6 回程】' <<< "$ipv6_only_route_output"
-grep -Fq '已完成 3 条，未完成 0 条' <<< "$ipv6_only_route_output"
+grep -Fq 'ASN 路径：有效 3 条，未测 0 条' <<< "$ipv6_only_route_output"
 grep -Fq '当前 Neko 安装未配置可用 IPv4；只测试 IPv6，不会报错退出' \
   <<< "$ipv6_only_route_output"
 if grep -Fq 'IPv4 回程' <<< "$ipv6_only_route_output"; then
@@ -590,54 +591,53 @@ route_failed_output="$(
   env "${common_env[@]}" NEKO_DIAG_ROUTE_FAIL=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '路径未完成｜丢包' \
-  <<< "$route_failed_output"
-grep -Fq '原因：超时、无响应或线路元数据不可用' \
+grep -Fq 'ASN 路径：未测（超时、无响应或线路元数据不可用）' \
   <<< "$route_failed_output"
 grep -Fq '线路测试小结' <<< "$route_failed_output"
-grep -Fq '已完成 0 条，未完成 6 条' <<< "$route_failed_output"
-grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
+grep -Fq 'ASN 路径：有效 0 条，未测 6 条' <<< "$route_failed_output"
+grep -Fq '质量样本：ICMP 6 组，TCP 0 组，未测/异常 0 组' \
   <<< "$route_failed_output"
 
+: > "$WORK/curl-args.log"
 ping_no_reply_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING_NO_REPLY=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '丢包 未确认（3 包预检无 ICMP；TCP 路由探测有响应）' \
+grep -Fq '平均握手延迟：120.00 ms｜P95 握手延迟：120.00 ms' \
   <<< "$ping_no_reply_output"
-grep -Fq '目标保护：全部 1 个候选均未通过 3 包 ICMP 预检；未运行 100 包测试' \
+grep -Fq 'TCP 连接成功率：100%（100/100）（端口 80）' \
   <<< "$ping_no_reply_output"
-grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
+grep -Fq '质量样本：ICMP 0 组，TCP 6 组，未测/异常 0 组' \
   <<< "$ping_no_reply_output"
-grep -Fq '目标禁 ICMP 时会标为“未确认”' \
-  <<< "$ping_no_reply_output"
+[[ "$(grep -c '.ip.zstaticcdn.com:80/' "$WORK/curl-args.log")" -eq 618 ]]
+grep -Fq -- '--ipv4 --interface 192.0.2.44' "$WORK/curl-args.log"
+grep -Fq -- '--ipv6 --interface 2001:db8::44' "$WORK/curl-args.log"
 
 ping_failed_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING_FAIL=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '丢包 未测' <<< "$ping_failed_output"
-grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_failed_output"
-grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
+grep -Fq 'TCP 连接成功率：100%（100/100）（端口 80）' \
+  <<< "$ping_failed_output"
+grep -Fq '质量样本：ICMP 0 组，TCP 6 组，未测/异常 0 组' \
   <<< "$ping_failed_output"
 
 ping_malformed_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING_MALFORMED=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '丢包 测试异常（无法读取可靠统计）' \
+grep -Fq '质量样本：未测（测试异常（无法读取可靠统计））' \
   <<< "$ping_malformed_output"
-grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_malformed_output"
-grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
+grep -Fq '质量样本：ICMP 0 组，TCP 0 组，未测/异常 6 组' \
   <<< "$ping_malformed_output"
 
 ping_incomplete_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING_INCOMPLETE=1 \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '丢包 测试异常（发包统计 80/100）' \
+grep -Fq '质量样本：未测（测试异常（发包统计 80/100））' \
   <<< "$ping_incomplete_output"
-grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
+grep -Fq '质量样本：ICMP 0 组，TCP 0 组，未测/异常 6 组' \
   <<< "$ping_incomplete_output"
 
 printf '129 packets transmitted, 102 received, 20%% packet loss\n' \
@@ -667,6 +667,26 @@ latency_metrics="$(
 )"
 [[ "$latency_metrics" == $'10.00\t40.00\t30.00\t100.00\t100.00\t31.62\t5' ]]
 
+: > "$WORK/tcp-sample.txt"
+for _ in $(seq 1 98); do
+  printf 'ok\t120.00\n' >> "$WORK/tcp-sample.txt"
+done
+printf 'fail\t28\nfail\t7\n' >> "$WORK/tcp-sample.txt"
+tcp_sample="$(
+  env "${common_env[@]}" bash -c '
+    source "$1"
+    tcp_connection_sample "$2"
+  ' _ "$ROOT/runtime/diagnostics.sh" "$WORK/tcp-sample.txt"
+)"
+[[ "$tcp_sample" == $'complete\t98%（98/100）' ]]
+tcp_metrics="$(
+  env "${common_env[@]}" bash -c '
+    source "$1"
+    tcp_latency_metrics "$2"
+  ' _ "$ROOT/runtime/diagnostics.sh" "$WORK/tcp-sample.txt"
+)"
+[[ "$tcp_metrics" == $'120.00\t120.00\t98' ]]
+
 : > "$WORK/route-args.log"
 : > "$WORK/ping-args.log"
 backup_target_output="$(
@@ -675,31 +695,76 @@ backup_target_output="$(
     NEKO_DIAG_ROUTE_GD_V4_CT_BACKUP=backup-v4.example \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '目标保护：主候选预检无响应，已切换第 2/2 个候选' \
-  <<< "$backup_target_output"
 grep -Fq 'backup-v4.example' "$WORK/route-args.log"
 grep -Fq -- '-4 -n -q -I 192.0.2.44 -c 3 -i 0.2 -W 1 -- primary-noicmp.example' \
   "$WORK/ping-args.log"
 grep -Fq -- '-4 -n -I 192.0.2.44 -c 100 -i 0.2 -W 1 -- backup-v4.example' \
   "$WORK/ping-args.log"
+if grep -Fq '目标保护' <<< "$backup_target_output"; then
+  printf '小白报告不应展示内部候选切换细节。\n' >&2
+  exit 1
+fi
+
+: > "$WORK/curl-args.log"
+tcp_port_fallback_output="$(
+  env "${common_env[@]}" \
+    NEKO_STATE="$WORK/etc/state-ipv4.json" \
+    NEKO_DIAG_PING_NO_REPLY=1 \
+    NEKO_DIAG_TCP_PORTS='443 80' \
+    NEKO_DIAG_TCP_443_FAIL=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq 'TCP 连接成功率：100%（100/100）（端口 80）' \
+  <<< "$tcp_port_fallback_output"
+grep -Fq 'https://gd-ct-v4.ip.zstaticcdn.com:443/' "$WORK/curl-args.log"
+grep -Fq 'http://gd-ct-v4.ip.zstaticcdn.com:80/' "$WORK/curl-args.log"
+grep -Fq -- '--ipv4 --tcp --port 80 --source 192.0.2.44' \
+  "$WORK/route-args.log"
+
+tcp_unavailable_output="$(
+  env "${common_env[@]}" \
+    NEKO_STATE="$WORK/etc/state-ipv4.json" \
+    NEKO_DIAG_PING_NO_REPLY=1 \
+    NEKO_DIAG_TCP_ALL_FAIL=1 \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '质量样本：未测（目标不响应 ICMP，TCP 端口也无法连接）' \
+  <<< "$tcp_unavailable_output"
+grep -Fq '质量样本：ICMP 0 组，TCP 0 组，未测/异常 3 组' \
+  <<< "$tcp_unavailable_output"
 
 ping_missing_output="$(
   env "${common_env[@]}" NEKO_DIAG_PING="$WORK/missing-ping" \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
-grep -Fq '系统缺少 ping；继续尝试路径检测，丢包率显示为未测' \
+grep -Fq '系统缺少 ping；质量样本将尝试 TCP 连接测试' \
   <<< "$ping_missing_output"
-grep -Fq '已完成 6 条，未完成 0 条' <<< "$ping_missing_output"
-grep -Fq '丢包样本：有效 0 组，异常/未测 6 组（每组固定 100 包）' \
+grep -Fq 'TCP 连接成功率：100%（100/100）（端口 80）' \
   <<< "$ping_missing_output"
+grep -Fq '质量样本：ICMP 0 组，TCP 6 组，未测/异常 0 组' \
+  <<< "$ping_missing_output"
+
+tcp_missing_output="$(
+  env "${common_env[@]}" \
+    NEKO_STATE="$WORK/etc/state-ipv4.json" \
+    NEKO_DIAG_PING_NO_REPLY=1 \
+    NEKO_DIAG_TCP_CURL="$WORK/missing-curl" \
+    bash "$ROOT/runtime/diagnostics.sh" --routes
+)"
+grep -Fq '系统缺少 curl；ICMP 不回应时无法改测 TCP' \
+  <<< "$tcp_missing_output"
+grep -Fq '质量样本：未测（目标不响应 ICMP，系统缺少 TCP 测试工具）' \
+  <<< "$tcp_missing_output"
+grep -Fq '质量样本：ICMP 0 组，TCP 0 组，未测/异常 3 组' \
+  <<< "$tcp_missing_output"
 
 route_missing_output="$(
   env "${common_env[@]}" NEKO_DIAG_NEXTTRACE="$WORK/missing-nexttrace" \
     bash "$ROOT/runtime/diagnostics.sh" --routes
 )"
 grep -Fq '可选 NextTrace 组件不可用' <<< "$route_missing_output"
-grep -Fq '已完成 0 条，未完成 6 条' <<< "$route_missing_output"
-grep -Fq '丢包样本：有效 6 组，异常/未测 0 组（每组固定 100 包）' \
+grep -Fq 'ASN 路径：有效 0 条，未测 6 条' <<< "$route_missing_output"
+grep -Fq '质量样本：ICMP 6 组，TCP 0 组，未测/异常 0 组' \
   <<< "$route_missing_output"
 
 if find "$WORK/bench" -mindepth 1 -maxdepth 1 \
@@ -732,4 +797,4 @@ fi
 grep -Fq '7. VPS 硬件、IP 与网络体检' "$ROOT/runtime/panel.sh"
 grep -Fq 'open_diagnostics' "$ROOT/runtime/panel.sh"
 
-printf 'VPS 体检：硬件、IP 质量、BGP、双栈三网线路、100 包统计、降级与轻量测试通过。\n'
+printf 'VPS 体检：硬件、IP 质量、BGP、双栈三网 ASN、100 包 ICMP、100 次 TCP 降级与轻量测试通过。\n'
