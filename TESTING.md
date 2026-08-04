@@ -88,8 +88,9 @@ Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态�
 systemd，再运行平台识别、全部 Shell 语法、schema 4 四线路渲染、250 次 ACME 快速
 失败、限额/超时保护、systemd unit 解析和实际临时 unit 启动。Debian 12 还会安装
 固定版本且经过校验的 sing-box 与 Mihomo，使用生成的订阅对 TUIC、SS2022、AnyTLS
-和 Trojan 做 IPv4-only 与双栈域名往返。八个发行版 job 相互独立，单个失败不会取消
-其他结果。
+和 Trojan 做 IPv4-only 与双栈域名往返；客户端位于独立 network namespace，入站
+必须穿过由 Neko 配置且默认拒绝其他入站的 UFW。八个发行版 job 相互独立，单个失败
+不会取消其他结果。
 
 这个手动矩阵验证的是完整 systemd 用户空间与内核边界，不申请真实公网证书，也不
 导入移动客户端；arm64 仍由上面的 16 组 QEMU user-mode 矩阵覆盖，不能把它描述成

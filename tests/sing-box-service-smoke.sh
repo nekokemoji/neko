@@ -17,10 +17,17 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/versions.env"
 # shellcheck source=lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source=lib/firewall.sh
+source "$ROOT/lib/firewall.sh"
 
 work="$(mktemp -d /var/tmp/neko-sing-box-smoke.XXXXXX)"
 client_pid=""
 mihomo_pid=""
+client_ns="neko-sb-client"
+host_veth="neko-sb-host"
+client_veth="neko-sb-peer"
+client_ns_created=0
+ufw_enabled=0
 test_ipv6="2001:db8::10"
 test_ipv6_added=0
 test_url="http://deb.debian.org/debian/"
@@ -33,9 +40,17 @@ cleanup() {
     kill "$mihomo_pid" 2>/dev/null || true
     wait "$mihomo_pid" 2>/dev/null || true
   fi
+  if (( client_ns_created == 1 )); then
+    ip netns delete "$client_ns" >/dev/null 2>&1 || true
+  fi
   systemctl disable --now neko-sing-box.service >/dev/null 2>&1 || true
   if (( test_ipv6_added == 1 )); then
     ip -6 address del "${test_ipv6}/128" dev lo >/dev/null 2>&1 || true
+  fi
+  if (( ufw_enabled == 1 )); then
+    [[ ! -r /etc/neko/state.json ]] || remove_firewall >/dev/null 2>&1 || true
+    ufw --force delete allow 22/tcp >/dev/null 2>&1 || true
+    ufw --force disable >/dev/null 2>&1 || true
   fi
   rm -f -- /etc/systemd/system/neko-sing-box.service
   systemctl daemon-reload >/dev/null 2>&1 || true
@@ -91,6 +106,24 @@ NEKO_ETC=/etc/neko NEKO_VAR=/var/lib/neko NEKO_STATE=/etc/neko/state.json \
     render_sing_box
     render_subscriptions
   ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
+
+ufw default deny incoming >/dev/null
+ufw default allow outgoing >/dev/null
+ufw allow 22/tcp >/dev/null
+ufw --force enable >/dev/null
+ufw_enabled=1
+configure_firewall
+
+ip netns add "$client_ns"
+client_ns_created=1
+ip link add "$host_veth" type veth peer name "$client_veth"
+ip link set "$client_veth" netns "$client_ns"
+ip address add 198.18.0.1/30 dev "$host_veth"
+ip link set "$host_veth" up
+ip netns exec "$client_ns" ip link set lo up
+ip netns exec "$client_ns" ip address add 198.18.0.2/30 dev "$client_veth"
+ip netns exec "$client_ns" ip link set "$client_veth" up
+ip netns exec "$client_ns" ip route add default via 198.18.0.1
 
 /usr/local/libexec/neko/sing-box check -c /etc/neko/config/sing-box.json
 install -m 0644 "$ROOT/systemd/neko-sing-box.service" \
@@ -152,7 +185,8 @@ jq -n \
   }' > "$work/client.json"
 
 "$sing_box" check -c "$work/client.json"
-"$sing_box" run -c "$work/client.json" >"$work/client.log" 2>&1 &
+ip netns exec "$client_ns" \
+  "$sing_box" run -c "$work/client.json" >"$work/client.log" 2>&1 &
 client_pid=$!
 sleep 2
 if ! kill -0 "$client_pid" 2>/dev/null; then
@@ -161,7 +195,8 @@ if ! kill -0 "$client_pid" 2>/dev/null; then
 fi
 
 for proxy_port in 41001 41002 41003 41004; do
-  if ! curl --silent --show-error --output /dev/null \
+  if ! ip netns exec "$client_ns" \
+      curl --silent --show-error --output /dev/null \
       --connect-timeout 8 --max-time 20 \
       --socks5-hostname "127.0.0.1:${proxy_port}" "$test_url"; then
     printf 'SOCKS 端口 %s 的协议往返失败。\n' "$proxy_port" >&2
@@ -181,7 +216,8 @@ for proxy_name in TUIC-v5 SS2022 AnyTLS Trojan-TLS; do
     -e "s/proxies: \[HY2, TUIC-v5, SS2022, AnyTLS, Trojan-TLS, VLESS-Reality-Vision, VLESS-Reality-XHTTP\]/proxies: [${proxy_name}]/" \
     -e 's/skip-cert-verify: false/skip-cert-verify: true/g' \
     /etc/neko/subscriptions/mihomo-v4.yaml > "$mihomo_dir/config.yaml"
-  "$work/mihomo" -d "$mihomo_dir" -f "$mihomo_dir/config.yaml" \
+  ip netns exec "$client_ns" \
+    "$work/mihomo" -d "$mihomo_dir" -f "$mihomo_dir/config.yaml" \
     >"$mihomo_dir/client.log" 2>&1 &
   mihomo_pid=$!
   sleep 2
@@ -189,7 +225,8 @@ for proxy_name in TUIC-v5 SS2022 AnyTLS Trojan-TLS; do
     cat "$mihomo_dir/client.log" >&2
     die "Mihomo 的 ${proxy_name} 测试客户端未能保持运行。"
   fi
-  if ! curl --silent --show-error --output /dev/null \
+  if ! ip netns exec "$client_ns" \
+      curl --silent --show-error --output /dev/null \
       --connect-timeout 8 --max-time 20 \
       --socks5-hostname "127.0.0.1:${mihomo_port}" "$test_url"; then
     cat "$mihomo_dir/client.log" >&2 || true
@@ -222,16 +259,32 @@ if ! systemctl is-active --quiet neko-sing-box.service; then
   journalctl -u neko-sing-box.service -n 100 --no-pager >&2 || true
   die "双栈配置下的真实 sing-box 未能保持运行。"
 fi
+
+# A server restart invalidates the existing TUIC/QUIC session. Recreate the
+# client so this phase tests a fresh connection, as a real client would after
+# reconnecting, instead of waiting on a stale transport session.
+kill "$client_pid" 2>/dev/null || true
+wait "$client_pid" 2>/dev/null || true
+client_pid=""
+ip netns exec "$client_ns" \
+  "$sing_box" run -c "$work/client.json" >"$work/client-dual.log" 2>&1 &
+client_pid=$!
+sleep 2
+if ! kill -0 "$client_pid" 2>/dev/null; then
+  cat "$work/client-dual.log" >&2
+  die "双栈测试的 sing-box 客户端未能保持运行。"
+fi
 for proxy_port in 41001 41002 41003 41004; do
-  if ! curl --silent --show-error --output /dev/null \
+  if ! ip netns exec "$client_ns" \
+      curl --silent --show-error --output /dev/null \
       --connect-timeout 8 --max-time 20 \
       --socks5-hostname "127.0.0.1:${proxy_port}" "$test_url"; then
     printf '双栈配置下 SOCKS 端口 %s 的域名往返失败。\n' \
       "$proxy_port" >&2
-    cat "$work/client.log" >&2 || true
+    cat "$work/client-dual.log" >&2 || true
     journalctl -u neko-sing-box.service -n 100 --no-pager >&2 || true
     exit 1
   fi
 done
 
-printf '真实 sing-box systemd 服务及生成的 Mihomo 四协议订阅往返通过。\n'
+printf '真实 sing-box systemd 服务、UFW 入站及生成的 Mihomo 四协议订阅往返通过。\n'
