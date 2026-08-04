@@ -20,12 +20,17 @@ source "$ROOT/lib/common.sh"
 
 work="$(mktemp -d /var/tmp/neko-sing-box-smoke.XXXXXX)"
 client_pid=""
+test_ipv6="2001:db8::10"
+test_ipv6_added=0
 cleanup() {
   if [[ -n "$client_pid" ]]; then
     kill "$client_pid" 2>/dev/null || true
     wait "$client_pid" 2>/dev/null || true
   fi
   systemctl disable --now neko-sing-box.service >/dev/null 2>&1 || true
+  if (( test_ipv6_added == 1 )); then
+    ip -6 address del "${test_ipv6}/128" dev lo >/dev/null 2>&1 || true
+  fi
   rm -f -- /etc/systemd/system/neko-sing-box.service
   systemctl daemon-reload >/dev/null 2>&1 || true
   rm -rf -- /etc/neko /var/lib/neko
@@ -154,4 +159,31 @@ for proxy_port in 41001 41002 41003 41004; do
   fi
 done
 
-printf '真实 sing-box systemd 服务与 TUIC/SS2022/AnyTLS/Trojan 往返通过。\n'
+ip -6 address add "${test_ipv6}/128" dev lo
+test_ipv6_added=1
+jq --arg address "$test_ipv6" '
+  .network.mode = "dual"
+  | .subscription.ipv6_address = $address
+' /etc/neko/state.json > "$work/state-dual.json"
+install -m 0600 "$work/state-dual.json" /etc/neko/state.json
+NEKO_ETC=/etc/neko NEKO_VAR=/var/lib/neko NEKO_STATE=/etc/neko/state.json \
+  NEKO_USER=neko-proxy bash -c '
+    source "$1"
+    source "$2"
+    load_state
+    render_sing_box
+  ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
+/usr/local/libexec/neko/sing-box check -c /etc/neko/config/sing-box.json
+systemctl restart neko-sing-box.service
+sleep 2
+if ! systemctl is-active --quiet neko-sing-box.service; then
+  journalctl -u neko-sing-box.service -n 100 --no-pager >&2 || true
+  die "双栈配置下的真实 sing-box 未能保持运行。"
+fi
+for proxy_port in 41001 41002 41003 41004; do
+  curl --silent --show-error --output /dev/null \
+    --connect-timeout 8 --max-time 20 \
+    --socks5 "127.0.0.1:${proxy_port}" http://1.1.1.1/
+done
+
+printf '真实 sing-box systemd 服务在 IPv4-only/dual 下的四协议往返通过。\n'
