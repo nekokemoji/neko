@@ -38,6 +38,7 @@ bash tests/run.sh
 - Mihomo TUIC 明确包含 TLS SNI；其余证书主机名、REALITY `serverName` 与 XHTTP Host 也保持基础域名，不被 IP 字面量替换。
 - Caddy 在基础域名发布四个独立线路路径，同时保留 v4 主机只发布 v4 文件、v6 主机只发布 v6 文件的旧链接，并禁用公网 HTTP/3；相同旧令牌迁移时也由路径中的 `v4` / `v6` 正确区分内容。
 - 双栈时 sing-box 的 16 个入站与 Xray 的 8 个入站按箭头左侧本机 IPv4/IPv6 地址分开监听，再按箭头右侧进入对应出口；单栈时只保留对应的 4 个与 2 个入站。sing-box 在路由阶段按出口只解析对应族地址、拒绝异族 IP 字面量，再进入源地址绑定出口。
+- sing-box 服务端本地 DNS 明确使用 Go 解析路径，避免 Debian 12 镜像中的 systemd-resolved D-Bus 异常同时拖死 TUIC、SS2022、AnyTLS 与 Trojan 的域名出口。
 - Hysteria 四个方向分别使用所需的 `mode: 4`/`mode: 6` 和 `bindIPv4`/`bindIPv6`；用假核心动态验证监管脚本可启动单个子进程，也可同时启动四个进程并在任一退出时终止其余进程，交由 systemd 重启完整进程组。
 - 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 与同族 direct 出站由配置加载路径和结构化断言校验。
 - 随机端口连续运行 50 轮；状态加载还断言同族/跨族两个 Hysteria2 128 端口区间和两组六个单端口全局无冲突。
