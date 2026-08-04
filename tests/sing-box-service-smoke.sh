@@ -20,12 +20,17 @@ source "$ROOT/lib/common.sh"
 
 work="$(mktemp -d /var/tmp/neko-sing-box-smoke.XXXXXX)"
 client_pid=""
+mihomo_pid=""
 test_ipv6="2001:db8::10"
 test_ipv6_added=0
 cleanup() {
   if [[ -n "$client_pid" ]]; then
     kill "$client_pid" 2>/dev/null || true
     wait "$client_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$mihomo_pid" ]]; then
+    kill "$mihomo_pid" 2>/dev/null || true
+    wait "$mihomo_pid" 2>/dev/null || true
   fi
   systemctl disable --now neko-sing-box.service >/dev/null 2>&1 || true
   if (( test_ipv6_added == 1 )); then
@@ -50,6 +55,11 @@ download_verified "sing-box ${SING_BOX_VERSION}" \
 tar --no-same-owner -xzf "$work/sing-box.tar.gz" -C "$work"
 sing_box="$work/sing-box-${SING_BOX_VERSION}-linux-amd64/sing-box"
 [[ -x "$sing_box" ]] || die "sing-box 测试二进制不存在。"
+download_verified "Mihomo ${MIHOMO_VERSION}" \
+  "https://github.com/MetaCubeX/mihomo/releases/download/v${MIHOMO_VERSION}/mihomo-linux-amd64-v${MIHOMO_VERSION}.gz" \
+  "$MIHOMO_AMD64_SHA256" "$work/mihomo.gz"
+gzip -dc "$work/mihomo.gz" > "$work/mihomo"
+chmod 0755 "$work/mihomo"
 
 install -d -m 0755 /usr/local/libexec/neko
 install -m 0755 "$sing_box" /usr/local/libexec/neko/sing-box
@@ -78,6 +88,7 @@ NEKO_ETC=/etc/neko NEKO_VAR=/var/lib/neko NEKO_STATE=/etc/neko/state.json \
     source "$2"
     load_state
     render_sing_box
+    render_subscriptions
   ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
 
 /usr/local/libexec/neko/sing-box check -c /etc/neko/config/sing-box.json
@@ -159,6 +170,36 @@ for proxy_port in 41001 41002 41003 41004; do
   fi
 done
 
+mihomo_port=42000
+for proxy_name in TUIC-v5 SS2022 AnyTLS Trojan-TLS; do
+  ((mihomo_port += 1))
+  mihomo_dir="$work/mihomo-${proxy_name}"
+  mkdir -p "$mihomo_dir"
+  sed \
+    -e "s/^mixed-port: .*/mixed-port: ${mihomo_port}/" \
+    -e "s/proxies: \[HY2, TUIC-v5, SS2022, AnyTLS, Trojan-TLS, VLESS-Reality-Vision, VLESS-Reality-XHTTP\]/proxies: [${proxy_name}]/" \
+    -e 's/skip-cert-verify: false/skip-cert-verify: true/g' \
+    /etc/neko/subscriptions/mihomo-v4.yaml > "$mihomo_dir/config.yaml"
+  "$work/mihomo" -d "$mihomo_dir" -f "$mihomo_dir/config.yaml" \
+    >"$mihomo_dir/client.log" 2>&1 &
+  mihomo_pid=$!
+  sleep 2
+  if ! kill -0 "$mihomo_pid" 2>/dev/null; then
+    cat "$mihomo_dir/client.log" >&2
+    die "Mihomo 的 ${proxy_name} 测试客户端未能保持运行。"
+  fi
+  if ! curl --silent --show-error --output /dev/null \
+      --connect-timeout 8 --max-time 20 \
+      --socks5 "127.0.0.1:${mihomo_port}" http://1.1.1.1/; then
+    cat "$mihomo_dir/client.log" >&2 || true
+    journalctl -u neko-sing-box.service -n 100 --no-pager >&2 || true
+    die "生成的 Mihomo 订阅中 ${proxy_name} 往返失败。"
+  fi
+  kill "$mihomo_pid" 2>/dev/null || true
+  wait "$mihomo_pid" 2>/dev/null || true
+  mihomo_pid=""
+done
+
 ip -6 address add "${test_ipv6}/128" dev lo
 test_ipv6_added=1
 jq --arg address "$test_ipv6" '
@@ -186,4 +227,4 @@ for proxy_port in 41001 41002 41003 41004; do
     --socks5 "127.0.0.1:${proxy_port}" http://1.1.1.1/
 done
 
-printf '真实 sing-box systemd 服务在 IPv4-only/dual 下的四协议往返通过。\n'
+printf '真实 sing-box systemd 服务及生成的 Mihomo 四协议订阅往返通过。\n'
