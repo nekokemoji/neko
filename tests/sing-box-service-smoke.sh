@@ -23,6 +23,7 @@ client_pid=""
 mihomo_pid=""
 test_ipv6="2001:db8::10"
 test_ipv6_added=0
+test_url="http://deb.debian.org/debian/"
 cleanup() {
   if [[ -n "$client_pid" ]]; then
     kill "$client_pid" 2>/dev/null || true
@@ -162,7 +163,7 @@ fi
 for proxy_port in 41001 41002 41003 41004; do
   if ! curl --silent --show-error --output /dev/null \
       --connect-timeout 8 --max-time 20 \
-      --socks5 "127.0.0.1:${proxy_port}" http://1.1.1.1/; then
+      --socks5-hostname "127.0.0.1:${proxy_port}" "$test_url"; then
     printf 'SOCKS 端口 %s 的协议往返失败。\n' "$proxy_port" >&2
     cat "$work/client.log" >&2 || true
     journalctl -u neko-sing-box.service -n 100 --no-pager >&2 || true
@@ -190,7 +191,7 @@ for proxy_name in TUIC-v5 SS2022 AnyTLS Trojan-TLS; do
   fi
   if ! curl --silent --show-error --output /dev/null \
       --connect-timeout 8 --max-time 20 \
-      --socks5 "127.0.0.1:${mihomo_port}" http://1.1.1.1/; then
+      --socks5-hostname "127.0.0.1:${mihomo_port}" "$test_url"; then
     cat "$mihomo_dir/client.log" >&2 || true
     journalctl -u neko-sing-box.service -n 100 --no-pager >&2 || true
     die "生成的 Mihomo 订阅中 ${proxy_name} 往返失败。"
@@ -224,7 +225,7 @@ fi
 for proxy_port in 41001 41002 41003 41004; do
   curl --silent --show-error --output /dev/null \
     --connect-timeout 8 --max-time 20 \
-    --socks5 "127.0.0.1:${proxy_port}" http://1.1.1.1/
+    --socks5-hostname "127.0.0.1:${proxy_port}" "$test_url"
 done
 
 printf '真实 sing-box systemd 服务及生成的 Mihomo 四协议订阅往返通过。\n'
