@@ -130,6 +130,16 @@ fi
 systemd-run --quiet --unit=neko-vm-smoke.service \
   --wait --collect /usr/bin/true
 
+if [[ "$EXPECTED_ID" == debian && "$EXPECTED_VERSION" == 12 ]]; then
+  case "$EXPECTED_FAMILY" in
+    debian)
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl gzip openssl ufw
+      ;;
+  esac
+  bash "$ROOT/tests/sing-box-service-smoke.sh"
+fi
+
 printf '完整 VM 通过：%s %s / %s（systemd %s，Bash %s）\n' \
   "$OS_ID" "$OS_VERSION" "$ARCH" \
   "$(systemd --version | sed -n '1s/.* //p')" "$BASH_VERSION"

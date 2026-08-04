@@ -38,6 +38,7 @@ bash tests/run.sh
 - Mihomo TUIC 明确包含 TLS SNI；其余证书主机名、REALITY `serverName` 与 XHTTP Host 也保持基础域名，不被 IP 字面量替换。
 - Caddy 在基础域名发布四个独立线路路径，同时保留 v4 主机只发布 v4 文件、v6 主机只发布 v6 文件的旧链接，并禁用公网 HTTP/3；相同旧令牌迁移时也由路径中的 `v4` / `v6` 正确区分内容。
 - 双栈时 sing-box 的 16 个入站与 Xray 的 8 个入站按箭头左侧本机 IPv4/IPv6 地址分开监听，再按箭头右侧进入对应出口；单栈时只保留对应的 4 个与 2 个入站。sing-box 在路由阶段按出口只解析对应族地址、拒绝异族 IP 字面量，再进入源地址绑定出口。
+- sing-box 服务端本地 DNS 明确使用 Go 解析路径，避免 Debian 12 镜像中的 systemd-resolved D-Bus 异常同时拖死 TUIC、SS2022、AnyTLS 与 Trojan 的域名出口。
 - Hysteria 四个方向分别使用所需的 `mode: 4`/`mode: 6` 和 `bindIPv4`/`bindIPv6`；用假核心动态验证监管脚本可启动单个子进程，也可同时启动四个进程并在任一退出时终止其余进程，交由 systemd 重启完整进程组。
 - 三个服务端核心都阻断私有/回环/链路本地地址和 TCP 25；Xray、sing-box 配置由真实核心校验，Hysteria ACL 与同族 direct 出站由配置加载路径和结构化断言校验。
 - 随机端口连续运行 50 轮；状态加载还断言同族/跨族两个 Hysteria2 128 端口区间和两组六个单端口全局无冲突。
@@ -86,8 +87,11 @@ Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态�
 `agent/vm-validation/**` 分支运行。它从 Debian、Ubuntu、Rocky Linux 与 AlmaLinux
 官方站点下载云镜像并核对同站校验和，在 QEMU amd64 完整虚拟机中确认 PID 1 确实是
 systemd，再运行平台识别、全部 Shell 语法、schema 4 四线路渲染、250 次 ACME 快速
-失败、限额/超时保护、systemd unit 解析和实际临时 unit 启动。八个发行版 job 相互
-独立，单个失败不会取消其他结果。
+失败、限额/超时保护、systemd unit 解析和实际临时 unit 启动。Debian 12 还会安装
+固定版本且经过校验的 sing-box 与 Mihomo，使用生成的订阅对 TUIC、SS2022、AnyTLS
+和 Trojan 做 IPv4-only 与双栈域名往返；客户端位于独立 network namespace，入站
+必须穿过由 Neko 配置且默认拒绝其他入站的 UFW。八个发行版 job 相互独立，单个失败
+不会取消其他结果。
 
 这个手动矩阵验证的是完整 systemd 用户空间与内核边界，不申请真实公网证书，也不
 导入移动客户端；arm64 仍由上面的 16 组 QEMU user-mode 矩阵覆盖，不能把它描述成

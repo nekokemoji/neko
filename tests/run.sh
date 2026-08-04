@@ -1052,7 +1052,9 @@ assert sing_outbounds == {
         "domain_resolver": {"server": "local", "strategy": "ipv6_only"},
     },
 }
-assert sing["dns"] == {"servers": [{"type": "local", "tag": "local"}]}
+assert sing["dns"] == {
+    "servers": [{"type": "local", "tag": "local", "prefer_go": True}]
+}
 assert {o["tag"]: o["protocol"] for o in xray["outbounds"]} == {
     "direct-v4": "freedom", "direct-v6": "freedom", "blocked": "blackhole"
 }
