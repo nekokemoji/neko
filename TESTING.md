@@ -86,8 +86,10 @@ Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态�
 `agent/vm-validation/**` 分支运行。它从 Debian、Ubuntu、Rocky Linux 与 AlmaLinux
 官方站点下载云镜像并核对同站校验和，在 QEMU amd64 完整虚拟机中确认 PID 1 确实是
 systemd，再运行平台识别、全部 Shell 语法、schema 4 四线路渲染、250 次 ACME 快速
-失败、限额/超时保护、systemd unit 解析和实际临时 unit 启动。八个发行版 job 相互
-独立，单个失败不会取消其他结果。
+失败、限额/超时保护、systemd unit 解析和实际临时 unit 启动。Debian 12 还会安装
+固定版本且经过校验的 sing-box 与 Mihomo，使用生成的订阅对 TUIC、SS2022、AnyTLS
+和 Trojan 做 IPv4-only 与双栈域名往返。八个发行版 job 相互独立，单个失败不会取消
+其他结果。
 
 这个手动矩阵验证的是完整 systemd 用户空间与内核边界，不申请真实公网证书，也不
 导入移动客户端；arm64 仍由上面的 16 组 QEMU user-mode 矩阵覆盖，不能把它描述成

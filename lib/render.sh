@@ -128,7 +128,7 @@ render_sing_box() {
     {
       log: {level: "info", timestamp: true},
       dns: {
-        servers: [{type: "local", tag: "local"}]
+        servers: [{type: "local", tag: "local", prefer_go: true}]
       },
       inbounds:
         ((if has_v4 then family_inbounds(

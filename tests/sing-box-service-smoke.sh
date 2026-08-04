@@ -223,9 +223,15 @@ if ! systemctl is-active --quiet neko-sing-box.service; then
   die "双栈配置下的真实 sing-box 未能保持运行。"
 fi
 for proxy_port in 41001 41002 41003 41004; do
-  curl --silent --show-error --output /dev/null \
-    --connect-timeout 8 --max-time 20 \
-    --socks5-hostname "127.0.0.1:${proxy_port}" "$test_url"
+  if ! curl --silent --show-error --output /dev/null \
+      --connect-timeout 8 --max-time 20 \
+      --socks5-hostname "127.0.0.1:${proxy_port}" "$test_url"; then
+    printf '双栈配置下 SOCKS 端口 %s 的域名往返失败。\n' \
+      "$proxy_port" >&2
+    cat "$work/client.log" >&2 || true
+    journalctl -u neko-sing-box.service -n 100 --no-pager >&2 || true
+    exit 1
+  fi
 done
 
 printf '真实 sing-box systemd 服务及生成的 Mihomo 四协议订阅往返通过。\n'
