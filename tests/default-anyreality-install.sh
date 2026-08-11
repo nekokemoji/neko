@@ -37,6 +37,7 @@ bash -c '
       "kF-xXmV_yq2mtuzBfBZw9g-VAqO712QGpKFVfOqbv1Q" \
       "BdhFQXLg2ajaJ3BbMQ5esGMIUCGph36ShM2DfzmyOyM"
   }
+  chown() { :; }
   write_initial_state
   source "$3"
   render_all
