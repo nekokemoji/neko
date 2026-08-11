@@ -7,9 +7,9 @@
 你可能只是想在 VPS 上装几个节点，但 Neko 不只负责“装上协议”。它还会帮你判断
 IPv4 被墙或“送中”以后有没有另一条路，以及这台 VPS 的 IP、线路和服务到底怎么样。
 
-Neko 一次安装 Hysteria2、TUIC v5、Shadowsocks 2022、AnyTLS、Trojan TLS、
-VLESS REALITY Vision 和 VLESS REALITY XHTTP，并为 Mihomo、Stash、Shadowrocket、
-sing-box 生成订阅。
+Neko 一次安装 Hysteria2、TUIC v5、Shadowsocks 2022、AnyTLS、AnyReality、
+Trojan TLS、VLESS REALITY Vision 和 VLESS REALITY XHTTP，并为 Mihomo、Stash、
+Shadowrocket、sing-box 生成订阅。
 
 项目没有需要暴露到公网的网页面板。安装完成后，输入 `neko` 就能打开中文终端菜单。
 
@@ -20,7 +20,7 @@ sing-box 生成订阅。
 | VPS 的 IPv4 无法连接 | 如果本地和 VPS 的 IPv6 仍然可用，可以尝试 `IPv6→IPv4`：用 IPv6 进入原 VPS，再用兼容性更好的 IPv4 出站 |
 | IPv4 被“送中”或 IP 信誉异常 | 保持入口不变，把出口切换到 IPv6，例如 `IPv4→IPv6` 或 `IPv6→IPv6` |
 | 不知道 VPS 线路好不好 | 从当前真实 IPv4/IPv6 源地址测试六地区三网回程，查看 ASN 线路、平均/P95 延迟和固定 100 包丢包；目标不回应 ICMP 时自动改测 100 次 TCP 连接 |
-| 不知道 IP 是否干净 | 交叉查询多个 IP 数据库，并显示 BGP、RPKI、ASN、PTR、注册信息及数据源分歧 |
+| 想进一步检查 IP 质量和流媒体表现 | 从功能 7 直接进入 GOECS 融合怪或 NodeQuality；这些结果由对应第三方脚本生成 |
 | 担心一键脚本装到一半 | 安装、升级、补装和凭据轮换都先检查、再验证；失败或中断时尽量恢复旧配置和服务 |
 
 这里最重要的不是“支持 IPv6”这五个字，而是 **入站和出站可以独立选择**：
@@ -165,7 +165,7 @@ sing-box、Xray 与 Caddy 真实校验。关键步骤失败时会停止，不会
 
 | 类型 | 端口 |
 |---|---|
-| TCP | 443、SS2022、AnyTLS、Trojan、Vision、XHTTP；双栈还包括跨族第二组端口 |
+| TCP | 443、SS2022、AnyTLS、AnyReality、Trojan、Vision、XHTTP；双栈还包括跨族第二组端口 |
 | UDP | Hysteria2 的完整 128 端口区间、TUIC、SS2022；双栈还包括跨族第二组区间/端口 |
 | TCP 80 | 只有 HTTP-01 必须公网放行 |
 | TCP 8443 | **不要公网放行**，它只监听 `127.0.0.1` |
@@ -187,8 +187,8 @@ sudo neko
 |---|---|---:|
 | Mihomo | YAML | 7 |
 | Stash | YAML | 6 |
-| Shadowrocket | Base64 文本订阅 | 7 |
-| sing-box | 官方 Remote Profile JSON | 6 |
+| Shadowrocket | Base64 文本订阅 | 8 |
+| sing-box | 官方 Remote Profile JSON | 7 |
 
 如果双栈模式出现 16 条链接，不要慌：
 
@@ -202,8 +202,9 @@ sudo neko
 二维码在 VPS 本地生成，不调用在线二维码网站。二维码和完整订阅链接都相当于密码，
 不要公开分享。qrc 下载或终端显示失败时，文字链接仍然可用，代理服务不会受影响。
 
-Stash 和 sing-box 每份少一个 XHTTP 节点，是当前冻结版本与客户端格式的明确兼容性
-取舍，不是订阅生成遗漏。
+各客户端只接收已经验证兼容的节点：AnyReality 只加入 Shadowrocket 和 sing-box，
+XHTTP 只加入 Mihomo 和 Shadowrocket。因此 Mihomo 为 7 个、Stash 为 6 个、
+Shadowrocket 为 8 个、sing-box 为 7 个；这不是订阅生成遗漏。
 
 ### 7. 四种线路怎么选
 
@@ -280,9 +281,10 @@ Google 搜索页面底部的位置可以作为参考。如果它明确写着“�
 ```
 
 前两项会直接下载并运行对应项目的官方脚本，不经过 Neko 的确认、口令或二次验证。
-第三项只恢复 Neko 自带的六地三网回程检测：可单选广东、上海、北京、四川、湖北、
-辽宁，或选择全部六地；输出 ASN 线路、平均/P95 延迟与丢包。每个目标固定发送 100 个
-ICMP 包；目标不回应 ICMP 时改测 100 次 TCP 连接成功率。
+第三项是 Neko 自带的精简六地三网回程检测。地区菜单中 `1`–`6` 依次为广东、上海、
+北京、四川、湖北、辽宁，`7` 才是全部地区；输出 ASN 线路、平均/P95 延迟与丢包。
+每个目标固定发送 100 个 ICMP 包；目标不回应 ICMP 时改测 100 次 TCP 连接成功率。
+运行前会显示预计耗时，并要求输入 `ROUTE`，但不会修改 Neko 或系统配置。
 
 ### 9. 终端面板能做什么
 
@@ -295,7 +297,7 @@ ICMP 包；目标不回应 ICMP 时改测 100 次 TCP 连接成功率。
 | 5 | IPv4/IPv6 安装管理 | 单栈安装以后补装缺少的地址族 |
 | 6 | 卸载全部协议 | 删除 Neko 服务、数据和自己创建的防火墙规则 |
 | 7 | 第三方 VPS 体检 & Neko 自带体检 | 第三方综合测试或六地三网线路检测 |
-| 8 | 双栈线路怎么选 | 阅读说明后按被墙入口和“送中”出口生成推荐/备用链接与二维码 |
+| 8 | 双栈线路怎么选？（同时拥有 IPv4 和 IPv6 时查看） | 阅读说明后按被墙入口和“送中”出口生成推荐/备用链接与二维码 |
 
 订阅 URL 与节点凭据分开管理：
 
@@ -442,15 +444,39 @@ Linux 9/10、AlmaLinux 9/10 的 amd64 与 arm64，共 16 个组合。专用 VM �
 完整 VM 仍不能替代真实公网 DNS、ACME、云安全组和移动客户端。自动化已经验证什么、
 仍需真实 VPS 验证什么，请看 [TESTING.md](TESTING.md)。
 
-### 第三方体检边界
+### VPS 体检边界
 
-功能 7 只提供 GOECS 与 NodeQuality 的官方入口。Neko 不再安装自己的体检组件，也不
-预先解析或过滤第三方测试结果。第三方脚本可能安装依赖、发起公网请求或执行性能测试；
-具体数据源、隐私和资源消耗以对应上游项目说明为准。
+功能 7 包含三项：GOECS 官方入口、NodeQuality 官方入口，以及 Neko 自带的精简六地
+三网线路检测。Neko 不再提供旧版完整自研体检，也不会替第三方脚本解析或过滤结果。
+第三方脚本可能安装依赖、发起公网请求或执行性能测试；具体数据源、隐私和资源消耗以
+对应上游项目说明为准。Neko 自带部分只做回程 ASN、延迟和丢包/连接成功率检测，不做
+硬件跑分、流媒体解锁或完整 IP 质量判断。
 
 ## 升级
 
-在最新源码目录执行：
+已经安装 Neko 时，可直接复制下面整段命令。它会从 GitHub `main` 获取最新源码、运行
+升级脚本并自动清理临时文件：
+
+```bash
+(
+  set -Eeuo pipefail
+  NEKO_UPGRADE_DIR="$(mktemp -d)"
+  trap 'rm -rf -- "$NEKO_UPGRADE_DIR"' EXIT
+  curl -fsSL --retry 4 \
+    https://github.com/nekokemoji/neko/archive/refs/heads/main.tar.gz \
+    -o "$NEKO_UPGRADE_DIR/neko.tar.gz"
+  mkdir "$NEKO_UPGRADE_DIR/source"
+  tar -xzf "$NEKO_UPGRADE_DIR/neko.tar.gz" \
+    --strip-components=1 -C "$NEKO_UPGRADE_DIR/source"
+  if [ "$(id -u)" -eq 0 ]; then
+    bash "$NEKO_UPGRADE_DIR/source/upgrade.sh"
+  else
+    sudo bash "$NEKO_UPGRADE_DIR/source/upgrade.sh"
+  fi
+)
+```
+
+如果已经位于最新源码目录，也可以直接执行：
 
 ```bash
 sudo bash upgrade.sh
@@ -475,7 +501,7 @@ journalctl -u neko-renew.service --since '7 days ago'
 | HTTP-01 的 IPv6 显示 `Network unreachable` | IPv6 入站、路由或安全组不可达 | 修复网络，或使用 DNS-01 |
 | Let’s Encrypt 返回 429 / `rateLimited` | 相同域名组合短时间签发过多 | 等待脚本显示的 UTC 恢复时间，不要反复重装 |
 | 严格 IPv6 无法打开只有 A 记录的网站 | 目标不支持 IPv6，属于正常严格行为 | 改用右边为 IPv4 的订阅 |
-| sing-box/Karing 导入失败 | 链接不完整或客户端 Remote Profile 支持不同 | 重新复制完整链接并确认客户端版本 |
+| sing-box Remote Profile 导入失败 | 链接不完整，或所用应用不支持当前官方配置格式 | 重新复制完整链接，并优先使用近期版本的 sing-box 内核客户端 |
 | 二维码没有显示 | qrc 下载、终端宽度或环境不满足 | 直接复制文字链接，代理服务不受影响 |
 | 第三方体检下载失败 | GitHub Raw 或 NodeQuality 入口暂时不可达 | 稍后重试，不影响代理服务 |
 
@@ -515,6 +541,6 @@ SSH 密码或 SSH 私钥。
 如果系统、客户端或网络环境与文档不一致，欢迎提供去除敏感信息后的系统版本、错误行
 和服务日志。项目会持续维护，但每一次修复仍以可复现、可测试和可回滚为前提。
 
-面向第一次使用者的完整视频教程仍在准备中；在视频发布以前，这份 README 会继续保持
-可独立完成安装与排错。
-此外感谢x用户@qian67068对于stash兼容性的测试
+## 致谢
+
+感谢 X 用户 `@qian67068` 协助测试 Stash 兼容性。
