@@ -23,6 +23,7 @@ source "$ROOT/lib/firewall.sh"
 work="$(mktemp -d /var/tmp/neko-sing-box-smoke.XXXXXX)"
 client_pid=""
 mihomo_pid=""
+fallback_pid=""
 client_ns="neko-sb-client"
 host_veth="neko-sb-host"
 client_veth="neko-sb-peer"
@@ -39,6 +40,10 @@ cleanup() {
   if [[ -n "$mihomo_pid" ]]; then
     kill "$mihomo_pid" 2>/dev/null || true
     wait "$mihomo_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$fallback_pid" ]]; then
+    kill "$fallback_pid" 2>/dev/null || true
+    wait "$fallback_pid" 2>/dev/null || true
   fi
   if (( client_ns_created == 1 )); then
     ip netns delete "$client_ns" >/dev/null 2>&1 || true
@@ -83,9 +88,27 @@ install -d -m 0750 -o root -g neko-proxy \
   /etc/neko /etc/neko/config /var/lib/neko /var/lib/neko/lego \
   /var/lib/neko/lego/certificates
 
-jq --arg address "$guest_ipv4" '
+anyreality_pair="$("$sing_box" generate reality-keypair)"
+anyreality_private="$(awk -F': ' '/^PrivateKey:/ {print $2}' <<< "$anyreality_pair")"
+anyreality_public="$(awk -F': ' '/^PublicKey:/ {print $2}' <<< "$anyreality_pair")"
+[[ "$anyreality_private" =~ ^[A-Za-z0-9_-]{43}$ \
+  && "$anyreality_public" =~ ^[A-Za-z0-9_-]{43}$ ]] \
+  || die "无法生成 VM AnyReality 测试密钥。"
+
+jq --arg address "$guest_ipv4" \
+  --arg private_key "$anyreality_private" \
+  --arg public_key "$anyreality_public" '
   .network.mode = "ipv4-only"
   | .subscription.ipv4_address = $address
+  | .experimental.anyreality = {
+      enabled: true,
+      port: 24600,
+      cross_port: null,
+      password: "test-anyreality-password",
+      private_key: $private_key,
+      public_key: $public_key,
+      short_id: "2122232425262728"
+    }
 ' "$ROOT/tests/fixtures/state.json" > /etc/neko/state.json
 chmod 0600 /etc/neko/state.json
 
@@ -97,6 +120,11 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
 chown -R root:neko-proxy /var/lib/neko/lego/certificates
 find /var/lib/neko/lego/certificates -type d -exec chmod 0750 {} +
 find /var/lib/neko/lego/certificates -type f -exec chmod 0640 {} +
+openssl s_server -quiet -www -accept 127.0.0.1:8443 \
+  -cert /var/lib/neko/lego/certificates/example.com.crt \
+  -key /var/lib/neko/lego/certificates/example.com.key \
+  >"$work/fallback.log" 2>&1 &
+fallback_pid=$!
 
 NEKO_ETC=/etc/neko NEKO_VAR=/var/lib/neko NEKO_STATE=/etc/neko/state.json \
   NEKO_USER=neko-proxy bash -c '
@@ -142,6 +170,8 @@ jq -n \
   --arg tuic_password "test-tuic-password" \
   --arg ss_password "MDEyMzQ1Njc4OWFiY2RlZg==" \
   --arg anytls_password "test-anytls-password" \
+  --arg anyreality_password "test-anyreality-password" \
+  --arg anyreality_public "$anyreality_public" \
   --arg trojan_password "test-trojan-password" \
   '{
     log: {level: "info", timestamp: true},
@@ -149,7 +179,8 @@ jq -n \
       {type: "mixed", tag: "tuic-client", listen: "127.0.0.1", listen_port: 41001},
       {type: "mixed", tag: "ss-client", listen: "127.0.0.1", listen_port: 41002},
       {type: "mixed", tag: "anytls-client", listen: "127.0.0.1", listen_port: 41003},
-      {type: "mixed", tag: "trojan-client", listen: "127.0.0.1", listen_port: 41004}
+      {type: "mixed", tag: "trojan-client", listen: "127.0.0.1", listen_port: 41004},
+      {type: "mixed", tag: "anyreality-client", listen: "127.0.0.1", listen_port: 41005}
     ],
     outbounds: [
       {
@@ -171,6 +202,19 @@ jq -n \
         type: "trojan", tag: "trojan", server: $server, server_port: 24500,
         password: $trojan_password,
         tls: {enabled: true, server_name: "example.com", insecure: true}
+      },
+      {
+        type: "anytls", tag: "anyreality", server: $server, server_port: 24600,
+        password: $anyreality_password,
+        tls: {
+          enabled: true, server_name: "example.com",
+          utls: {enabled: true, fingerprint: "chrome"},
+          reality: {
+            enabled: true,
+            public_key: $anyreality_public,
+            short_id: "2122232425262728"
+          }
+        }
       }
     ],
     route: {
@@ -178,7 +222,8 @@ jq -n \
         {inbound: ["tuic-client"], action: "route", outbound: "tuic"},
         {inbound: ["ss-client"], action: "route", outbound: "ss"},
         {inbound: ["anytls-client"], action: "route", outbound: "anytls"},
-        {inbound: ["trojan-client"], action: "route", outbound: "trojan"}
+        {inbound: ["trojan-client"], action: "route", outbound: "trojan"},
+        {inbound: ["anyreality-client"], action: "route", outbound: "anyreality"}
       ],
       final: "ss"
     }
@@ -194,7 +239,7 @@ if ! kill -0 "$client_pid" 2>/dev/null; then
   die "sing-box 测试客户端未能保持运行。"
 fi
 
-for proxy_port in 41001 41002 41003 41004; do
+for proxy_port in 41001 41002 41003 41004 41005; do
   if ! ip netns exec "$client_ns" \
       curl --silent --show-error --output /dev/null \
       --connect-timeout 8 --max-time 20 \
@@ -243,6 +288,7 @@ test_ipv6_added=1
 jq --arg address "$test_ipv6" '
   .network.mode = "dual"
   | .subscription.ipv6_address = $address
+  | .experimental.anyreality.cross_port = 34000
 ' /etc/neko/state.json > "$work/state-dual.json"
 install -m 0600 "$work/state-dual.json" /etc/neko/state.json
 NEKO_ETC=/etc/neko NEKO_VAR=/var/lib/neko NEKO_STATE=/etc/neko/state.json \
@@ -274,7 +320,7 @@ if ! kill -0 "$client_pid" 2>/dev/null; then
   cat "$work/client-dual.log" >&2
   die "双栈测试的 sing-box 客户端未能保持运行。"
 fi
-for proxy_port in 41001 41002 41003 41004; do
+for proxy_port in 41001 41002 41003 41004 41005; do
   if ! ip netns exec "$client_ns" \
       curl --silent --show-error --output /dev/null \
       --connect-timeout 8 --max-time 20 \
@@ -287,4 +333,4 @@ for proxy_port in 41001 41002 41003 41004; do
   fi
 done
 
-printf '真实 sing-box systemd 服务、UFW 入站及生成的 Mihomo 四协议订阅往返通过。\n'
+printf '真实 sing-box systemd 服务、UFW 入站、AnyReality 及 Mihomo 四协议订阅往返通过。\n'

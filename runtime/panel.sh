@@ -342,9 +342,12 @@ rotate_subscription() {
 rotate_node_credentials() {
   local rotate_urls="${1:-false}" confirmation
   local has_ipv4=false has_ipv6=false has_cross=false
+  local has_anyreality=false
   local new_hy2_password new_hy2_obfs_password
   local new_tuic_uuid new_tuic_password new_ss_password
   local new_anytls_password new_trojan_password new_vision_uuid new_xhttp_uuid
+  local new_anyreality_password="" new_anyreality_pair=""
+  local new_anyreality_private="" new_anyreality_public="" new_anyreality_short_id=""
   local new_ipv4_token="" new_ipv6_token=""
   local new_ipv4_to_ipv6_token="" new_ipv6_to_ipv4_token=""
 
@@ -360,7 +363,7 @@ rotate_node_credentials() {
     read -r -p "输入 REVOKE 确认紧急全部换新：" confirmation
     [[ "$confirmation" == REVOKE ]] || return 0
   else
-    warn "此操作会重置七种协议的全部节点凭据，并短暂重启代理服务。"
+    warn "此操作会重置全部已安装协议的节点凭据，并短暂重启代理服务。"
     printf '当前订阅 URL 保持不变；完成后必须在所有客户端刷新订阅。\n'
     read -r -p "输入 ROTATE 确认重置全部节点凭据：" confirmation
     [[ "$confirmation" == ROTATE ]] || return 0
@@ -372,6 +375,7 @@ rotate_node_credentials() {
   network_mode_has_ipv4 && has_ipv4=true
   network_mode_has_ipv6 && has_ipv6=true
   network_mode_has_cross_routes && has_cross=true
+  [[ "$ANYREALITY_ENABLED" == true ]] && has_anyreality=true
 
   new_hy2_password="$(random_urlsafe 24)"
   new_hy2_obfs_password="$(random_urlsafe 24)"
@@ -382,6 +386,15 @@ rotate_node_credentials() {
   new_trojan_password="$(random_urlsafe 24)"
   new_vision_uuid="$(new_uuid)"
   new_xhttp_uuid="$(new_uuid)"
+  if [[ "$has_anyreality" == true ]]; then
+    new_anyreality_pair="$(generate_anyreality_pair)" || {
+      release_maintenance_lock
+      die "无法生成 AnyReality REALITY 密钥；没有修改节点凭据。"
+    }
+    read -r new_anyreality_private new_anyreality_public <<< "$new_anyreality_pair"
+    new_anyreality_password="$(random_urlsafe 24)"
+    new_anyreality_short_id="$(random_hex 8)"
+  fi
   if [[ "$rotate_urls" == true ]]; then
     [[ "$has_ipv4" != true ]] || new_ipv4_token="$(random_urlsafe 24)"
     [[ "$has_ipv6" != true ]] || new_ipv6_token="$(random_urlsafe 24)"
@@ -399,6 +412,14 @@ rotate_node_credentials() {
     || "$new_trojan_password" == "$TROJAN_PASSWORD" \
     || "$new_vision_uuid" == "$VISION_UUID" \
     || "$new_xhttp_uuid" == "$XHTTP_UUID" \
+    || ( "$has_anyreality" == true \
+      && "$new_anyreality_password" == "$ANYREALITY_PASSWORD" ) \
+    || ( "$has_anyreality" == true \
+      && "$new_anyreality_private" == "$ANYREALITY_PRIVATE_KEY" ) \
+    || ( "$has_anyreality" == true \
+      && "$new_anyreality_public" == "$ANYREALITY_PUBLIC_KEY" ) \
+    || ( "$has_anyreality" == true \
+      && "$new_anyreality_short_id" == "$ANYREALITY_SHORT_ID" ) \
     || ( "$rotate_urls" == true \
       && "$has_ipv4" == true \
       && "$new_ipv4_token" == "$SUB_TOKEN_IPV4" ) \
@@ -443,6 +464,12 @@ rotate_node_credentials() {
        | .credentials.trojan_password = $trojan_password
        | .credentials.vision_uuid = $vision_uuid
        | .credentials.xhttp_uuid = $xhttp_uuid
+       | if $has_anyreality then
+           .experimental.anyreality.password = $anyreality_password
+           | .experimental.anyreality.private_key = $anyreality_private
+           | .experimental.anyreality.public_key = $anyreality_public
+           | .experimental.anyreality.short_id = $anyreality_short_id
+         else . end
        | if ($rotate_urls and $has_ipv4) then
            .subscription.ipv4_token = $ipv4_token
          else . end
@@ -462,6 +489,11 @@ rotate_node_credentials() {
       --arg trojan_password "$new_trojan_password" \
       --arg vision_uuid "$new_vision_uuid" \
       --arg xhttp_uuid "$new_xhttp_uuid" \
+      --arg anyreality_password "$new_anyreality_password" \
+      --arg anyreality_private "$new_anyreality_private" \
+      --arg anyreality_public "$new_anyreality_public" \
+      --arg anyreality_short_id "$new_anyreality_short_id" \
+      --argjson has_anyreality "$has_anyreality" \
       --argjson rotate_urls "$rotate_urls" \
       --argjson has_ipv4 "$has_ipv4" \
       --argjson has_ipv6 "$has_ipv6" \
@@ -489,7 +521,7 @@ rotate_node_credentials() {
       ok "旧订阅 URL 与旧节点凭据已全部失效。"
       warn "请删除客户端中的旧订阅，并使用下方新链接或二维码重新添加。"
     else
-      ok "七种协议的全部节点凭据已换新；订阅 URL 保持不变。"
+      ok "全部已安装协议的节点凭据已换新；订阅 URL 保持不变。"
       warn "请立即在所有客户端刷新订阅；手工导入的旧节点需要重新导入。"
     fi
     show_subscription_links
@@ -1136,41 +1168,33 @@ open_third_party_checks() {
   local choice
   while true; do
     clear 2>/dev/null || true
-    printf '第三方 VPS 体检\n'
-    printf '================\n\n'
+    printf '第三方 VPS 体检 & Neko 自带体检\n'
+    printf '================================\n\n'
     printf '1. GOECS 融合怪\n'
     printf '2. NodeQuality 综合测试\n'
+    printf '3. Neko 三网线路检测\n'
     printf '0. 返回\n\n'
-    read -r -p "请选择 [0-2]：" choice
+    read -r -p "请选择 [0-3]：" choice
     case "$choice" in
       0|"") return 0 ;;
       1) run_goecs || true ;;
       2) run_nodequality || true ;;
+      3)
+        if [[ -x "${NEKO_LIBEXEC}/route-diagnostics.sh" ]]; then
+          "${NEKO_LIBEXEC}/route-diagnostics.sh" || true
+        else
+          warn "Neko 三网线路检测组件不可用；代理服务不受影响。"
+        fi
+        ;;
       *)
-        warn "请输入 0 到 2。"
+        warn "请输入 0 到 3。"
         sleep 1
         continue
         ;;
     esac
     printf '\n'
-    read -r -p "按 Enter 返回第三方体检菜单……" _ || true
+    read -r -p "按 Enter 返回 VPS 体检菜单……" _ || true
   done
-}
-
-show_anyreality_subscriptions() {
-  local route url
-  load_state
-  if [[ "$ANYREALITY_ENABLED" != "true" ]]; then
-    info "AnyReality 尚未安装。"
-    return 0
-  fi
-  printf '\nAnyReality 已加入以下 sing-box 严格订阅：\n'
-  for route in ipv4 ipv6 ipv4-to-ipv6 ipv6-to-ipv4; do
-    url="$(subscription_url "$route" sing-box 2>/dev/null || true)"
-    [[ -n "$url" ]] || continue
-    printf '%s\n' "$url"
-  done
-  printf '\n普通 AnyTLS 和其他协议没有被替换。\n'
 }
 
 generate_anyreality_pair() {
@@ -1182,190 +1206,124 @@ generate_anyreality_pair() {
   [[ "$public_key" =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
   printf '%s %s\n' "$private_key" "$public_key"
 }
+show_route_recommendation() {
+  local client_choice client blocked sent recommended backup
+  local recommended_label backup_label recommended_url backup_url
 
-rollback_anyreality_change() {
-  local backup="$1" rollback_ok=1
-  warn "AnyReality 变更失败，正在恢复原来的状态和服务……"
-  cp -a -- "$backup" "$NEKO_STATE" || rollback_ok=0
-  load_state || rollback_ok=0
-  render_all || rollback_ok=0
-  sync_managed_firewall_profile || rollback_ok=0
-  validate_runtime_configs || rollback_ok=0
-  restart_runtime_services || rollback_ok=0
-  rm -f -- "$backup"
-  release_maintenance_lock
-  (( rollback_ok == 1 )) \
-    || die "AnyReality 自动恢复未完全成功；请停止继续操作面板。"
-  die "AnyReality 变更失败，已恢复原配置和服务。"
-}
-
-install_anyreality() {
-  local answer pair private_key public_key password short_id
-  local port cross_port="null" backup
   load_state
-  if [[ "$ANYREALITY_ENABLED" == "true" ]]; then
-    show_anyreality_subscriptions
+  if ! network_mode_has_cross_routes; then
+    printf '\n当前安装不是 IPv4 + IPv6 双栈，不能生成四种线路组合。\n'
+    printf '功能 8 只适用于同时拥有可用 IPv4 和 IPv6 的 VPS。\n'
+    read -r -p "按 Enter 返回菜单……" _ || true
     return 0
   fi
-  read -r -p "安装实验性 AnyReality 并重启代理服务？[y/N] " answer
-  [[ "$answer" =~ ^[Yy]$ ]] || return 0
 
-  acquire_maintenance_lock
-  load_state
-  [[ "$ANYREALITY_ENABLED" == "false" ]] \
-    || die "AnyReality 状态已经改变，请重新打开菜单。"
-  initialize_port_reservations
-  reserve_loaded_proxy_ports
-  reserve_random_port port
-  if network_mode_has_cross_routes; then
-    reserve_random_port cross_port
-  fi
-  pair="$(generate_anyreality_pair)" || {
-    release_maintenance_lock
-    die "无法生成 AnyReality REALITY 密钥；没有修改安装。"
-  }
-  read -r private_key public_key <<< "$pair"
-  password="$(random_urlsafe 24)"
-  short_id="$(random_hex 8)"
-  backup="$(mktemp "${NEKO_STATE}.backup.XXXXXX")"
-  cp -a -- "$NEKO_STATE" "$backup" || {
-    rm -f -- "$backup"
-    release_maintenance_lock
-    die "无法备份安装状态；没有安装 AnyReality。"
-  }
+  printf '\n选择所需的订阅链接：\n\n'
+  printf '1. Shadowrocket\n'
+  printf '2. Stash\n'
+  printf '3. Mihomo\n'
+  printf '4. sing-box\n'
+  printf '0. 退出\n\n'
+  read -r -p "请选择 [0-4]：" client_choice
+  case "$client_choice" in
+    0|"") return 0 ;;
+    1) client=shadowrocket ;;
+    2) client=stash ;;
+    3) client=mihomo ;;
+    4) client=sing-box ;;
+    *) warn "请输入 0 到 4。"; return 0 ;;
+  esac
 
-  if atomic_json_update \
-      '.experimental.anyreality = {
-         enabled: true,
-         port: $port,
-         cross_port: (if $has_cross then $cross_port else null end),
-         password: $password,
-         private_key: $private_key,
-         public_key: $public_key,
-         short_id: $short_id
-       }' \
-      --argjson port "$port" \
-      --argjson has_cross "$(network_mode_has_cross_routes && printf true || printf false)" \
-      --argjson cross_port "$cross_port" \
-      --arg password "$password" \
-      --arg private_key "$private_key" \
-      --arg public_key "$public_key" \
-      --arg short_id "$short_id" \
-    && render_all \
-    && validate_runtime_configs \
-    && sync_managed_firewall_profile \
-    && restart_runtime_services; then
-    rm -f -- "$backup"
-    release_maintenance_lock
-    ok "AnyReality 已安装并加入 sing-box 订阅。"
-    show_anyreality_subscriptions
-    show_required_ports
-    return 0
-  fi
-  rollback_anyreality_change "$backup"
-}
+  printf '\n哪个入口 IP 被墙？\n\n1. IPv4\n2. IPv6\n0. 退出\n\n'
+  read -r -p "请选择 [0-2]：" blocked
+  case "$blocked" in
+    0|"") return 0 ;;
+    1) blocked=ipv4 ;;
+    2) blocked=ipv6 ;;
+    *) warn "请输入 0 到 2。"; return 0 ;;
+  esac
 
-uninstall_anyreality() {
-  local answer backup
-  load_state
-  [[ "$ANYREALITY_ENABLED" == "true" ]] || {
-    info "AnyReality 尚未安装。"
-    return 0
-  }
-  read -r -p "卸载 AnyReality 并关闭对应端口？[y/N] " answer
-  [[ "$answer" =~ ^[Yy]$ ]] || return 0
-  acquire_maintenance_lock
-  load_state
-  [[ "$ANYREALITY_ENABLED" == "true" ]] \
-    || die "AnyReality 状态已经改变，请重新打开菜单。"
-  backup="$(mktemp "${NEKO_STATE}.backup.XXXXXX")"
-  cp -a -- "$NEKO_STATE" "$backup" || {
-    rm -f -- "$backup"
-    release_maintenance_lock
-    die "无法备份安装状态；没有卸载 AnyReality。"
-  }
-  if atomic_json_update 'del(.experimental.anyreality)' \
-    && render_all \
-    && validate_runtime_configs \
-    && sync_managed_firewall_profile \
-    && restart_runtime_services; then
-    rm -f -- "$backup"
-    release_maintenance_lock
-    ok "AnyReality 已卸载；普通协议没有受到影响。"
-    return 0
-  fi
-  rollback_anyreality_change "$backup"
-}
+  printf '\n哪个出口 IP 被“送中”？\n\n1. IPv4\n2. IPv6\n0. 退出\n\n'
+  read -r -p "请选择 [0-2]：" sent
+  case "$sent" in
+    0|"") return 0 ;;
+    1) sent=ipv4 ;;
+    2) sent=ipv6 ;;
+    *) warn "请输入 0 到 2。"; return 0 ;;
+  esac
 
-manage_anyreality() {
-  local choice
-  while true; do
-    load_state
-    clear 2>/dev/null || true
-    printf 'AnyReality（AnyTLS + REALITY，仅 sing-box）\n'
-    printf '===========================================\n\n'
-    if [[ "$ANYREALITY_ENABLED" == "true" ]]; then
-      printf '状态：已安装\n\n'
-      printf '1. 查看订阅\n'
-      printf '2. 卸载 AnyReality\n'
-      printf '0. 返回\n\n'
-      read -r -p "请选择 [0-2]：" choice
-      case "$choice" in
-        0|"") return 0 ;;
-        1) show_anyreality_subscriptions ;;
-        2) uninstall_anyreality ;;
-        *) warn "请输入 0 到 2。" ;;
-      esac
-    else
-      printf '状态：未安装\n\n'
-      printf '1. 安装 AnyReality\n'
-      printf '0. 返回\n\n'
-      read -r -p "请选择 [0-1]：" choice
-      case "$choice" in
-        0|"") return 0 ;;
-        1) install_anyreality ;;
-        *) warn "请输入 0 到 1。" ;;
-      esac
-    fi
-    printf '\n'
-    read -r -p "按 Enter 返回 AnyReality 菜单……" _ || true
-  done
-}
+  case "${blocked}:${sent}" in
+    ipv4:ipv4) recommended=ipv6; backup=ipv6-to-ipv4 ;;
+    ipv4:ipv6) recommended=ipv6-to-ipv4; backup=ipv6 ;;
+    ipv6:ipv4) recommended=ipv4-to-ipv6; backup=ipv4 ;;
+    ipv6:ipv6) recommended=ipv4; backup=ipv4-to-ipv6 ;;
+    *) die "内部线路组合无效。" ;;
+  esac
+  case "$recommended" in
+    ipv4) recommended_label='IPv4→IPv4' ;;
+    ipv6) recommended_label='IPv6→IPv6' ;;
+    ipv4-to-ipv6) recommended_label='IPv4→IPv6' ;;
+    ipv6-to-ipv4) recommended_label='IPv6→IPv4' ;;
+  esac
+  case "$backup" in
+    ipv4) backup_label='IPv4→IPv4' ;;
+    ipv6) backup_label='IPv6→IPv6' ;;
+    ipv4-to-ipv6) backup_label='IPv4→IPv6' ;;
+    ipv6-to-ipv4) backup_label='IPv6→IPv4' ;;
+  esac
+  recommended_url="$(subscription_url "$recommended" "$client")" \
+    || die "无法读取推荐订阅链接。"
+  backup_url="$(subscription_url "$backup" "$client")" \
+    || die "无法读取备用订阅链接。"
 
-manage_experimental_protocols() {
-  local choice status
-  while true; do
-    load_state
-    [[ "$ANYREALITY_ENABLED" == "true" ]] && status="已安装" || status="未安装"
-    clear 2>/dev/null || true
-    printf '实验性协议（按需安装）\n'
-    printf '======================\n\n'
-    printf '1. AnyReality（AnyTLS + REALITY，仅 sing-box）[%s]\n' "$status"
-    printf '0. 返回\n\n'
-    read -r -p "请选择 [0-1]：" choice
-    case "$choice" in
-      0|"") return 0 ;;
-      1) manage_anyreality ;;
-      *) warn "请输入 0 到 1。"; sleep 1 ;;
-    esac
-  done
+  printf '\n推荐：%s\n' "$recommended_label"
+  printf '原因：通过未被墙的入口进入 VPS，再使用未被“送中”的出口。\n'
+  printf '%s\n' "$recommended_url"
+  show_terminal_qr "$recommended_url"
+  printf '\n备用：%s\n' "$backup_label"
+  printf '说明：这个出口被“送中”，但不代表完全不可以使用。\n'
+  printf '%s\n' "$backup_url"
+  show_terminal_qr "$backup_url"
+  printf '\n'
+  read -r -p "按 Enter 返回菜单……" _ || true
 }
 
 show_route_guide() {
   clear 2>/dev/null || true
   cat <<'EOF'
-订阅链接怎么选？首次使用建议查看
-================================
+什么是 IP 被墙、IP“送中”，以及如何解决？
+===========================================
 
-IPv4 被墙或被“送中”时，应该怎么选？
-===================================
+前提：VPS 同时拥有 IPv4 和 IPv6，并且你的网络环境支持 IPv6。
 
-本功能主要给同时拥有 IPv4 和 IPv6 的双栈用户使用。
-如果你的 VPS 只有 IPv4 或只有 IPv6，就不需要选择四种线路方向。
+先说明一个容易误会的情况：有些网站（包括但不限于 x.com）本身不支持 IPv6。
+如果你选择 IPv6 出站后无法访问这类网站，并不是 Neko 的问题，应改用 IPv4 出站。
 
-请先记住一句话：
+入站：你的设备到 VPS。出站：VPS 到要访问的网站。
+例如 IPv4→IPv6，代表你的设备通过 IPv4 进入 VPS，VPS 再通过 IPv6 访问网站。
 
-被墙换左边，送中换右边。
+检测 IP 是否被墙：可在浏览器打开 itdog.cn。检测 IPv4 时选择在线 Ping（IPv4），
+检测 IPv6 时选择在线 Ping（IPv6）。如果中国大陆地区全部超时，而海外地区正常，
+这个 IP 很可能被墙；如果大陆和海外都超时，也可能是 VPS 服务商迁移机房或网络故障。
+
+IP 被墙表示对应 IPv4 或 IPv6 地址的入口被阻断，不代表另一个地址也被阻断，
+也不代表一定会永久被封锁。为降低风险，可优先考虑基于 TCP 的协议，例如
+VLESS + REALITY + Vision 或 AnyTLS/AnyReality，但任何协议都不能保证百分之百不被墙。
+
+解决 IP 被墙的方法是更换入口：IPv4 被墙就使用 IPv6 入站；IPv6 被墙就使用
+IPv4 入站。
+
+检测 IP“送中”：用对应出口打开 Google，随便搜索内容并滑到页面底部。如果 Google
+根据互联网地址把位置显示为中国大陆，可以认为该出口可能被“送中”。“送中”表示
+Google 等服务把出口 IP 识别为中国大陆，不等于这个出口完全无法使用。视频和很多
+普通网站通常仍可正常工作，但 Gemini 等部分服务可能受影响。
+
+解决 IP“送中”的方法是更换出口：IPv4 出口被“送中”就改用 IPv6 出站；IPv6
+出口被“送中”就改用 IPv4 出站。
+
+如果 IPv4/IPv6 同时被墙或同时被“送中”，不在本功能的自动推荐范围内。
+
+请先记住一句话：被墙换左边，送中换右边。
 
 一、IPv4 被墙：更换入口
 
@@ -1678,8 +1636,7 @@ IPv6→IPv6
 IPv4 入口出现问题，就尝试更换左边。
 IPv4 出口出现问题，就尝试更换右边。
 EOF
-  printf '\n'
-  read -r -p "按 Enter 返回菜单……" _ || true
+  show_route_recommendation
 }
 
 uninstall_neko() {
@@ -1744,9 +1701,9 @@ draw_menu() {
   printf '4. 刷新已安装地址族端点\n'
   printf '5. IPv4/IPv6 安装管理\n'
   printf '6. 卸载全部协议\n'
-  printf '7. 第三方 VPS 体检\n'
+  printf '7. 第三方 VPS 体检 & Neko 自带体检\n'
   printf '8. 双栈线路怎么选？（同时拥有 IPv4 和 IPv6 时查看）\n'
-  printf '9. 实验性协议（按需安装）\n\n'
+  printf '\n'
 }
 
 main() {
@@ -1759,7 +1716,7 @@ main() {
   [[ -r "$NEKO_STATE" ]] || die "Neko 尚未完整安装。"
   while true; do
     draw_menu
-    read -r -p "请选择 [0-9]：" choice
+    read -r -p "请选择 [0-8]：" choice
     case "$choice" in
       0) exit 0 ;;
       1)
@@ -1779,11 +1736,7 @@ main() {
         show_route_guide
         continue
         ;;
-      9)
-        manage_experimental_protocols
-        continue
-        ;;
-      *) warn "请输入 0 到 9。" ;;
+      *) warn "请输入 0 到 8。" ;;
     esac
     printf '\n'
     read -r -p "按 Enter 返回菜单……" _

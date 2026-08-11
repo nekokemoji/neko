@@ -94,12 +94,25 @@ done
 
 for unsupported_profile in \
   "$WORK/etc/subscriptions"/mihomo-*.yaml \
-  "$WORK/etc/subscriptions"/stash-*.yaml \
-  "$WORK/etc/subscriptions"/shadowrocket-*.txt; do
+  "$WORK/etc/subscriptions"/stash-*.yaml; do
   if grep -qE 'AnyReality|anyreality' "$unsupported_profile"; then
     printf 'AnyReality 不应出现在 %s。\n' "$unsupported_profile" >&2
     exit 1
   fi
+done
+
+for profile in v4 v6; do
+  shadowrocket="$WORK/etc/subscriptions/shadowrocket-${profile}.txt"
+  grep -Fq 'name: "AnyReality"' "$shadowrocket"
+  grep -Fq 'type: anytls' "$shadowrocket"
+  grep -Fq 'port: 34000' "$shadowrocket"
+  grep -Fq 'password: "test-anyreality-password"' "$shadowrocket"
+  grep -Fq 'public-key: "BdhFQXLg2ajaJ3BbMQ5esGMIUCGph36ShM2DfzmyOyM"' "$shadowrocket"
+  grep -Fq 'short-id: "2122232425262728"' "$shadowrocket"
+done
+for profile in v4-to-v6 v6-to-v4; do
+  shadowrocket="$WORK/etc/subscriptions/shadowrocket-${profile}.txt"
+  grep -A8 -F 'name: "AnyReality"' "$shadowrocket" | grep -Fq 'port: 35000'
 done
 
 NEKO_ETC="$WORK/etc" \
@@ -116,96 +129,44 @@ NEKO_ETC="$WORK/etc" \
   ' _ "$ROOT/lib/common.sh" "$ROOT/lib/firewall.sh"
 grep -Eq 'ports=.*34000.*35000.*/tcp' "$WORK/neko-proxy"
 
-mkdir -p "$WORK/transaction"
-cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/transaction/state.json"
-transaction_env=(
-  NEKO_ETC="$WORK/transaction"
-  NEKO_STATE="$WORK/transaction/state.json"
-  NEKO_LIBEXEC="$ROOT"
-  NEKO_USER=root
-  NEKO_PANEL_TMP_DIR="$WORK/transaction"
-)
-
-printf 'y\n' | env "${transaction_env[@]}" bash -c '
-  set -Eeuo pipefail
-  source "$1"
-  acquire_maintenance_lock() { :; }
-  release_maintenance_lock() { :; }
-  reserve_random_port() {
-    if [[ "$1" == port ]]; then
-      printf -v "$1" 34000
-    else
-      printf -v "$1" 35000
-    fi
-  }
-  generate_anyreality_pair() {
-    printf "%s %s\n" \
-      "kF-xXmV_yq2mtuzBfBZw9g-VAqO712QGpKFVfOqbv1Q" \
-      "BdhFQXLg2ajaJ3BbMQ5esGMIUCGph36ShM2DfzmyOyM"
-  }
-  random_urlsafe() { printf "test-anyreality-password\n"; }
-  random_hex() { printf "2122232425262728\n"; }
-  render_all() { :; }
-  validate_runtime_configs() { load_state; }
-  sync_managed_firewall_profile() { :; }
-  restart_runtime_services() { :; }
-  install_anyreality >/dev/null
-' _ "$ROOT/runtime/panel.sh"
-
-jq -e '
+anyreality_before="$(jq -cS '.experimental.anyreality' "$WORK/etc/state.json")"
+printf 'ROTATE\n' \
+  | NEKO_ETC="$WORK/etc" \
+    NEKO_VAR="$WORK/var" \
+    NEKO_STATE="$WORK/etc/state.json" \
+    NEKO_LIBEXEC="$ROOT" \
+    NEKO_USER=root \
+    NEKO_PANEL_TMP_DIR="$WORK" \
+    bash -c '
+      set -Eeuo pipefail
+      source "$1"
+      acquire_maintenance_lock() { :; }
+      release_maintenance_lock() { :; }
+      generate_anyreality_pair() {
+        printf "%s %s\n" \
+          "2JjE4cO-TqYTqFzBjYczbtN85c0EEmeJ8fifIDuav3g" \
+          "FVuHPI9DrVZksjPE01p9Kbifs2M4DsnXlz6F_HId7SU"
+      }
+      render_all() { :; }
+      validate_runtime_configs() { load_state; }
+      restart_runtime_services() { :; }
+      show_subscription_links() { :; }
+      rotate_node_credentials false >/dev/null
+    ' _ "$ROOT/runtime/panel.sh"
+jq -e --argjson before "$anyreality_before" '
   .experimental.anyreality.enabled == true
   and .experimental.anyreality.port == 34000
   and .experimental.anyreality.cross_port == 35000
-  and .experimental.anyreality.password == "test-anyreality-password"
-' "$WORK/transaction/state.json" >/dev/null
+  and .experimental.anyreality.password != $before.password
+  and .experimental.anyreality.private_key != $before.private_key
+  and .experimental.anyreality.public_key != $before.public_key
+  and .experimental.anyreality.short_id != $before.short_id
+' "$WORK/etc/state.json" >/dev/null
 
-printf 'y\n' | env "${transaction_env[@]}" bash -c '
-  set -Eeuo pipefail
-  source "$1"
-  acquire_maintenance_lock() { :; }
-  release_maintenance_lock() { :; }
-  render_all() { :; }
-  validate_runtime_configs() { load_state; }
-  sync_managed_firewall_profile() { :; }
-  restart_runtime_services() { :; }
-  uninstall_anyreality >/dev/null
-' _ "$ROOT/runtime/panel.sh"
-jq -e '.experimental.anyreality? == null' \
-  "$WORK/transaction/state.json" >/dev/null
-
-state_before_failure="$(sha256sum "$WORK/transaction/state.json")"
-if printf 'y\n' | env "${transaction_env[@]}" bash -c '
-    set -Eeuo pipefail
-    source "$1"
-    acquire_maintenance_lock() { :; }
-    release_maintenance_lock() { :; }
-    reserve_random_port() {
-      if [[ "$1" == port ]]; then
-        printf -v "$1" 34000
-      else
-        printf -v "$1" 35000
-      fi
-    }
-    generate_anyreality_pair() {
-      printf "%s %s\n" \
-        "kF-xXmV_yq2mtuzBfBZw9g-VAqO712QGpKFVfOqbv1Q" \
-        "BdhFQXLg2ajaJ3BbMQ5esGMIUCGph36ShM2DfzmyOyM"
-    }
-    random_urlsafe() { printf "test-anyreality-password\n"; }
-    random_hex() { printf "2122232425262728\n"; }
-    render_all() { :; }
-    validate_runtime_configs() { load_state; }
-    sync_managed_firewall_profile() { :; }
-    restart_calls=0
-    restart_runtime_services() {
-      ((restart_calls += 1))
-      (( restart_calls > 1 ))
-    }
-    install_anyreality >/dev/null 2>&1
-  ' _ "$ROOT/runtime/panel.sh"; then
-  printf 'AnyReality 服务失败时没有返回失败。\n' >&2
+if grep -Eq 'manage_anyreality|install_anyreality|uninstall_anyreality|实验性协议' \
+    "$ROOT/runtime/panel.sh"; then
+  printf '面板不应保留 AnyReality 按需安装或卸载入口。\n' >&2
   exit 1
 fi
-[[ "$(sha256sum "$WORK/transaction/state.json")" == "$state_before_failure" ]]
 
-printf 'AnyReality 按需渲染、严格路由、客户端隔离、防火墙与回滚测试通过。\n'
+printf 'AnyReality 默认渲染、严格路由、客户端隔离与防火墙测试通过。\n'

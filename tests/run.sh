@@ -4,17 +4,18 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="${NEKO_TEST_TOOLS_DIR:-$ROOT/tests/.tools}"
-XRAY="$TOOLS/xray"
-SING_BOX="$TOOLS/sing-box"
-HYSTERIA="$TOOLS/hysteria"
-CADDY="$TOOLS/caddy"
-LEGO="$TOOLS/lego"
+XRAY="${XRAY_BIN:-$TOOLS/xray}"
+SING_BOX="${SING_BOX_BIN:-$TOOLS/sing-box}"
+HYSTERIA="${HYSTERIA_BIN:-$TOOLS/hysteria}"
+CADDY="${CADDY_BIN:-$TOOLS/caddy}"
+LEGO="${LEGO_BIN:-$TOOLS/lego}"
 MIHOMO="${MIHOMO_BIN:-$TOOLS/mihomo}"
-QRC="$TOOLS/qrc"
+QRC="${QRC_BIN:-$TOOLS/qrc}"
+NEXTTRACE="${NEXTTRACE_BIN:-$TOOLS/nexttrace-tiny}"
 
 for binary in \
   "$XRAY" "$SING_BOX" "$HYSTERIA" "$CADDY" "$LEGO" "$MIHOMO" \
-  "$QRC"; do
+  "$QRC" "$NEXTTRACE"; do
   [[ -x "$binary" ]] || {
     printf '缺少测试工具 %s；先运行 tests/fetch-pinned-tools.sh。\n' "$binary" >&2
     exit 1
@@ -345,12 +346,14 @@ printf '[3/9] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$LEGO" --version)" == *"$LEGO_VERSION"* ]]
 [[ "$("$MIHOMO" -v)" == *"${MIHOMO_VERSION}"* ]]
 [[ "$("$QRC" --help 2>&1)" == *'--output-format=<auto|ansi|sixel|unicode>'* ]]
+[[ "$(NO_COLOR=1 "$NEXTTRACE" --version 2>&1)" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--http.webroot"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--dns"* ]]
 if grep -R "releases/latest\|/latest/download" \
     "$ROOT/install.sh" "$ROOT/upgrade.sh" \
     "$ROOT/tests/fetch-pinned-tools.sh" \
-    "$ROOT/tests/fetch-pinned-qrc.sh"; then
+    "$ROOT/tests/fetch-pinned-qrc.sh" \
+    "$ROOT/tests/fetch-pinned-nexttrace.sh"; then
   printf '发现未冻结的 latest 下载地址。\n' >&2
   exit 1
 fi
@@ -358,10 +361,12 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.10.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.11.0"' "$ROOT/versions.env"
+grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/bootstrap.sh"
+grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/install.sh"
 if grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh" \
     || grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"; then
-  printf '新安装仍然包含旧版自研体检。\n' >&2
+  printf '新安装不应包含旧版完整自研体检。\n' >&2
   exit 1
 fi
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
@@ -1156,6 +1161,9 @@ decoded_qr="$(
 bash "$ROOT/tests/panel-qrcode.sh"
 bash "$ROOT/tests/panel-route-guide.sh"
 bash "$ROOT/tests/panel-third-party.sh"
+bash "$ROOT/tests/route-diagnostics.sh"
+SING_BOX_BIN="$SING_BOX" XRAY_BIN="$XRAY" \
+  bash "$ROOT/tests/default-anyreality-install.sh"
 SING_BOX_BIN="$SING_BOX" bash "$ROOT/tests/experimental-anyreality.sh"
 
 printf '[7/9] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
@@ -1404,6 +1412,7 @@ run_upgrade() {
     NEKO_TEST_FIREWALL_LOG="$target/firewall/commands.log" \
     NEKO_UPDATE_TEST_MODE=1 NEKO_UPDATE_SKIP_ACME=1 \
     NEKO_UPDATE_QRC_BINARY="$QRC" \
+    NEKO_UPDATE_NEXTTRACE_BINARY="$NEXTTRACE" \
     NEKO_UPDATE_IPV4_OVERRIDE=192.0.2.10 \
     NEKO_UPDATE_IPV6_OVERRIDE=2001:db8::10 \
     "$@" bash "$ROOT/upgrade.sh"
@@ -1450,6 +1459,26 @@ assert_cross_routes_migrated() {
   [[ -s "$target/etc/subscriptions/sing-box-v6-to-v4.json" ]]
 }
 
+assert_anyreality_migrated() {
+  local target="$1" expected_inbounds=1 profile=v4
+  [[ "$(jq -r '.network.mode' "$target/etc/state.json")" != dual ]] \
+    || expected_inbounds=4
+  [[ "$(jq -r '.network.mode' "$target/etc/state.json")" != ipv6-only ]] \
+    || profile=v6
+  jq -e '
+    .experimental.anyreality.enabled == true
+    and (.experimental.anyreality.port | type == "number")
+    and (.experimental.anyreality.password | test("^[A-Za-z0-9_-]{16,128}$"))
+    and (.experimental.anyreality.private_key | test("^[A-Za-z0-9_-]{43}$"))
+    and (.experimental.anyreality.public_key | test("^[A-Za-z0-9_-]{43}$"))
+    and (.experimental.anyreality.short_id | test("^[0-9a-f]{16}$"))
+  ' "$target/etc/state.json" >/dev/null
+  [[ "$(jq '[.inbounds[] | select(.tag | startswith("anyreality-"))] | length' \
+    "$target/etc/config/sing-box.json")" == "$expected_inbounds" ]]
+  grep -Fq 'name: "AnyReality"' \
+    "$target/etc/subscriptions/shadowrocket-${profile}.txt"
+}
+
 UPGRADE_OK="$WORK/upgrade-ok"
 prepare_upgrade_install "$UPGRADE_OK"
 upgrade_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \
@@ -1473,9 +1502,10 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
   == "$(jq -r '.token' <<< "$upgrade_identity_before")" ]]
 [[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 16 ]]
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
+[[ -x "$UPGRADE_OK/libexec/route-diagnostics.sh" ]]
 [[ ! -e "$UPGRADE_OK/libexec/diagnostics.sh" ]]
 cmp -s -- "$QRC" "$UPGRADE_OK/libexec/qrc"
-[[ ! -e "$UPGRADE_OK/libexec/nexttrace-tiny" ]]
+cmp -s -- "$NEXTTRACE" "$UPGRADE_OK/libexec/nexttrace-tiny"
 grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
   "$UPGRADE_OK/systemd/neko-hysteria.service"
 [[ -s "$UPGRADE_OK/etc/config/hysteria-v4.yaml" ]]
@@ -1483,8 +1513,9 @@ grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
 [[ ! -e "$UPGRADE_OK/etc/config/hysteria.yaml" ]]
 assert_trojan_migrated "$UPGRADE_OK"
 assert_cross_routes_migrated "$UPGRADE_OK"
+assert_anyreality_migrated "$UPGRADE_OK"
 if find "$UPGRADE_OK/tmp" -maxdepth 1 \
-    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \) \
+    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' -o -name 'neko-nexttrace-stage.*' \) \
     | grep -q .; then
   printf '升级成功后没有清理备份目录。\n' >&2
   exit 1
@@ -1513,6 +1544,7 @@ run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ ! -e "$UPGRADE_SCHEMA2/etc/config/hysteria.yaml" ]]
 assert_trojan_migrated "$UPGRADE_SCHEMA2"
 assert_cross_routes_migrated "$UPGRADE_SCHEMA2"
+assert_anyreality_migrated "$UPGRADE_SCHEMA2"
 
 UPGRADE_123="$WORK/upgrade-1.2.3"
 prepare_upgrade_install "$UPGRADE_123" 2 1.2.3-test
@@ -1535,6 +1567,7 @@ run_upgrade "$UPGRADE_123" > "$UPGRADE_123/upgrade.log"
 [[ -s "$UPGRADE_123/etc/subscriptions/sing-box-v6.json" ]]
 assert_trojan_migrated "$UPGRADE_123"
 assert_cross_routes_migrated "$UPGRADE_123"
+assert_anyreality_migrated "$UPGRADE_123"
 
 UPGRADE_CURRENT="$WORK/upgrade-current"
 prepare_upgrade_install "$UPGRADE_CURRENT" 3 1.7.0-test dual true
@@ -1547,13 +1580,28 @@ run_upgrade "$UPGRADE_CURRENT" > "$UPGRADE_CURRENT/upgrade.log"
   "$UPGRADE_CURRENT/etc/state.json")" == "$current_trojan_before" ]]
 assert_trojan_migrated "$UPGRADE_CURRENT"
 assert_cross_routes_migrated "$UPGRADE_CURRENT"
+assert_anyreality_migrated "$UPGRADE_CURRENT"
 
 UPGRADE_SCHEMA4="$WORK/upgrade-schema4"
 prepare_upgrade_install "$UPGRADE_SCHEMA4" 4 1.9.0-test dual true
+jq '
+  .experimental.anyreality = {
+    enabled: true,
+    port: 34000,
+    cross_port: 35000,
+    password: "preserved-anyreality-password",
+    private_key: .reality.vision_private_key,
+    public_key: .reality.vision_public_key,
+    short_id: "2122232425262728"
+  }
+' "$UPGRADE_SCHEMA4/etc/state.json" > "$UPGRADE_SCHEMA4/etc/state.anyreality.json"
+mv -f -- "$UPGRADE_SCHEMA4/etc/state.anyreality.json" \
+  "$UPGRADE_SCHEMA4/etc/state.json"
 schema4_identity_before="$(jq -cS '{
   ports,
   credentials,
   reality,
+  experimental,
   tokens: {
     ipv4: .subscription.ipv4_token,
     ipv6: .subscription.ipv6_token,
@@ -1566,6 +1614,7 @@ run_upgrade "$UPGRADE_SCHEMA4" > "$UPGRADE_SCHEMA4/upgrade.log"
   ports,
   credentials,
   reality,
+  experimental,
   tokens: {
     ipv4: .subscription.ipv4_token,
     ipv6: .subscription.ipv6_token,
@@ -1575,6 +1624,7 @@ run_upgrade "$UPGRADE_SCHEMA4" > "$UPGRADE_SCHEMA4/upgrade.log"
 }' "$UPGRADE_SCHEMA4/etc/state.json")" == "$schema4_identity_before" ]]
 assert_trojan_migrated "$UPGRADE_SCHEMA4"
 assert_cross_routes_migrated "$UPGRADE_SCHEMA4"
+assert_anyreality_migrated "$UPGRADE_SCHEMA4"
 
 UPGRADE_FIREWALL="$WORK/upgrade-firewall"
 prepare_upgrade_install "$UPGRADE_FIREWALL" 3 1.6.1-test dual false
@@ -1594,6 +1644,12 @@ firewall_trojan_port="$(
 firewall_cross_trojan_port="$(
   jq -r '.ports.cross.trojan' "$UPGRADE_FIREWALL/etc/state.json"
 )"
+firewall_anyreality_port="$(
+  jq -r '.experimental.anyreality.port' "$UPGRADE_FIREWALL/etc/state.json"
+)"
+firewall_cross_anyreality_port="$(
+  jq -r '.experimental.anyreality.cross_port' "$UPGRADE_FIREWALL/etc/state.json"
+)"
 firewall_cross_hy2_range="$(
   jq -r '.ports.cross | "\(.hysteria2_start)-\(.hysteria2_end)"' \
     "$UPGRADE_FIREWALL/etc/state.json"
@@ -1602,6 +1658,10 @@ grep -Fq "protocol=\"tcp\" port=\"${firewall_trojan_port}\"" \
   "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
 grep -Fq "protocol=\"tcp\" port=\"${firewall_cross_trojan_port}\"" \
   "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
+grep -Fq "protocol=\"tcp\" port=\"${firewall_anyreality_port}\"" \
+  "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
+grep -Fq "protocol=\"tcp\" port=\"${firewall_cross_anyreality_port}\"" \
+  "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
 grep -Fq "protocol=\"udp\" port=\"${firewall_cross_hy2_range}\"" \
   "$UPGRADE_FIREWALL/firewall/neko-proxy.xml"
 grep -Fxq -- '--reload' "$UPGRADE_FIREWALL/firewall/commands.log"
@@ -1609,6 +1669,7 @@ grep -Fxq -- '--zone=public --query-service=neko-proxy' \
   "$UPGRADE_FIREWALL/firewall/commands.log"
 assert_trojan_migrated "$UPGRADE_FIREWALL"
 assert_cross_routes_migrated "$UPGRADE_FIREWALL"
+assert_anyreality_migrated "$UPGRADE_FIREWALL"
 
 UPGRADE_FIREWALL_INACTIVE="$WORK/upgrade-firewall-inactive"
 prepare_upgrade_install "$UPGRADE_FIREWALL_INACTIVE" 3 1.6.1-test dual false
@@ -1664,6 +1725,7 @@ run_upgrade "$UPGRADE_V4" > "$UPGRADE_V4/upgrade.log"
 [[ ! -e "$UPGRADE_V4/etc/config/hysteria-v4-to-v6.yaml" ]]
 [[ ! -e "$UPGRADE_V4/etc/config/hysteria-v6-to-v4.yaml" ]]
 assert_trojan_migrated "$UPGRADE_V4"
+assert_anyreality_migrated "$UPGRADE_V4"
 
 UPGRADE_V6="$WORK/upgrade-v6-only"
 prepare_upgrade_install "$UPGRADE_V6" 3 1.2.4-test ipv6-only
@@ -1684,6 +1746,7 @@ run_upgrade "$UPGRADE_V6" > "$UPGRADE_V6/upgrade.log"
 [[ ! -e "$UPGRADE_V6/etc/config/hysteria-v4-to-v6.yaml" ]]
 [[ ! -e "$UPGRADE_V6/etc/config/hysteria-v6-to-v4.yaml" ]]
 assert_trojan_migrated "$UPGRADE_V6"
+assert_anyreality_migrated "$UPGRADE_V6"
 
 UPGRADE_FAIL="$WORK/upgrade-fail"
 prepare_upgrade_install "$UPGRADE_FAIL"
@@ -1695,7 +1758,11 @@ jq '
 mv -f -- \
   "$UPGRADE_FAIL/etc/state.firewall.json" "$UPGRADE_FAIL/etc/state.json"
 cp -a -- "$ROOT/tests/helpers/systemctl" "$UPGRADE_FAIL/libexec/qrc"
+cp -a -- "$ROOT/tests/helpers/systemctl" "$UPGRADE_FAIL/libexec/nexttrace-tiny"
 qrc_before="$(sha256sum "$UPGRADE_FAIL/libexec/qrc" | awk '{print $1}')"
+nexttrace_before="$(
+  sha256sum "$UPGRADE_FAIL/libexec/nexttrace-tiny" | awk '{print $1}'
+)"
 state_before="$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')"
 config_before="$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')"
 unit_before="$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')"
@@ -1721,6 +1788,8 @@ set -e
   == "$firewall_before" ]]
 grep -Fxq -- '--reload' "$UPGRADE_FAIL/firewall/commands.log"
 [[ "$(sha256sum "$UPGRADE_FAIL/libexec/qrc" | awk '{print $1}')" == "$qrc_before" ]]
+[[ "$(sha256sum "$UPGRADE_FAIL/libexec/nexttrace-tiny" | awk '{print $1}')" \
+  == "$nexttrace_before" ]]
 [[ "$(
   find "$UPGRADE_FAIL/etc/subscriptions" -maxdepth 1 -type f -printf '%f\n' \
     | sort | sha256sum | awk '{print $1}'
@@ -1729,7 +1798,7 @@ grep -Fxq -- '--reload' "$UPGRADE_FAIL/firewall/commands.log"
 [[ ! -e "$UPGRADE_FAIL/libexec/diagnostics.sh" ]]
 grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
 if find "$UPGRADE_FAIL/tmp" -maxdepth 1 \
-    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \) \
+    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' -o -name 'neko-nexttrace-stage.*' \) \
     | grep -q .; then
   printf '升级回滚后没有清理备份目录。\n' >&2
   exit 1
