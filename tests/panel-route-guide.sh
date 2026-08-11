@@ -19,7 +19,8 @@ panel_output="$(
         _ "$ROOT/runtime/panel.sh" 2>&1
 )"
 
-[[ "$panel_output" == *'8. 订阅链接怎么选？首次使用建议查看'* ]]
+[[ "$panel_output" == *'8. 双栈线路怎么选？（同时拥有 IPv4 和 IPv6 时查看）'* ]]
+[[ "$panel_output" == *'被墙换左边，送中换右边。'* ]]
 [[ "$panel_output" == *'4 种线路方向 × 4 种客户端格式 = 16 条订阅链接'* ]]
 [[ "$panel_output" == *'你的设备 → VPS，这一段叫作入站。'* ]]
 [[ "$panel_output" == *'这里并不是把 IPv6“转换”成 IPv4'* ]]
@@ -34,8 +35,8 @@ eof_output="$(
 )"
 [[ "$eof_output" == *'guide-returned'* ]]
 
-grep -Fq 'read -r -p "请选择 [0-8]：" choice' "$ROOT/runtime/panel.sh"
-grep -Fq '*) warn "请输入 0 到 8。" ;;' "$ROOT/runtime/panel.sh"
+grep -Fq 'read -r -p "请选择 [0-9]：" choice' "$ROOT/runtime/panel.sh"
+grep -Fq '*) warn "请输入 0 到 9。" ;;' "$ROOT/runtime/panel.sh"
 grep -A2 -F '8)' "$ROOT/runtime/panel.sh" | grep -Fq 'show_route_guide'
 grep -Fq '在 `neko` 面板选择 `8`' "$ROOT/README.md"
 

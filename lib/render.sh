@@ -40,16 +40,22 @@ render_sing_box() {
     --arg ss_password "$SS_PASSWORD" \
     --argjson anytls_port "$ANYTLS_PORT" \
     --arg anytls_password "$ANYTLS_PASSWORD" \
+    --argjson anyreality_enabled "$ANYREALITY_ENABLED" \
+    --argjson anyreality_port "${ANYREALITY_PORT:-null}" \
+    --arg anyreality_password "$ANYREALITY_PASSWORD" \
+    --arg anyreality_private_key "$ANYREALITY_PRIVATE_KEY" \
+    --arg anyreality_short_id "$ANYREALITY_SHORT_ID" \
     --argjson trojan_port "$TROJAN_PORT" \
     --arg trojan_password "$TROJAN_PASSWORD" \
     --argjson cross_tuic_port "${CROSS_TUIC_PORT:-null}" \
     --argjson cross_ss_port "${CROSS_SS_PORT:-null}" \
     --argjson cross_anytls_port "${CROSS_ANYTLS_PORT:-null}" \
+    --argjson cross_anyreality_port "${CROSS_ANYREALITY_PORT:-null}" \
     --argjson cross_trojan_port "${CROSS_TROJAN_PORT:-null}" \
     'def family_inbounds(
       $suffix; $listen; $route_tuic_port; $route_ss_port;
-      $route_anytls_port; $route_trojan_port
-    ): [
+      $route_anytls_port; $route_trojan_port; $route_anyreality_port
+    ): ([
         {
           type: "tuic",
           tag: ("tuic-" + $suffix + "-in"),
@@ -101,24 +107,40 @@ render_sing_box() {
             key_path: $key
           }
         }
-      ];
+      ] + (if $anyreality_enabled then [{
+        type: "anytls",
+        tag: ("anyreality-" + $suffix + "-in"),
+        listen: $listen,
+        listen_port: $route_anyreality_port,
+        users: [{password: $anyreality_password}],
+        tls: {
+          enabled: true,
+          server_name: $domain,
+          reality: {
+            enabled: true,
+            handshake: {server: "127.0.0.1", server_port: 8443},
+            private_key: $anyreality_private_key,
+            short_id: [$anyreality_short_id]
+          }
+        }
+      }] else [] end));
     def has_v4: ($mode == "ipv4-only" or $mode == "dual");
     def has_v6: ($mode == "ipv6-only" or $mode == "dual");
     def has_cross: ($mode == "dual");
     def same_v4_inbound_tags: [
       "tuic-v4-in", "ss2022-v4-in", "anytls-v4-in", "trojan-v4-in"
-    ];
+    ] + (if $anyreality_enabled then ["anyreality-v4-in"] else [] end);
     def same_v6_inbound_tags: [
       "tuic-v6-in", "ss2022-v6-in", "anytls-v6-in", "trojan-v6-in"
-    ];
+    ] + (if $anyreality_enabled then ["anyreality-v6-in"] else [] end);
     def cross_v4_to_v6_inbound_tags: [
       "tuic-v4-to-v6-in", "ss2022-v4-to-v6-in",
       "anytls-v4-to-v6-in", "trojan-v4-to-v6-in"
-    ];
+    ] + (if $anyreality_enabled then ["anyreality-v4-to-v6-in"] else [] end);
     def cross_v6_to_v4_inbound_tags: [
       "tuic-v6-to-v4-in", "ss2022-v6-to-v4-in",
       "anytls-v6-to-v4-in", "trojan-v6-to-v4-in"
-    ];
+    ] + (if $anyreality_enabled then ["anyreality-v6-to-v4-in"] else [] end);
     def v4_egress_inbound_tags:
       same_v4_inbound_tags
       + (if has_cross then cross_v6_to_v4_inbound_tags else [] end);
@@ -132,18 +154,20 @@ render_sing_box() {
       },
       inbounds:
         ((if has_v4 then family_inbounds(
-          "v4"; $listen_v4; $tuic_port; $ss_port; $anytls_port; $trojan_port
+          "v4"; $listen_v4; $tuic_port; $ss_port; $anytls_port; $trojan_port;
+          $anyreality_port
         ) else [] end)
         + (if has_v6 then family_inbounds(
-          "v6"; $listen_v6; $tuic_port; $ss_port; $anytls_port; $trojan_port
+          "v6"; $listen_v6; $tuic_port; $ss_port; $anytls_port; $trojan_port;
+          $anyreality_port
         ) else [] end)
         + (if has_cross then family_inbounds(
           "v4-to-v6"; $listen_v4; $cross_tuic_port; $cross_ss_port;
-          $cross_anytls_port; $cross_trojan_port
+          $cross_anytls_port; $cross_trojan_port; $cross_anyreality_port
         ) else [] end)
         + (if has_cross then family_inbounds(
           "v6-to-v4"; $listen_v6; $cross_tuic_port; $cross_ss_port;
-          $cross_anytls_port; $cross_trojan_port
+          $cross_anytls_port; $cross_trojan_port; $cross_anyreality_port
         ) else [] end)),
       outbounds:
         ((if has_v4 then [{
@@ -575,7 +599,7 @@ render_sing_box_client() {
   local dns_strategy="$4" rejected_ip_version="$5"
   local route_hy2_start="$6" route_hy2_end="$7" route_tuic_port="$8"
   local route_ss_port="$9" route_anytls_port="${10}" route_trojan_port="${11}"
-  local route_vision_port="${12}"
+  local route_vision_port="${12}" route_anyreality_port="${13:-null}"
 
   jq -n \
     --arg domain "$DOMAIN" \
@@ -599,6 +623,11 @@ render_sing_box_client() {
     --arg vision_uuid "$VISION_UUID" \
     --arg vision_public_key "$VISION_PUBLIC_KEY" \
     --arg vision_short_id "$VISION_SHORT_ID" \
+    --argjson anyreality_enabled "$ANYREALITY_ENABLED" \
+    --argjson anyreality_port "$route_anyreality_port" \
+    --arg anyreality_password "$ANYREALITY_PASSWORD" \
+    --arg anyreality_public_key "$ANYREALITY_PUBLIC_KEY" \
+    --arg anyreality_short_id "$ANYREALITY_SHORT_ID" \
     '{
       log: {
         level: "info",
@@ -636,18 +665,18 @@ render_sing_box_client() {
           stack: "mixed"
         }
       ],
-      outbounds: [
+      outbounds: ([
         {
           type: "selector",
           tag: "PROXY",
-          outbounds: [
+          outbounds: ([
             "HY2",
             "TUIC-v5",
             "SS2022",
             "AnyTLS",
             "Trojan-TLS",
             "VLESS-Reality-Vision"
-          ],
+          ] + (if $anyreality_enabled then ["AnyReality"] else [] end)),
           default: "HY2"
         },
         {
@@ -740,7 +769,27 @@ render_sing_box_client() {
             }
           }
         }
-      ],
+      ] + (if $anyreality_enabled then [{
+        type: "anytls",
+        tag: "AnyReality",
+        server: $server,
+        server_port: $anyreality_port,
+        password: $anyreality_password,
+        tls: {
+          enabled: true,
+          server_name: $domain,
+          insecure: false,
+          utls: {
+            enabled: true,
+            fingerprint: "chrome"
+          },
+          reality: {
+            enabled: true,
+            public_key: $anyreality_public_key,
+            short_id: $anyreality_short_id
+          }
+        }
+      }] else [] end)),
       route: {
         rules: [
           {
@@ -1095,6 +1144,7 @@ render_subscription_route() {
   local route_hy2_start="$7" route_hy2_end="$8" route_tuic_port="$9"
   local route_ss_port="${10}" route_anytls_port="${11}" route_trojan_port="${12}"
   local route_vision_port="${13}" route_xhttp_port="${14}"
+  local route_anyreality_port="${15:-}"
 
   render_client_yaml "${NEKO_SUB_DIR}/mihomo-${profile}.yaml" yes \
     "$server" "$ingress_ip_version" \
@@ -1111,7 +1161,8 @@ render_subscription_route() {
   render_sing_box_client "${NEKO_SUB_DIR}/sing-box-${profile}.json" \
     "$server" "$dns_server" "$dns_strategy" "$rejected_ip_version" \
     "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
-    "$route_anytls_port" "$route_trojan_port" "$route_vision_port"
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" \
+    "$route_anyreality_port"
 }
 
 render_subscriptions() {
@@ -1137,25 +1188,25 @@ render_subscriptions() {
     render_subscription_route v4 "$SUBSCRIPTION_IPV4_ADDRESS" ipv4 \
       "1.1.1.1" ipv4_only 6 \
       "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" \
-      "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"
+      "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT" "$ANYREALITY_PORT"
   fi
   if network_mode_has_ipv6; then
     render_subscription_route v6 "$SUBSCRIPTION_IPV6_ADDRESS" ipv6 \
       "2606:4700:4700::1111" ipv6_only 4 \
       "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" \
-      "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT"
+      "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT" "$ANYREALITY_PORT"
   fi
   if network_mode_has_cross_routes; then
     render_subscription_route v4-to-v6 "$SUBSCRIPTION_IPV4_ADDRESS" ipv4 \
       "2606:4700:4700::1111" ipv6_only 4 \
       "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" \
       "$CROSS_ANYTLS_PORT" "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" \
-      "$CROSS_XHTTP_PORT"
+      "$CROSS_XHTTP_PORT" "$CROSS_ANYREALITY_PORT"
     render_subscription_route v6-to-v4 "$SUBSCRIPTION_IPV6_ADDRESS" ipv6 \
       "1.1.1.1" ipv4_only 6 \
       "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" \
       "$CROSS_ANYTLS_PORT" "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" \
-      "$CROSS_XHTTP_PORT"
+      "$CROSS_XHTTP_PORT" "$CROSS_ANYREALITY_PORT"
   fi
 }
 

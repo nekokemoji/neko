@@ -197,6 +197,9 @@ write_firewalld_service_file() {
   <port protocol="udp" port="${TUIC_PORT}"/>
   <port protocol="udp" port="${HY2_START}-${HY2_END}"/>
 EOF
+    if [[ "$ANYREALITY_ENABLED" == "true" ]]; then
+      printf '  <port protocol="tcp" port="%s"/>\n' "$ANYREALITY_PORT"
+    fi
     if network_mode_has_cross_routes; then
       cat <<EOF
   <port protocol="tcp" port="${CROSS_SS_PORT}"/>
@@ -208,6 +211,9 @@ EOF
   <port protocol="udp" port="${CROSS_TUIC_PORT}"/>
   <port protocol="udp" port="${CROSS_HY2_START}-${CROSS_HY2_END}"/>
 EOF
+      if [[ "$ANYREALITY_ENABLED" == "true" ]]; then
+        printf '  <port protocol="tcp" port="%s"/>\n' "$CROSS_ANYREALITY_PORT"
+      fi
     fi
     cat <<'EOF'
 </service>
@@ -226,6 +232,12 @@ write_ufw_profile_file() {
   if network_mode_has_cross_routes; then
     tcp_ports+=",${CROSS_SS_PORT},${CROSS_ANYTLS_PORT},${CROSS_TROJAN_PORT},${CROSS_VISION_PORT},${CROSS_XHTTP_PORT}"
     udp_ports+=",${CROSS_SS_PORT},${CROSS_TUIC_PORT},${CROSS_HY2_START}:${CROSS_HY2_END}"
+  fi
+  if [[ "$ANYREALITY_ENABLED" == "true" ]]; then
+    tcp_ports+=",${ANYREALITY_PORT}"
+    if network_mode_has_cross_routes; then
+      tcp_ports+=",${CROSS_ANYREALITY_PORT}"
+    fi
   fi
   cat > "$tmp" <<EOF
 [NekoProxy]

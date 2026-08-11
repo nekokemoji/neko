@@ -11,11 +11,10 @@ CADDY="$TOOLS/caddy"
 LEGO="$TOOLS/lego"
 MIHOMO="${MIHOMO_BIN:-$TOOLS/mihomo}"
 QRC="$TOOLS/qrc"
-NEXTTRACE="$TOOLS/nexttrace-tiny"
 
 for binary in \
   "$XRAY" "$SING_BOX" "$HYSTERIA" "$CADDY" "$LEGO" "$MIHOMO" \
-  "$QRC" "$NEXTTRACE"; do
+  "$QRC"; do
   [[ -x "$binary" ]] || {
     printf '缺少测试工具 %s；先运行 tests/fetch-pinned-tools.sh。\n' "$binary" >&2
     exit 1
@@ -346,16 +345,12 @@ printf '[3/9] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$LEGO" --version)" == *"$LEGO_VERSION"* ]]
 [[ "$("$MIHOMO" -v)" == *"${MIHOMO_VERSION}"* ]]
 [[ "$("$QRC" --help 2>&1)" == *'--output-format=<auto|ansi|sixel|unicode>'* ]]
-[[ "$(NO_COLOR=1 "$NEXTTRACE" --version 2>&1)" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
-[[ "$(NO_COLOR=1 "$NEXTTRACE" --help 2>&1)" == *'--source'* ]]
-[[ "$(NO_COLOR=1 "$NEXTTRACE" --help 2>&1)" == *'--json'* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--http.webroot"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--dns"* ]]
 if grep -R "releases/latest\|/latest/download" \
     "$ROOT/install.sh" "$ROOT/upgrade.sh" \
     "$ROOT/tests/fetch-pinned-tools.sh" \
-    "$ROOT/tests/fetch-pinned-qrc.sh" \
-    "$ROOT/tests/fetch-pinned-nexttrace.sh"; then
+    "$ROOT/tests/fetch-pinned-qrc.sh"; then
   printf '发现未冻结的 latest 下载地址。\n' >&2
   exit 1
 fi
@@ -363,10 +358,12 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.9.1"' "$ROOT/versions.env"
-grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh"
-grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"
-grep -Fq 'runtime/diagnostics.sh' "$ROOT/upgrade.sh"
+grep -Fq 'NEKO_RELEASE="1.10.0"' "$ROOT/versions.env"
+if grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh" \
+    || grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"; then
+  printf '新安装仍然包含旧版自研体检。\n' >&2
+  exit 1
+fi
 grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
 grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
 grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
@@ -1158,7 +1155,8 @@ decoded_qr="$(
 [[ "$decoded_qr" == "$qr_url" ]]
 bash "$ROOT/tests/panel-qrcode.sh"
 bash "$ROOT/tests/panel-route-guide.sh"
-bash "$ROOT/tests/diagnostics.sh"
+bash "$ROOT/tests/panel-third-party.sh"
+SING_BOX_BIN="$SING_BOX" bash "$ROOT/tests/experimental-anyreality.sh"
 
 printf '[7/9] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
 jq '.subscription.ipv4_token = "replacement-ipv4-token"' \
@@ -1406,7 +1404,6 @@ run_upgrade() {
     NEKO_TEST_FIREWALL_LOG="$target/firewall/commands.log" \
     NEKO_UPDATE_TEST_MODE=1 NEKO_UPDATE_SKIP_ACME=1 \
     NEKO_UPDATE_QRC_BINARY="$QRC" \
-    NEKO_UPDATE_NEXTTRACE_BINARY="$NEXTTRACE" \
     NEKO_UPDATE_IPV4_OVERRIDE=192.0.2.10 \
     NEKO_UPDATE_IPV6_OVERRIDE=2001:db8::10 \
     "$@" bash "$ROOT/upgrade.sh"
@@ -1476,9 +1473,9 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
   == "$(jq -r '.token' <<< "$upgrade_identity_before")" ]]
 [[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 16 ]]
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
-[[ -x "$UPGRADE_OK/libexec/diagnostics.sh" ]]
+[[ ! -e "$UPGRADE_OK/libexec/diagnostics.sh" ]]
 cmp -s -- "$QRC" "$UPGRADE_OK/libexec/qrc"
-cmp -s -- "$NEXTTRACE" "$UPGRADE_OK/libexec/nexttrace-tiny"
+[[ ! -e "$UPGRADE_OK/libexec/nexttrace-tiny" ]]
 grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
   "$UPGRADE_OK/systemd/neko-hysteria.service"
 [[ -s "$UPGRADE_OK/etc/config/hysteria-v4.yaml" ]]
@@ -1487,39 +1484,9 @@ grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' \
 assert_trojan_migrated "$UPGRADE_OK"
 assert_cross_routes_migrated "$UPGRADE_OK"
 if find "$UPGRADE_OK/tmp" -maxdepth 1 \
-    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \
-       -o -name 'neko-nexttrace-stage.*' \) \
+    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \) \
     | grep -q .; then
   printf '升级成功后没有清理备份目录。\n' >&2
-  exit 1
-fi
-
-UPGRADE_OPTIONAL_FAIL="$WORK/upgrade-optional-fail"
-prepare_upgrade_install "$UPGRADE_OPTIONAL_FAIL"
-cp -a -- "$ROOT/tests/helpers/systemctl" \
-  "$UPGRADE_OPTIONAL_FAIL/libexec/nexttrace-tiny"
-optional_nexttrace_before="$(
-  sha256sum "$UPGRADE_OPTIONAL_FAIL/libexec/nexttrace-tiny" \
-    | awk '{print $1}'
-)"
-run_upgrade "$UPGRADE_OPTIONAL_FAIL" \
-  NEKO_UPDATE_NEXTTRACE_BINARY="$UPGRADE_OPTIONAL_FAIL/libexec/nexttrace-tiny" \
-  > "$UPGRADE_OPTIONAL_FAIL/upgrade.log" 2>&1
-[[ "$(jq -r '.release' "$UPGRADE_OPTIONAL_FAIL/etc/state.json")" \
-  == "$NEKO_RELEASE" ]]
-assert_trojan_migrated "$UPGRADE_OPTIONAL_FAIL"
-assert_cross_routes_migrated "$UPGRADE_OPTIONAL_FAIL"
-[[ "$(
-  sha256sum "$UPGRADE_OPTIONAL_FAIL/libexec/nexttrace-tiny" \
-    | awk '{print $1}'
-)" == "$optional_nexttrace_before" ]]
-grep -Fq 'NextTrace 运行检查失败；升级仍会继续' \
-  "$UPGRADE_OPTIONAL_FAIL/upgrade.log"
-if find "$UPGRADE_OPTIONAL_FAIL/tmp" -maxdepth 1 \
-    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \
-       -o -name 'neko-nexttrace-stage.*' \) \
-    | grep -q .; then
-  printf '可选组件失败后没有清理升级临时目录。\n' >&2
   exit 1
 fi
 
@@ -1540,7 +1507,7 @@ run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_SCHEMA2/etc/state.json")" \
   == "$(jq -r '.token' <<< "$schema2_identity_before")" ]]
 [[ -x "$UPGRADE_SCHEMA2/libexec/hysteria-dual.sh" ]]
-[[ -x "$UPGRADE_SCHEMA2/libexec/diagnostics.sh" ]]
+[[ ! -e "$UPGRADE_SCHEMA2/libexec/diagnostics.sh" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
 [[ ! -e "$UPGRADE_SCHEMA2/etc/config/hysteria.yaml" ]]
@@ -1728,12 +1695,7 @@ jq '
 mv -f -- \
   "$UPGRADE_FAIL/etc/state.firewall.json" "$UPGRADE_FAIL/etc/state.json"
 cp -a -- "$ROOT/tests/helpers/systemctl" "$UPGRADE_FAIL/libexec/qrc"
-cp -a -- "$ROOT/tests/helpers/systemctl" \
-  "$UPGRADE_FAIL/libexec/nexttrace-tiny"
 qrc_before="$(sha256sum "$UPGRADE_FAIL/libexec/qrc" | awk '{print $1}')"
-nexttrace_before="$(
-  sha256sum "$UPGRADE_FAIL/libexec/nexttrace-tiny" | awk '{print $1}'
-)"
 state_before="$(sha256sum "$UPGRADE_FAIL/etc/state.json" | awk '{print $1}')"
 config_before="$(sha256sum "$UPGRADE_FAIL/etc/config/Caddyfile" | awk '{print $1}')"
 unit_before="$(sha256sum "$UPGRADE_FAIL/systemd/neko-hysteria.service" | awk '{print $1}')"
@@ -1760,9 +1722,6 @@ set -e
 grep -Fxq -- '--reload' "$UPGRADE_FAIL/firewall/commands.log"
 [[ "$(sha256sum "$UPGRADE_FAIL/libexec/qrc" | awk '{print $1}')" == "$qrc_before" ]]
 [[ "$(
-  sha256sum "$UPGRADE_FAIL/libexec/nexttrace-tiny" | awk '{print $1}'
-)" == "$nexttrace_before" ]]
-[[ "$(
   find "$UPGRADE_FAIL/etc/subscriptions" -maxdepth 1 -type f -printf '%f\n' \
     | sort | sha256sum | awk '{print $1}'
 )" == "$subscriptions_before" ]]
@@ -1770,8 +1729,7 @@ grep -Fxq -- '--reload' "$UPGRADE_FAIL/firewall/commands.log"
 [[ ! -e "$UPGRADE_FAIL/libexec/diagnostics.sh" ]]
 grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
 if find "$UPGRADE_FAIL/tmp" -maxdepth 1 \
-    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \
-       -o -name 'neko-nexttrace-stage.*' \) \
+    \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' \) \
     | grep -q .; then
   printf '升级回滚后没有清理备份目录。\n' >&2
   exit 1

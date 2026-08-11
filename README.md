@@ -56,7 +56,7 @@ bash "$TMP"
 这条入口命令本身需要系统已有 `curl` 和 `mktemp`；进入 Bootstrap 后，`tar`、`gzip`
 等精简系统可能缺少的首次安装工具会自动补齐。
 
-Bootstrap 会下载固定的 Neko 1.9.1 源码版本；核心程序也固定版本并校验对应架构的
+Bootstrap 会下载固定的 Neko 1.10.0 源码版本；核心程序也固定版本并校验对应架构的
 SHA-256，不会在安装时临时解析不确定的 `latest`。
 
 还没有配置 DNS？先不要急，继续看下面的“第一次使用，照着做就行”。
@@ -268,53 +268,26 @@ Google 搜索页面底部的位置可以作为参考。如果它明确写着“�
 
 一句话记住：**左边决定怎么连接 VPS，右边决定 VPS 怎么连接网站。**
 
-### 8. 用内置体检看懂 VPS
+### 8. 使用第三方 VPS 体检
 
 在 `neko` 面板选择 `7`：
 
 ```text
-1. 一键完整体检（推荐，只读）
-2. 只看系统与硬件（离线、只读）
-3. 只查 Neko、IP 质量与 BGP（联网、只读）
-4. 三网 ASN、延迟、100 包丢包与 TCP 成功率（需输入 ROUTE）
-5. 轻量性能（需输入 BENCH）
+1. GOECS 融合怪
+2. NodeQuality 综合测试
+0. 返回
 ```
 
-第一次建议选择 `1`。它会检查：
+选择后会直接下载并运行对应项目的官方脚本，不再经过 Neko 的确认、口令或二次验证。
+测试内容、交互、联网请求和结果解释均由第三方项目负责；运行前请自行了解其行为。
 
-- CPU、内存、磁盘、虚拟化、拥塞控制和时间同步；
-- Neko 四个服务、证书覆盖、有效期和续期定时器；
-- DNS、默认路由、本机地址以及绑定源地址后的真实 IPv4/IPv6 出口；
-- 多个公开数据库中的位置、网络类型和风险标签；
-- BGP 前缀、ASN、RPKI、注册信息和 PTR；
-- 已完成检查的通俗小结。
+### 9. 按需安装 AnyReality
 
-想看线路时选择 `4`，再选广东、上海、北京、四川、湖北、辽宁或全部地区。Neko 会按
-当前已安装的精确 IPv4/IPv6 源地址，分别测试电信、联通、移动。
+普通安装不会启用 AnyReality。在 `neko` 面板选择 `9`，进入 `AnyReality` 后单独安装，
+它才会生成独立端口和凭据、更新 Neko 防火墙规则，并加入官方 sing-box 严格订阅。
 
-请正确理解结果：
-
-- 测试方向是 **VPS → 国内参考目标的回程**，不是你家宽带到 VPS 的去程；
-- NextTrace 的 TCP 路由探测只负责显示 ASN 路径和辅助判断线路，不拿路由节点延迟冒充真实质量；
-- 目标回应 ICMP 时固定发送 100 包，显示平均延迟、P95 延迟和真实 ICMP 丢包率；
-- 目标不回应 ICMP 时，自动尝试 TCP 443，再降级到参考目标官方使用的 TCP 80，并固定进行 100 次独立连接；
-- TCP 模式显示平均/P95 握手延迟和连接成功率。连接成功率不是网络层丢包率，Neko 不会把两者混为一谈；
-- IPv4 和 IPv6 分开报告，不根据 VPS 回程结果推荐订阅链接；你的设备到 VPS 的入站好坏仍要在本地实测；
-- ASN 可以辅助识别 163、CN2、169、9929、CMI、CMNET、CMIN2，但单个 ASN 不能证明具体优化产品；
-- “原生 IP”“住宅 IP”“解锁”没有跨数据库通用的权威定义，Neko 会显示证据和分歧，不会硬猜。
-
-IPv4/IPv6 结果都只是 **VPS 回程参考**，不能代替你自己设备到 VPS 的入站实测。
-线路检测会按当前 Neko 安装状态工作：VPS 没有配置公网 IPv4 时自动跳过 IPv4，继续
-测试 IPv6；缺少某个地址族、单个目标超时或外部组件失败都只会显示“未测”，不会停止
-Neko 服务，也不会让面板崩掉。
-
-本地网络“没有公网 IPv4”通常只是处于运营商 NAT/CGNAT 后面，并不等于不能访问
-IPv4：只要不使用代理时仍能打开 IPv4 网站，一般仍可尝试 IPv4 入站。只有本地确实
-无法访问 IPv4 Internet 时，才应直接使用 IPv6 入站；这一点发生在你的设备侧，VPS
-上的体检无法替你准确识别。
-
-外部数据库、Cloudflare、RIPEstat、NextTrace 或路由目标失败时只会显示“提醒/未测”，
-不会停止或修改代理服务。
+AnyReality 是 `AnyTLS + REALITY`。本版本只向 sing-box 订阅提供该节点，不写入 Mihomo、
+Stash 或 Shadowrocket；卸载后普通七种协议保持不变。
 
 ### 9. 终端面板能做什么
 
@@ -326,7 +299,9 @@ IPv4：只要不使用代理时仍能打开 IPv4 网站，一般仍可尝试 IPv
 | 4 | 刷新已安装地址族端点 | VPS 公网 IP 变化后，安全更新绑定地址 |
 | 5 | IPv4/IPv6 安装管理 | 单栈安装以后补装缺少的地址族 |
 | 6 | 卸载全部协议 | 删除 Neko 服务、数据和自己创建的防火墙规则 |
-| 7 | VPS 硬件、IP 与网络体检 | 查看服务、IP、BGP、六地区三网 ASN、延迟、100 包丢包或 100 次 TCP 成功率 |
+| 7 | 第三方 VPS 体检 | 直接运行 GOECS 融合怪或 NodeQuality 综合测试 |
+| 8 | 双栈线路怎么选 | 仅双栈用户查看被墙换入口、送中换出口的说明 |
+| 9 | 实验性协议 | 按需安装或卸载仅 sing-box 使用的 AnyReality |
 
 订阅 URL 与节点凭据分开管理：
 
@@ -349,10 +324,10 @@ Neko 把三类工作放在同一套有状态流程里：
 
 1. 部署七种互补协议，并输出四类客户端订阅；
 2. 用端到端规则实现四方向严格 IPv4/IPv6；
-3. 在不引入常驻探针的前提下，提供硬件、服务、IP、BGP 和地区线路诊断。
+3. 从面板直接进入 GOECS 或 NodeQuality 第三方体检。
 
-它不是大型跑分脚本的替代品，也不是多用户商业面板。默认体检只读、轻量，外部证据
-失败时降级；关键配置使用冻结核心验证，维护操作尽量保持可回滚。
+它不是大型跑分脚本的替代品，也不是多用户商业面板。关键配置使用冻结核心验证，
+维护操作尽量保持可回滚；第三方体检的行为与数据处理由对应上游项目负责。
 
 ### 协议与订阅矩阵
 
@@ -365,6 +340,7 @@ Neko 把三类工作放在同一套有状态流程里：
 | Trojan TLS | sing-box | TCP + TLS | ✓ | ✓ | ✓ | ✓ |
 | VLESS REALITY Vision | Xray | TCP/RAW | ✓ | ✓ | ✓ | ✓ |
 | VLESS REALITY XHTTP | Xray | TCP/XHTTP | ✓ | — | ✓ | — |
+| AnyReality（实验性、按需） | sing-box | TCP/AnyTLS + REALITY | — | — | — | ✓ |
 
 sing-box 输出的是可直接添加为 Remote Profile 的完整官方 JSON，包含 TUN、DNS、路由、
 选择器和六个代理出站，不是节点列表或在线转换接口，并由冻结的 sing-box 真实执行
@@ -450,8 +426,8 @@ HTTP-01 可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不�
 
 ### 固定版本与测试证据
 
-当前 Neko 版本为 **1.9.1**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
-lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256。
+当前 Neko 版本为 **1.10.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
+lego、Mihomo 和 qrc 的版本与 amd64/arm64 SHA-256。
 
 本地完整测试：
 
@@ -462,7 +438,7 @@ bash tests/run.sh
 
 测试覆盖三种安装模式、4/4/16 份订阅、四方向真实核心解析、严格 DNS 与异族拒绝、
 Cloudflare DNS-01、HTTP-01、证书扩展、令牌与凭据轮换、端点刷新、补装、升级迁移、
-二维码解码、体检降级以及失败回滚。
+二维码解码、第三方体检直达、AnyReality 按需启停以及失败回滚。
 
 GitHub Actions 的发行版用户空间矩阵覆盖 Debian 12/13、Ubuntu 24.04/26.04、Rocky
 Linux 9/10、AlmaLinux 9/10 的 amd64 与 arm64，共 16 个组合。专用 VM 工作流还会在
@@ -472,17 +448,11 @@ Linux 9/10、AlmaLinux 9/10 的 amd64 与 arm64，共 16 个组合。专用 VM �
 完整 VM 仍不能替代真实公网 DNS、ACME、云安全组和移动客户端。自动化已经验证什么、
 仍需真实 VPS 验证什么，请看 [TESTING.md](TESTING.md)。
 
-### 体检的数据源与隐私
+### 第三方体检边界
 
-IP 质量并行交叉查询 ipapi.is、proxycheck.io、ipwho.is 和 ipquery.io；RIPEstat 用于
-BGP 前缀、源 ASN、RIS 可见性、RPKI 和注册资料；线路使用固定 NextTrace Tiny 与
-oneclickvirt/nt3 的省级双栈参考目标。
-
-联网体检会把被检测的公网 IP 发送给这些公开数据源，但不会读取或输出订阅令牌、协议
-密码、证书私钥或 Cloudflare Token。公开截图前仍应遮挡公网 IP。
-
-默认体检不跑高流量公网测速。CPU 和 128 MiB 磁盘轻量测试必须明确输入 `BENCH` 才会
-运行；临时文件在成功、失败或中断时都会清理。
+功能 7 只提供 GOECS 与 NodeQuality 的官方入口。Neko 不再安装自己的体检组件，也不
+预先解析或过滤第三方测试结果。第三方脚本可能安装依赖、发起公网请求或执行性能测试；
+具体数据源、隐私和资源消耗以对应上游项目说明为准。
 
 ## 升级
 
@@ -513,7 +483,7 @@ journalctl -u neko-renew.service --since '7 days ago'
 | 严格 IPv6 无法打开只有 A 记录的网站 | 目标不支持 IPv6，属于正常严格行为 | 改用右边为 IPv4 的订阅 |
 | sing-box/Karing 导入失败 | 链接不完整或客户端 Remote Profile 支持不同 | 重新复制完整链接并确认客户端版本 |
 | 二维码没有显示 | qrc 下载、终端宽度或环境不满足 | 直接复制文字链接，代理服务不受影响 |
-| 体检某项显示“未测” | 免费数据源或目标暂时不可达 | 稍后再测，不影响已安装服务 |
+| 第三方体检下载失败 | GitHub Raw 或 NodeQuality 入口暂时不可达 | 稍后重试，不影响代理服务 |
 
 安全检查命令：
 
@@ -537,7 +507,7 @@ SSH 密码或 SSH 私钥。
 - [Hysteria2 服务端配置](https://v2.hysteria.network/docs/advanced/Full-Server-Config/) 与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
 - [Xray REALITY](https://xtls.github.io/en/config/transports/reality.html)、[XHTTP](https://xtls.github.io/en/config/transports/xhttp.html) 与 [出站策略](https://xtls.github.io/en/config/outbound.html)
 - [Caddy TLS](https://caddyserver.com/docs/caddyfile/directives/tls)
-- [NextTrace](https://github.com/nxtrace/NTrace-core)、[RIPEstat](https://stat.ripe.net/docs/data-api/) 与 [oneclickvirt/nt3](https://github.com/oneclickvirt/nt3)
+- [GOECS](https://github.com/oneclickvirt/ecs) 与 [NodeQuality](https://github.com/LloydAsp/NodeQuality)
 
 </details>
 
