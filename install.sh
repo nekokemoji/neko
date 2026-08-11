@@ -317,7 +317,7 @@ assert_work_space() {
 
 download_release_binaries() {
   local xray_asset sing_asset hysteria_asset caddy_asset lego_asset
-  local qrc_asset qrc_help=""
+  local qrc_asset nexttrace_asset qrc_help="" nexttrace_version=""
   if [[ "$ARCH" == "amd64" ]]; then
     xray_asset="Xray-linux-64.zip"
   else
@@ -328,6 +328,7 @@ download_release_binaries() {
   caddy_asset="caddy_${CADDY_VERSION}_linux_${ARCH}.tar.gz"
   lego_asset="lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz"
   qrc_asset="qrc_${QRC_VERSION}_linux_${ARCH}.tar.gz"
+  nexttrace_asset="nexttrace-tiny_linux_${ARCH}"
 
   mkdir -p "$WORKDIR/downloads" "$WORKDIR/unpack" "$WORKDIR/bin"
   download_verified "Xray ${XRAY_VERSION}" \
@@ -360,6 +361,22 @@ download_release_binaries() {
     else
       rm -f -- "$WORKDIR/bin/qrc"
       warn "qrc 解压或运行检查失败；Neko 仍会继续安装，文字订阅链接不受影响。"
+    fi
+  fi
+  if download_optional_verified "NextTrace Tiny ${NEXTTRACE_VERSION}" \
+      "https://github.com/nxtrace/NTrace-core/releases/download/v${NEXTTRACE_VERSION}/${nexttrace_asset}" \
+      "$(sha_for_arch NEXTTRACE)" "$WORKDIR/downloads/nexttrace-tiny"; then
+    if install -m 0755 \
+        "$WORKDIR/downloads/nexttrace-tiny" "$WORKDIR/bin/nexttrace-tiny" \
+      && nexttrace_version="$(
+        NO_COLOR=1 "$WORKDIR/bin/nexttrace-tiny" --version 2>&1 || true
+      )" \
+      && grep -Fq "NextTrace v${NEXTTRACE_VERSION}" \
+        <<< "$nexttrace_version"; then
+      ok "可选三网线路组件 NextTrace Tiny ${NEXTTRACE_VERSION} 已校验。"
+    else
+      rm -f -- "$WORKDIR/bin/nexttrace-tiny"
+      warn "NextTrace 运行检查失败；Neko 仍会继续安装，只跳过 ASN 路径。"
     fi
   fi
   unzip -q "$WORKDIR/downloads/xray.zip" -d "$WORKDIR/unpack/xray"
@@ -501,7 +518,7 @@ create_service_user_and_dirs() {
 }
 
 install_payload() {
-  local qrc_tmp="" unit
+  local qrc_tmp="" nexttrace_tmp="" unit
   install -m 0755 "$WORKDIR/bin/xray" "$NEKO_LIBEXEC/xray"
   install -m 0755 "$WORKDIR/bin/sing-box" "$NEKO_LIBEXEC/sing-box"
   install -m 0755 "$WORKDIR/bin/hysteria" "$NEKO_LIBEXEC/hysteria"
@@ -515,11 +532,23 @@ install_payload() {
       warn "qrc 安装失败；Neko 仍会继续安装，文字订阅链接不受影响。"
     fi
   fi
+  if [[ -x "$WORKDIR/bin/nexttrace-tiny" ]]; then
+    if ! nexttrace_tmp="$(
+        mktemp "${NEKO_LIBEXEC}/.nexttrace-tiny.tmp.XXXXXX"
+      )" \
+      || ! install -m 0755 "$WORKDIR/bin/nexttrace-tiny" "$nexttrace_tmp" \
+      || ! mv -f -- "$nexttrace_tmp" "$NEKO_LIBEXEC/nexttrace-tiny"; then
+      [[ -z "$nexttrace_tmp" ]] || rm -f -- "$nexttrace_tmp"
+      warn "NextTrace 安装失败；Neko 仍会继续安装，只跳过 ASN 路径。"
+    fi
+  fi
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
+  install -m 0755 \
+    "$SCRIPT_DIR/runtime/route-diagnostics.sh" "$NEKO_LIBEXEC/route-diagnostics.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
   ln -s "$NEKO_LIBEXEC/panel.sh" /usr/local/bin/neko
@@ -541,17 +570,30 @@ generate_reality_pair() {
   printf '%s %s\n' "$private_key" "$public_key"
 }
 
+generate_anyreality_pair() {
+  local output private_key public_key
+  output="$("$WORKDIR/bin/sing-box" generate reality-keypair)"
+  private_key="$(awk -F': ' '/^PrivateKey:/ {print $2}' <<< "$output")"
+  public_key="$(awk -F': ' '/^PublicKey:/ {print $2}' <<< "$output")"
+  [[ "$private_key" =~ ^[A-Za-z0-9_-]{43}$ ]] || die "无法解析 AnyReality 私钥。"
+  [[ "$public_key" =~ ^[A-Za-z0-9_-]{43}$ ]] || die "无法解析 AnyReality 公钥。"
+  printf '%s %s\n' "$private_key" "$public_key"
+}
+
 write_initial_state() {
   local hy2_password hy2_obfs_password tuic_uuid tuic_password ss_password
   local anytls_password trojan_password vision_uuid xhttp_uuid vision_pair xhttp_pair
   local vision_private vision_public xhttp_private xhttp_public
   local vision_sid xhttp_sid xhttp_path sub_token_ipv4 sub_token_ipv6 installed_at
+  local anyreality_password anyreality_pair anyreality_private anyreality_public
+  local anyreality_short_id
   local sub_token_ipv4_to_ipv6="" sub_token_ipv6_to_ipv4=""
   local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT TROJAN_PORT
-  local VISION_PORT XHTTP_PORT
+  local VISION_PORT XHTTP_PORT ANYREALITY_PORT
   local CROSS_HY2_START="null" CROSS_HY2_END="null"
   local CROSS_TUIC_PORT="null" CROSS_SS_PORT="null" CROSS_ANYTLS_PORT="null"
   local CROSS_TROJAN_PORT="null" CROSS_VISION_PORT="null" CROSS_XHTTP_PORT="null"
+  local CROSS_ANYREALITY_PORT="null"
 
   initialize_port_reservations
   reserve_random_range 128 HY2_START HY2_END
@@ -561,6 +603,7 @@ write_initial_state() {
   reserve_random_port TROJAN_PORT
   reserve_random_port VISION_PORT
   reserve_random_port XHTTP_PORT
+  reserve_random_port ANYREALITY_PORT
   if network_mode_has_cross_routes; then
     reserve_random_range 128 CROSS_HY2_START CROSS_HY2_END
     reserve_random_port CROSS_TUIC_PORT
@@ -569,6 +612,7 @@ write_initial_state() {
     reserve_random_port CROSS_TROJAN_PORT
     reserve_random_port CROSS_VISION_PORT
     reserve_random_port CROSS_XHTTP_PORT
+    reserve_random_port CROSS_ANYREALITY_PORT
   fi
 
   hy2_password="$(random_urlsafe 24)"
@@ -582,11 +626,15 @@ write_initial_state() {
   xhttp_uuid="$(new_uuid)"
   vision_pair="$(generate_reality_pair)"
   xhttp_pair="$(generate_reality_pair)"
+  anyreality_pair="$(generate_anyreality_pair)"
   read -r vision_private vision_public <<< "$vision_pair"
   read -r xhttp_private xhttp_public <<< "$xhttp_pair"
+  read -r anyreality_private anyreality_public <<< "$anyreality_pair"
   vision_sid="$(random_hex 8)"
   xhttp_sid="$(random_hex 8)"
   xhttp_path="/$(random_urlsafe 12)"
+  anyreality_password="$(random_urlsafe 24)"
+  anyreality_short_id="$(random_hex 8)"
   sub_token_ipv4=""
   sub_token_ipv6=""
   if network_mode_has_ipv4; then
@@ -624,6 +672,8 @@ write_initial_state() {
     --argjson cross_trojan_port "$CROSS_TROJAN_PORT" \
     --argjson cross_vision_port "$CROSS_VISION_PORT" \
     --argjson cross_xhttp_port "$CROSS_XHTTP_PORT" \
+    --argjson anyreality_port "$ANYREALITY_PORT" \
+    --argjson cross_anyreality_port "$CROSS_ANYREALITY_PORT" \
     --arg hy2_password "$hy2_password" --arg hy2_obfs "$hy2_obfs_password" \
     --arg tuic_uuid "$tuic_uuid" --arg tuic_password "$tuic_password" \
     --arg ss_password "$ss_password" --arg anytls_password "$anytls_password" \
@@ -633,6 +683,10 @@ write_initial_state() {
     --arg vision_sid "$vision_sid" --arg xhttp_private "$xhttp_private" \
     --arg xhttp_public "$xhttp_public" --arg xhttp_sid "$xhttp_sid" \
     --arg xhttp_path "$xhttp_path" \
+    --arg anyreality_password "$anyreality_password" \
+    --arg anyreality_private "$anyreality_private" \
+    --arg anyreality_public "$anyreality_public" \
+    --arg anyreality_short_id "$anyreality_short_id" \
     --arg sub_token_ipv4 "$sub_token_ipv4" \
     --arg sub_token_ipv6 "$sub_token_ipv6" \
     --arg sub_token_ipv4_to_ipv6 "$sub_token_ipv4_to_ipv6" \
@@ -731,6 +785,19 @@ write_initial_state() {
           if $network_mode == "ipv6-only" or $network_mode == "dual"
           then $subscription_address_ipv6 else null end
         )
+      },
+      experimental: {
+        anyreality: {
+          enabled: true,
+          port: $anyreality_port,
+          cross_port: (
+            if $network_mode == "dual" then $cross_anyreality_port else null end
+          ),
+          password: $anyreality_password,
+          private_key: $anyreality_private,
+          public_key: $anyreality_public,
+          short_id: $anyreality_short_id
+        }
       },
       firewall: {manager: "none", zone: "", zones: []},
       bbr: {managed: false, previous_qdisc: "", previous_congestion_control: ""}

@@ -1045,10 +1045,12 @@ render_shadowrocket() {
   local target="$1" server="$2" route_hy2_start="$3" route_hy2_end="$4"
   local route_tuic_port="$5" route_ss_port="$6" route_anytls_port="$7"
   local route_trojan_port="$8" route_vision_port="$9" route_xhttp_port="${10}"
+  local route_anyreality_port="${11:-}"
   # The strict variants use an IP literal so Shadowrocket cannot resolve or
   # fall back to the other address family. TLS SNI, REALITY serverName and
   # XHTTP Host remain bound to the certificate domain.
-  write_atomic "$target" <<EOF
+  {
+    cat <<EOF
 proxies:
   - name: "HY2"
     type: hysteria2
@@ -1091,6 +1093,23 @@ proxies:
     alpn: [h2, http/1.1]
     client-fingerprint: chrome
     skip-cert-verify: false
+EOF
+  if [[ "$ANYREALITY_ENABLED" == "true" && -n "$route_anyreality_port" ]]; then
+    cat <<EOF
+  - name: "AnyReality"
+    type: anytls
+    server: "${server}"
+    port: ${route_anyreality_port}
+    password: "${ANYREALITY_PASSWORD}"
+    sni: "${DOMAIN}"
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: "${ANYREALITY_PUBLIC_KEY}"
+      short-id: "${ANYREALITY_SHORT_ID}"
+    skip-cert-verify: false
+EOF
+  fi
+  cat <<EOF
   - name: "Trojan-TLS"
     type: trojan
     server: "${server}"
@@ -1136,6 +1155,7 @@ proxies:
       mode: stream-one
     skip-cert-verify: false
 EOF
+  } | write_atomic "$target"
 }
 
 render_subscription_route() {
@@ -1156,7 +1176,8 @@ render_subscription_route() {
     "$route_anytls_port" "$route_trojan_port" "$route_vision_port"
   render_shadowrocket "${NEKO_SUB_DIR}/shadowrocket-${profile}.txt" "$server" \
     "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
-    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" "$route_xhttp_port"
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" "$route_xhttp_port" \
+    "$route_anyreality_port"
   # Official sing-box Remote Profiles are complete JSON configurations.
   render_sing_box_client "${NEKO_SUB_DIR}/sing-box-${profile}.json" \
     "$server" "$dns_server" "$dns_strategy" "$rejected_ip_version" \

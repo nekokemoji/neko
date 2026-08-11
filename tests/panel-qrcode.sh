@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="$(mktemp -d "$ROOT/tests/panel-qr.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-panel-qr.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
 mkdir -p "$WORK/etc" "$WORK/libexec/lib"

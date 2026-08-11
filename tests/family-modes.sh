@@ -4,10 +4,10 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="${NEKO_TEST_TOOLS_DIR:-$ROOT/tests/.tools}"
-XRAY="$TOOLS/xray"
-SING_BOX="$TOOLS/sing-box"
-HYSTERIA="$TOOLS/hysteria"
-CADDY="$TOOLS/caddy"
+XRAY="${XRAY_BIN:-$TOOLS/xray}"
+SING_BOX="${SING_BOX_BIN:-$TOOLS/sing-box}"
+HYSTERIA="${HYSTERIA_BIN:-$TOOLS/hysteria}"
+CADDY="${CADDY_BIN:-$TOOLS/caddy}"
 MIHOMO="${MIHOMO_BIN:-$TOOLS/mihomo}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-family-modes.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT

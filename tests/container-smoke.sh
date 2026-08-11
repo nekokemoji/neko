@@ -65,6 +65,12 @@ if [[ -n "${NEKO_CONTAINER_QRC:-}" ]]; then
   [[ -n "$qrc_output" && "$qrc_output" == *'█'* ]]
 fi
 
+if [[ -n "${NEKO_CONTAINER_NEXTTRACE:-}" ]]; then
+  [[ -x "$NEKO_CONTAINER_NEXTTRACE" ]]
+  [[ "$(NO_COLOR=1 "$NEKO_CONTAINER_NEXTTRACE" --version 2>&1)" \
+    == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
+fi
+
 # Exercise each distro's real awk while mocking only the explicit DNS query,
 # so malformed A answers are rejected consistently across the matrix.
 dig() {
@@ -106,3 +112,4 @@ fi
 
 bash "$ROOT/tests/subscription-render-smoke.sh"
 bash "$ROOT/tests/family-render-smoke.sh"
+bash "$ROOT/tests/route-diagnostics.sh"

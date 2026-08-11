@@ -51,5 +51,6 @@ install -m 0755 "$WORK/unpack/caddy/caddy" "$DEST/caddy"
 install -m 0755 "$WORK/unpack/lego/lego" "$DEST/lego"
 install -m 0755 "$WORK/unpack/mihomo" "$DEST/mihomo"
 bash "$ROOT/tests/fetch-pinned-qrc.sh" "$ARCH" "$DEST/qrc"
+bash "$ROOT/tests/fetch-pinned-nexttrace.sh" "$ARCH" "$DEST/nexttrace-tiny"
 
 printf '冻结测试工具已放到：%s\n' "$DEST"

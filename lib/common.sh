@@ -1321,9 +1321,9 @@ show_required_ports() {
       "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT"
   fi
   if [[ "$ANYREALITY_ENABLED" == "true" ]]; then
-    printf '实验性 AnyReality TCP：%s\n' "$ANYREALITY_PORT"
+    printf 'AnyReality TCP：%s\n' "$ANYREALITY_PORT"
     if network_mode_has_cross_routes; then
-      printf '实验性跨族 AnyReality TCP：%s\n' "$CROSS_ANYREALITY_PORT"
+      printf '双栈跨族 AnyReality TCP：%s\n' "$CROSS_ANYREALITY_PORT"
     fi
   fi
   printf '仅回环 TCP：8443（不要对公网放行）\n'

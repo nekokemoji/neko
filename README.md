@@ -56,7 +56,7 @@ bash "$TMP"
 这条入口命令本身需要系统已有 `curl` 和 `mktemp`；进入 Bootstrap 后，`tar`、`gzip`
 等精简系统可能缺少的首次安装工具会自动补齐。
 
-Bootstrap 会下载固定的 Neko 1.10.0 源码版本；核心程序也固定版本并校验对应架构的
+Bootstrap 会下载固定的 Neko 1.11.0 源码版本；核心程序也固定版本并校验对应架构的
 SHA-256，不会在安装时临时解析不确定的 `latest`。
 
 还没有配置 DNS？先不要急，继续看下面的“第一次使用，照着做就行”。
@@ -268,26 +268,21 @@ Google 搜索页面底部的位置可以作为参考。如果它明确写着“�
 
 一句话记住：**左边决定怎么连接 VPS，右边决定 VPS 怎么连接网站。**
 
-### 8. 使用第三方 VPS 体检
+### 8. 使用 VPS 体检
 
 在 `neko` 面板选择 `7`：
 
 ```text
 1. GOECS 融合怪
 2. NodeQuality 综合测试
+3. Neko 三网线路检测
 0. 返回
 ```
 
-选择后会直接下载并运行对应项目的官方脚本，不再经过 Neko 的确认、口令或二次验证。
-测试内容、交互、联网请求和结果解释均由第三方项目负责；运行前请自行了解其行为。
-
-### 9. 按需安装 AnyReality
-
-普通安装不会启用 AnyReality。在 `neko` 面板选择 `9`，进入 `AnyReality` 后单独安装，
-它才会生成独立端口和凭据、更新 Neko 防火墙规则，并加入官方 sing-box 严格订阅。
-
-AnyReality 是 `AnyTLS + REALITY`。本版本只向 sing-box 订阅提供该节点，不写入 Mihomo、
-Stash 或 Shadowrocket；卸载后普通七种协议保持不变。
+前两项会直接下载并运行对应项目的官方脚本，不经过 Neko 的确认、口令或二次验证。
+第三项只恢复 Neko 自带的六地三网回程检测：可单选广东、上海、北京、四川、湖北、
+辽宁，或选择全部六地；输出 ASN 线路、平均/P95 延迟与丢包。每个目标固定发送 100 个
+ICMP 包；目标不回应 ICMP 时改测 100 次 TCP 连接成功率。
 
 ### 9. 终端面板能做什么
 
@@ -299,9 +294,8 @@ Stash 或 Shadowrocket；卸载后普通七种协议保持不变。
 | 4 | 刷新已安装地址族端点 | VPS 公网 IP 变化后，安全更新绑定地址 |
 | 5 | IPv4/IPv6 安装管理 | 单栈安装以后补装缺少的地址族 |
 | 6 | 卸载全部协议 | 删除 Neko 服务、数据和自己创建的防火墙规则 |
-| 7 | 第三方 VPS 体检 | 直接运行 GOECS 融合怪或 NodeQuality 综合测试 |
-| 8 | 双栈线路怎么选 | 仅双栈用户查看被墙换入口、送中换出口的说明 |
-| 9 | 实验性协议 | 按需安装或卸载仅 sing-box 使用的 AnyReality |
+| 7 | 第三方 VPS 体检 & Neko 自带体检 | 第三方综合测试或六地三网线路检测 |
+| 8 | 双栈线路怎么选 | 阅读说明后按被墙入口和“送中”出口生成推荐/备用链接与二维码 |
 
 订阅 URL 与节点凭据分开管理：
 
@@ -322,9 +316,9 @@ Stash 或 Shadowrocket；卸载后普通七种协议保持不变。
 
 Neko 把三类工作放在同一套有状态流程里：
 
-1. 部署七种互补协议，并输出四类客户端订阅；
+1. 部署八种互补协议，并输出四类客户端订阅；
 2. 用端到端规则实现四方向严格 IPv4/IPv6；
-3. 从面板直接进入 GOECS 或 NodeQuality 第三方体检。
+3. 从面板进入第三方体检或 Neko 六地三网线路检测。
 
 它不是大型跑分脚本的替代品，也不是多用户商业面板。关键配置使用冻结核心验证，
 维护操作尽量保持可回滚；第三方体检的行为与数据处理由对应上游项目负责。
@@ -340,10 +334,10 @@ Neko 把三类工作放在同一套有状态流程里：
 | Trojan TLS | sing-box | TCP + TLS | ✓ | ✓ | ✓ | ✓ |
 | VLESS REALITY Vision | Xray | TCP/RAW | ✓ | ✓ | ✓ | ✓ |
 | VLESS REALITY XHTTP | Xray | TCP/XHTTP | ✓ | — | ✓ | — |
-| AnyReality（实验性、按需） | sing-box | TCP/AnyTLS + REALITY | — | — | — | ✓ |
+| AnyReality | sing-box | TCP/AnyTLS + REALITY | — | — | ✓ | ✓ |
 
 sing-box 输出的是可直接添加为 Remote Profile 的完整官方 JSON，包含 TUN、DNS、路由、
-选择器和六个代理出站，不是节点列表或在线转换接口，并由冻结的 sing-box 真实执行
+选择器和七个代理出站，不是节点列表或在线转换接口，并由冻结的 sing-box 真实执行
 `check`。
 
 TUIC、Trojan 等节点即使使用 IP 字面量作为服务器，也保留基础域名 SNI 并正常验证
@@ -426,8 +420,8 @@ HTTP-01 可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不�
 
 ### 固定版本与测试证据
 
-当前 Neko 版本为 **1.10.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
-lego、Mihomo 和 qrc 的版本与 amd64/arm64 SHA-256。
+当前 Neko 版本为 **1.11.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
+lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256。
 
 本地完整测试：
 
@@ -438,7 +432,7 @@ bash tests/run.sh
 
 测试覆盖三种安装模式、4/4/16 份订阅、四方向真实核心解析、严格 DNS 与异族拒绝、
 Cloudflare DNS-01、HTTP-01、证书扩展、令牌与凭据轮换、端点刷新、补装、升级迁移、
-二维码解码、第三方体检直达、AnyReality 按需启停以及失败回滚。
+二维码解码、第三方体检直达、六地三网线路、默认 AnyReality 以及失败回滚。
 
 GitHub Actions 的发行版用户空间矩阵覆盖 Debian 12/13、Ubuntu 24.04/26.04、Rocky
 Linux 9/10、AlmaLinux 9/10 的 amd64 与 arm64，共 16 个组合。专用 VM 工作流还会在

@@ -19,6 +19,8 @@ NEKO_UPDATE_LOCK_FILE="${NEKO_UPDATE_LOCK_FILE:-/run/lock/neko-maintenance.lock}
 BACKUP_DIR=""
 QRC_STAGE_DIR=""
 QRC_STAGED_BINARY=""
+NEXTTRACE_STAGE_DIR=""
+NEXTTRACE_STAGED_BINARY=""
 ROLLBACK_READY=0
 UPGRADE_FIREWALL_MANAGER="none"
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
@@ -125,6 +127,99 @@ install_staged_qrc() {
   fi
   ok "终端二维码组件已更新。"
 }
+cleanup_nexttrace_stage() {
+  local base="${NEKO_UPDATE_TMP_DIR%/}"
+  [[ -n "$NEXTTRACE_STAGE_DIR" ]] || return 0
+  if [[ -n "$base" \
+    && "$NEXTTRACE_STAGE_DIR" == "$base"/neko-nexttrace-stage.* ]]; then
+    rm -rf -- "$NEXTTRACE_STAGE_DIR"
+    NEXTTRACE_STAGE_DIR=""
+    NEXTTRACE_STAGED_BINARY=""
+  fi
+}
+
+
+stage_optional_nexttrace() {
+  local nexttrace_source="${NEKO_UPDATE_NEXTTRACE_BINARY:-}"
+  local nexttrace_asset nexttrace_version
+
+  case "${ARCH_OVERRIDE:-$(uname -m)}" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *)
+      warn "当前 CPU 没有匹配的 NextTrace；升级仍会继续，只跳过三网线路测试。"
+      return 0
+      ;;
+  esac
+  export ARCH
+
+  if ! NEXTTRACE_STAGE_DIR="$(
+      mktemp -d "${NEKO_UPDATE_TMP_DIR%/}/neko-nexttrace-stage.XXXXXX"
+    )"; then
+    NEXTTRACE_STAGE_DIR=""
+    warn "无法创建 NextTrace 临时目录；升级仍会继续，只跳过三网线路测试。"
+    return 0
+  fi
+  NEXTTRACE_STAGED_BINARY="${NEXTTRACE_STAGE_DIR}/nexttrace-tiny"
+
+  if [[ -n "$nexttrace_source" ]]; then
+    if [[ ! -x "$nexttrace_source" ]] \
+      || ! install -m 0755 \
+        "$nexttrace_source" "$NEXTTRACE_STAGED_BINARY"; then
+      warn "测试提供的 NextTrace 不可用；升级仍会继续，只跳过三网线路测试。"
+      cleanup_nexttrace_stage
+      return 0
+    fi
+  else
+    for nexttrace_source in curl sha256sum install; do
+      if ! command -v "$nexttrace_source" >/dev/null 2>&1; then
+        warn "缺少 ${nexttrace_source}，无法更新可选 NextTrace；只跳过三网线路测试。"
+        cleanup_nexttrace_stage
+        return 0
+      fi
+    done
+    nexttrace_asset="nexttrace-tiny_linux_${ARCH}"
+    if ! download_optional_verified "NextTrace Tiny ${NEXTTRACE_VERSION}" \
+        "https://github.com/nxtrace/NTrace-core/releases/download/v${NEXTTRACE_VERSION}/${nexttrace_asset}" \
+        "$(sha_for_arch NEXTTRACE)" "$NEXTTRACE_STAGED_BINARY"; then
+      cleanup_nexttrace_stage
+      return 0
+    fi
+    if ! chmod 0755 "$NEXTTRACE_STAGED_BINARY"; then
+      warn "NextTrace 准备失败；升级仍会继续，只跳过三网线路测试。"
+      cleanup_nexttrace_stage
+      return 0
+    fi
+  fi
+
+  nexttrace_version="$(
+    NO_COLOR=1 "$NEXTTRACE_STAGED_BINARY" --version 2>&1 || true
+  )"
+  if ! grep -Fq "NextTrace v${NEXTTRACE_VERSION}" \
+      <<< "$nexttrace_version"; then
+    warn "NextTrace 运行检查失败；升级仍会继续，只跳过三网线路测试。"
+    cleanup_nexttrace_stage
+    return 0
+  fi
+  ok "可选三网线路组件 NextTrace Tiny ${NEXTTRACE_VERSION} 已校验。"
+}
+
+install_staged_nexttrace() {
+  local nexttrace_tmp=""
+  [[ -n "$NEXTTRACE_STAGED_BINARY" \
+    && -x "$NEXTTRACE_STAGED_BINARY" ]] || return 0
+  if ! nexttrace_tmp="$(
+      mktemp "${NEKO_LIBEXEC}/.nexttrace-tiny.tmp.XXXXXX"
+    )" \
+    || ! install -m 0755 "$NEXTTRACE_STAGED_BINARY" "$nexttrace_tmp" \
+    || ! mv -f -- "$nexttrace_tmp" "$NEKO_LIBEXEC/nexttrace-tiny"; then
+    [[ -z "$nexttrace_tmp" ]] || rm -f -- "$nexttrace_tmp"
+    warn "NextTrace 安装失败；已保留原状态，只跳过三网线路测试。"
+    return 0
+  fi
+  ok "三网线路检测组件已更新。"
+}
+
 
 restore_tree() {
   local backup="$1" target="$2"
@@ -154,6 +249,9 @@ rollback_upgrade() {
   cp -a -- "$BACKUP_DIR/renew.sh" "$NEKO_LIBEXEC/renew.sh" || rollback_ok=0
   restore_optional_file \
     "$BACKUP_DIR/diagnostics.sh" "$NEKO_LIBEXEC/diagnostics.sh" || rollback_ok=0
+  restore_optional_file \
+    "$BACKUP_DIR/route-diagnostics.sh" \
+    "$NEKO_LIBEXEC/route-diagnostics.sh" || rollback_ok=0
   restore_optional_file \
     "$BACKUP_DIR/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh" || rollback_ok=0
   restore_optional_file \
@@ -189,6 +287,7 @@ rollback_upgrade() {
     >/dev/null 2>&1 || rollback_ok=0
   if (( rollback_ok == 1 )); then
     cleanup_qrc_stage
+    cleanup_nexttrace_stage
     cleanup_backup
   else
     warn "自动恢复未完全成功；为防止数据丢失，备份保留在 ${BACKUP_DIR}。"
@@ -203,6 +302,7 @@ finish_upgrade() {
     rollback_upgrade "$rc"
   fi
   cleanup_qrc_stage
+  cleanup_nexttrace_stage
   cleanup_backup
   exit "$rc"
 }
@@ -288,6 +388,9 @@ main() {
   local cross_hy2_start="null" cross_hy2_end="null"
   local cross_tuic_port="null" cross_ss_port="null" cross_anytls_port="null"
   local cross_trojan_port="null" cross_vision_port="null" cross_xhttp_port="null"
+  local anyreality_enabled anyreality_port="" cross_anyreality_port="null"
+  local anyreality_password="" anyreality_private="" anyreality_public=""
+  local anyreality_short_id="" anyreality_pair=""
   local cross_ipv4_to_ipv6_token="" cross_ipv6_to_ipv4_token=""
   local -a domain_args=()
 
@@ -315,6 +418,7 @@ main() {
   done
   [[ -r "$SCRIPT_DIR/lib/common.sh" && -r "$SCRIPT_DIR/lib/render.sh" \
     && -r "$SCRIPT_DIR/lib/firewall.sh" && -r "$SCRIPT_DIR/runtime/panel.sh" \
+    && -r "$SCRIPT_DIR/runtime/route-diagnostics.sh" \
     && -r "$SCRIPT_DIR/runtime/renew.sh" \
     && -r "$SCRIPT_DIR/runtime/hysteria-dual.sh" \
     && -r "$SCRIPT_DIR/systemd/neko-hysteria.service" ]] || die "升级包不完整。"
@@ -323,6 +427,7 @@ main() {
   [[ -d "$NEKO_UPDATE_TMP_DIR" && -w "$NEKO_UPDATE_TMP_DIR" ]] \
     || die "升级临时目录不可写：${NEKO_UPDATE_TMP_DIR}"
   stage_optional_qrc
+  stage_optional_nexttrace
 
   current_schema="$(jq -er '.schema // 1 | select(type == "number")' "$NEKO_STATE")" \
     || die "state.json 缺少有效 schema。"
@@ -378,6 +483,33 @@ main() {
       || die "state.json 中的 Trojan 端口范围无效。"
   fi
 
+  anyreality_enabled="$(jq -r '.experimental.anyreality.enabled // false' "$NEKO_STATE")"
+  case "$anyreality_enabled" in
+    true)
+      anyreality_port="$(jq -er '.experimental.anyreality.port | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+        || die "state.json 中的 AnyReality 端口无效。"
+      anyreality_password="$(jq -r '.experimental.anyreality.password // empty' "$NEKO_STATE")"
+      anyreality_private="$(jq -r '.experimental.anyreality.private_key // empty' "$NEKO_STATE")"
+      anyreality_public="$(jq -r '.experimental.anyreality.public_key // empty' "$NEKO_STATE")"
+      anyreality_short_id="$(jq -r '.experimental.anyreality.short_id // empty' "$NEKO_STATE")"
+      (( anyreality_port >= 10000 && anyreality_port <= 60000 )) \
+        || die "state.json 中的 AnyReality 端口范围无效。"
+      [[ "$anyreality_password" =~ ^[A-Za-z0-9_-]{16,128}$ \
+        && "$anyreality_private" =~ ^[A-Za-z0-9_-]{43}$ \
+        && "$anyreality_public" =~ ^[A-Za-z0-9_-]{43}$ \
+        && "$anyreality_short_id" =~ ^[0-9a-f]{16}$ ]] \
+        || die "state.json 中的 AnyReality 凭据无效。"
+      if network_mode_has_cross_routes; then
+        cross_anyreality_port="$(jq -er '.experimental.anyreality.cross_port | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+          || die "state.json 中的跨族 AnyReality 端口无效。"
+        (( cross_anyreality_port >= 10000 && cross_anyreality_port <= 60000 )) \
+          || die "state.json 中的跨族 AnyReality 端口范围无效。"
+      fi
+      ;;
+    false) ;;
+    *) die "state.json 中的 AnyReality 启用状态无效。" ;;
+  esac
+
   if network_mode_has_cross_routes && (( current_schema == 4 )); then
     cross_hy2_start="$(jq -er '.ports.cross.hysteria2_start | select(type == "number" and . == floor)' "$NEKO_STATE")" \
       || die "state.json 中的跨族 Hysteria2 起始端口无效。"
@@ -430,6 +562,16 @@ main() {
   else
     reserve_random_port trojan_port
   fi
+  if [[ "$anyreality_enabled" == true ]]; then
+    [[ -z "${NEKO_RESERVED_PORTS[$anyreality_port]+x}" ]] \
+      || die "state.json 中的 AnyReality 端口与现有代理端口冲突。"
+    NEKO_RESERVED_PORTS["$anyreality_port"]=1
+    if network_mode_has_cross_routes; then
+      [[ -z "${NEKO_RESERVED_PORTS[$cross_anyreality_port]+x}" ]] \
+        || die "state.json 中的跨族 AnyReality 端口与现有代理端口冲突。"
+      NEKO_RESERVED_PORTS["$cross_anyreality_port"]=1
+    fi
+  fi
 
   if network_mode_has_cross_routes; then
     if (( current_schema != 4 )); then
@@ -445,6 +587,22 @@ main() {
     fi
   fi
 
+  if [[ "$anyreality_enabled" != true ]]; then
+    reserve_random_port anyreality_port
+    if network_mode_has_cross_routes; then
+      reserve_random_port cross_anyreality_port
+    fi
+    anyreality_pair="$("$NEKO_LIBEXEC/sing-box" generate reality-keypair)" \
+      || die "无法生成 AnyReality REALITY 密钥。"
+    anyreality_private="$(awk -F': ' '/^PrivateKey:/ {print $2}' <<< "$anyreality_pair")"
+    anyreality_public="$(awk -F': ' '/^PublicKey:/ {print $2}' <<< "$anyreality_pair")"
+    [[ "$anyreality_private" =~ ^[A-Za-z0-9_-]{43}$ \
+      && "$anyreality_public" =~ ^[A-Za-z0-9_-]{43}$ ]] \
+      || die "无法解析 AnyReality REALITY 密钥。"
+    anyreality_password="$(random_urlsafe 24)"
+    anyreality_short_id="$(random_hex 8)"
+  fi
+
   HY2_START="$hy2_start"
   HY2_END="$hy2_end"
   TUIC_PORT="$tuic_port"
@@ -453,6 +611,12 @@ main() {
   TROJAN_PORT="$trojan_port"
   VISION_PORT="$vision_port"
   XHTTP_PORT="$xhttp_port"
+  ANYREALITY_ENABLED=true
+  ANYREALITY_PORT="$anyreality_port"
+  ANYREALITY_PASSWORD="$anyreality_password"
+  ANYREALITY_PRIVATE_KEY="$anyreality_private"
+  ANYREALITY_PUBLIC_KEY="$anyreality_public"
+  ANYREALITY_SHORT_ID="$anyreality_short_id"
   if network_mode_has_cross_routes; then
     CROSS_HY2_START="$cross_hy2_start"
     CROSS_HY2_END="$cross_hy2_end"
@@ -462,6 +626,7 @@ main() {
     CROSS_TROJAN_PORT="$cross_trojan_port"
     CROSS_VISION_PORT="$cross_vision_port"
     CROSS_XHTTP_PORT="$cross_xhttp_port"
+    CROSS_ANYREALITY_PORT="$cross_anyreality_port"
   fi
   validate_proxy_port_layout
   trojan_password="$(jq -r '.credentials.trojan_password // empty' "$NEKO_STATE")"
@@ -511,6 +676,9 @@ main() {
   cp -a -- "$NEKO_LIBEXEC/renew.sh" "$BACKUP_DIR/renew.sh"
   [[ ! -e "$NEKO_LIBEXEC/diagnostics.sh" ]] \
     || cp -a -- "$NEKO_LIBEXEC/diagnostics.sh" "$BACKUP_DIR/diagnostics.sh"
+  [[ ! -e "$NEKO_LIBEXEC/route-diagnostics.sh" ]] \
+    || cp -a -- \
+      "$NEKO_LIBEXEC/route-diagnostics.sh" "$BACKUP_DIR/route-diagnostics.sh"
   [[ ! -e "$NEKO_LIBEXEC/hysteria-dual.sh" ]] \
     || cp -a -- "$NEKO_LIBEXEC/hysteria-dual.sh" "$BACKUP_DIR/hysteria-dual.sh"
   [[ ! -e "$NEKO_LIBEXEC/qrc" ]] \
@@ -528,11 +696,14 @@ main() {
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
+  install -m 0755 \
+    "$SCRIPT_DIR/runtime/route-diagnostics.sh" "$NEKO_LIBEXEC/route-diagnostics.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
   install -m 0755 \
     "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
   install_staged_qrc
-  rm -f -- "$NEKO_LIBEXEC/diagnostics.sh" "$NEKO_LIBEXEC/nexttrace-tiny"
+  install_staged_nexttrace
+  rm -f -- "$NEKO_LIBEXEC/diagnostics.sh"
   install -m 0644 \
     "$SCRIPT_DIR/systemd/neko-hysteria.service" \
     "$NEKO_SYSTEMD/neko-hysteria.service"
@@ -558,6 +729,12 @@ main() {
     --argjson cross_trojan_port "$cross_trojan_port" \
     --argjson cross_vision_port "$cross_vision_port" \
     --argjson cross_xhttp_port "$cross_xhttp_port" \
+    --argjson anyreality_port "$anyreality_port" \
+    --argjson cross_anyreality_port "$cross_anyreality_port" \
+    --arg anyreality_password "$anyreality_password" \
+    --arg anyreality_private "$anyreality_private" \
+    --arg anyreality_public "$anyreality_public" \
+    --arg anyreality_short_id "$anyreality_short_id" \
     --arg trojan_password "$trojan_password" \
     --arg legacy_token "$legacy_token" \
     --arg cross_ipv4_to_ipv6_token "$cross_ipv4_to_ipv6_token" \
@@ -576,8 +753,19 @@ main() {
            vless_reality_vision: $cross_vision_port,
            vless_reality_xhttp: $cross_xhttp_port
          } else null end
-       )
+     )
      | .credentials.trojan_password = $trojan_password
+     | .experimental.anyreality = {
+         enabled: true,
+         port: $anyreality_port,
+         cross_port: (
+           if $network_mode == "dual" then $cross_anyreality_port else null end
+         ),
+         password: $anyreality_password,
+         private_key: $anyreality_private,
+         public_key: $anyreality_public,
+         short_id: $anyreality_short_id
+       }
      | .network = {mode: $network_mode}
      | .subscription.ipv4_token = (
          if $network_mode == "ipv4-only" or $network_mode == "dual"
@@ -682,6 +870,7 @@ main() {
 
   ROLLBACK_READY=0
   cleanup_qrc_stage
+  cleanup_nexttrace_stage
   cleanup_backup
   ok "已从 Neko ${current_release} 升级到 ${NEKO_RELEASE}。"
   show_subscription_links
