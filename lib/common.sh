@@ -772,6 +772,12 @@ reserve_loaded_proxy_ports() {
       NEKO_RESERVED_PORTS["$port"]=1
     done
   fi
+  if [[ "${ANYREALITY_ENABLED:-false}" == "true" ]]; then
+    NEKO_RESERVED_PORTS["$ANYREALITY_PORT"]=1
+    if network_mode_has_cross_routes "$reserved_mode"; then
+      NEKO_RESERVED_PORTS["$CROSS_ANYREALITY_PORT"]=1
+    fi
+  fi
 }
 
 reserve_random_port() {
@@ -912,6 +918,15 @@ validate_proxy_port_layout() {
     )
   fi
 
+  if [[ "${ANYREALITY_ENABLED:-false}" == "true" ]]; then
+    port_labels+=("AnyReality")
+    port_values+=("$ANYREALITY_PORT")
+    if network_mode_has_cross_routes; then
+      port_labels+=("跨族 AnyReality")
+      port_values+=("$CROSS_ANYREALITY_PORT")
+    fi
+  fi
+
   for index in "${!range_labels[@]}"; do
     label="${range_labels[$index]}"
     start="${range_starts[$index]}"
@@ -984,6 +999,40 @@ load_state() {
     CROSS_VISION_PORT=""
     CROSS_XHTTP_PORT=""
   fi
+  ANYREALITY_ENABLED="$(jq -r '.experimental.anyreality.enabled // false' "$NEKO_STATE")"
+  case "$ANYREALITY_ENABLED" in
+    true)
+      ANYREALITY_PORT="$(state_value '.experimental.anyreality.port')"
+      ANYREALITY_PASSWORD="$(state_value '.experimental.anyreality.password')"
+      ANYREALITY_PRIVATE_KEY="$(state_value '.experimental.anyreality.private_key')"
+      ANYREALITY_PUBLIC_KEY="$(state_value '.experimental.anyreality.public_key')"
+      ANYREALITY_SHORT_ID="$(state_value '.experimental.anyreality.short_id')"
+      if network_mode_has_cross_routes; then
+        CROSS_ANYREALITY_PORT="$(state_value '.experimental.anyreality.cross_port')"
+      else
+        CROSS_ANYREALITY_PORT=""
+      fi
+      [[ "$ANYREALITY_PASSWORD" =~ ^[A-Za-z0-9_-]{16,128}$ ]] \
+        || die "state.json 中的 AnyReality 密码格式无效。"
+      [[ "$ANYREALITY_PRIVATE_KEY" =~ ^[A-Za-z0-9_-]{43}$ ]] \
+        || die "state.json 中的 AnyReality 私钥格式无效。"
+      [[ "$ANYREALITY_PUBLIC_KEY" =~ ^[A-Za-z0-9_-]{43}$ ]] \
+        || die "state.json 中的 AnyReality 公钥格式无效。"
+      [[ "$ANYREALITY_SHORT_ID" =~ ^[0-9a-f]{16}$ ]] \
+        || die "state.json 中的 AnyReality Short ID 格式无效。"
+      ;;
+    false)
+      ANYREALITY_PORT=""
+      CROSS_ANYREALITY_PORT=""
+      ANYREALITY_PASSWORD=""
+      ANYREALITY_PRIVATE_KEY=""
+      ANYREALITY_PUBLIC_KEY=""
+      ANYREALITY_SHORT_ID=""
+      ;;
+    *)
+      die "state.json 中的 AnyReality 启用状态无效。"
+      ;;
+  esac
   validate_proxy_port_layout
   HY2_PASSWORD="$(state_value '.credentials.hysteria2_password')"
   HY2_OBFS_PASSWORD="$(state_value '.credentials.hysteria2_obfs_password')"
@@ -1270,6 +1319,12 @@ show_required_ports() {
       "$CROSS_VISION_PORT" "$CROSS_XHTTP_PORT"
     printf '双栈跨族线路 UDP：%s-%s, %s, %s\n' \
       "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT"
+  fi
+  if [[ "$ANYREALITY_ENABLED" == "true" ]]; then
+    printf '实验性 AnyReality TCP：%s\n' "$ANYREALITY_PORT"
+    if network_mode_has_cross_routes; then
+      printf '实验性跨族 AnyReality TCP：%s\n' "$CROSS_ANYREALITY_PORT"
+    fi
   fi
   printf '仅回环 TCP：8443（不要对公网放行）\n'
 }

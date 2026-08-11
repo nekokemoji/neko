@@ -1,6 +1,6 @@
-# Neko 1.9.1 测试范围
+# Neko 1.10.0 测试范围
 
-最近核对日期：2026-08-03（Asia/Tokyo）。
+最近核对日期：2026-08-10（America/Los_Angeles）。
 
 这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
@@ -20,10 +20,10 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
 - firewalld 只根据已安装地址族的默认路由网卡寻找实际 zone，而不是盲目使用 default zone；补装另一族时不会接管或回滚预先存在的区域规则。
-- Bootstrap 离线解压固定源码包、核对 1.9.1 标记及体检组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.10.0 标记并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
 - 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
-- Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29、可选 qrc 0.9.0 与 NextTrace Tiny 1.7.1 的版本身份和所需 CLI 参数。
+- Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29 与可选 qrc 0.9.0 的版本身份和所需 CLI 参数。
 - Cloudflare DNS-01 与 HTTP-01 分别传递正确的 lego 参数；DNS-01 只暴露固定的 `_FILE` 凭据变量，清除原始 Token、旧式变量和外部文件变量。
 - 连续模拟 1000 次 lego 快速失败，确认公共 ACME 保护完整保留原始退出码与错误输出，不会再由 Bash `coproc` 竞态产生 `Bad file descriptor`；Cloudflare `9109` 会给出 Token 类型、有效性、最小权限与 Zone 范围提示。发行版矩阵也会在全部 16 个系统/架构组合中执行快速失败路径。
 - 模拟 lego 收到 Let’s Encrypt `rateLimited` 后准备长时间等待，确认公共 ACME 保护在 5 秒内终止、保留并显示 `retry after`，返回临时失败；另模拟无输出挂起，确认 10 分钟总时限的可配置短时测试路径。发行版矩阵也会在全部 16 个系统/架构组合中执行快速限额终止路径。
@@ -47,14 +47,12 @@ bash tests/run.sh
 - 面板为每个可用线路方向列出 Mihomo、Stash、Shadowrocket、sing-box 四个二维码选项，双栈恰好 16 项；真实 qrc 的紧凑 Unicode 输出会转换为 PBM 并由 zbar 独立解码，确认内容与原 URL 完全一致。
 - 面板把 URL 只写入 qrc 标准输入，命令参数不含 URL；qrc 缺失、执行失败、终端太窄或输出不是交互终端时均返回文字链接而不终止面板。
 - 面板第 8 项以只读方式解释入站、出站与四种线路方向；测试覆盖菜单显示与说明页往返、输入结束、分发代码和无效编号提示，确认不修改状态或触发维护操作。
-- VPS 体检的离线硬件报告、状态文件权限、四个服务、续期定时器、证书期限与 SAN 覆盖；模拟严格 IPv4/IPv6 源地址绑定后的 HTTPS 出口、Cloudflare 位置/时延、四个 IP 数据库的类型/位置/风控交叉结论，以及 RIPEstat 的 RIR 登记、ASN/BGP/RPKI 和 PTR。
-- IP 数据库测试覆盖全部成功、单个来源失败、返回地址不匹配和全部失败；每个查询都断言使用已安装地址族的精确源地址，外部内容经过清理且不会被单个标签冒充“原生 IP”结论。
-- 三网回程测试使用结构化 NextTrace、`ping` 与 `curl` fixture，覆盖广东默认值以及广东、上海、北京、四川、湖北、辽宁六地的 36 条双栈目标，并保留原菜单 `5` 为全部地区；IPv4-only 与 IPv6-only 会自动跳过缺少的地址族并正常完成。每个目标先做 3 包 ICMP 预检，通过后固定发送 100 包，报告平均/P95 延迟和 0%/2%/7% 等真实丢包率；命令只由 `-c 100` 控制正式样本且不传递内部 deadline。目标不回应 ICMP 或系统缺少 `ping` 时，会按精确 IPv4/IPv6 源地址改做 100 次 TCP 连接，验证 443 到 80 的端口降级、平均/P95 握手延迟和连接成功率，并断言不会把 TCP 成功率称为网络层丢包率。备用目标显式配置后会在主目标无响应时切换；ICMP、TCP、NextTrace 分别失败或缺失、TCP 全失败、ICMP 命令失败、畸形统计、只发出 80 包、异常发出 129 包时，均保留其余可用结果并正常返回。报告不会显示不可靠的路由末跳延迟、重复路径说明或依据 VPS 回程生成 IPv4/IPv6 订阅建议。ASN 判断覆盖电信 163/CN2/CTGNet、联通 9929、移动 CMI/CMIN2，以及 IIJ、SoftBank、NTT、KDDI、PCCW、HGC、Level 3、Cogent、Arelion、Hurricane Electric、Tata、Telxius 等主要国际网络；相似但不相同的 ASN 不会误判。无效地区、外部探测失败、组件缺失和临时文件清理均有降级测试。界面明确标注 VPS 到国内是回程、国内探针到 VPS 的去程未测；默认 `--full` 不会触发路径或质量探测。
-- 体检在外部 HTTP 查询失败时返回“提醒/未测”并正常结束；测试状态中的订阅令牌和协议密码不会出现在报告。CPU 与磁盘测试只从明确入口运行，磁盘临时文件在成功、失败或中断路径都由统一清理函数保护。
+- 面板第 7 项只列出 GOECS 与 NodeQuality；使用离线替身验证点击后直接访问两个官方入口并运行，不出现 Neko 自己的确认或验证提示。
+- AnyReality 默认不渲染；显式启用后，双栈四个方向各增加一个 AnyTLS + REALITY 入站和 sing-box 出站，使用独立端口、凭据和严格出口路由。Mihomo、Stash、Shadowrocket 保持不含 AnyReality，防火墙规则同步开放对应 TCP 端口。
 - 控制面板端点刷新在地址未变化时不重启；模拟新地址更新成功、服务失败后完整回滚，以及回滚服务仍失败时保留状态备份。
 - 控制面板从 IPv4-only 补装 IPv6 的成功、第二组跨族端口无碰撞、两个跨族令牌、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
-- 分别从 schema 1、schema 2 与 schema 3 的双栈/IPv4-only/IPv6-only 模拟升级到 Neko 1.9.1，确认原端口、协议凭据、REALITY 参数、安装模式、令牌和旧订阅 URL 继续可用；旧双栈只新增跨族端口集与两个令牌。schema 4 再次升级会原样保留两组端口、四个令牌和全部节点身份。缺少 Trojan 的旧状态只补充其端口/密码，schema 1/2 旧共享令牌迁移为两个同族字段。
-- 模拟 firewalld 管理的旧安装升级，确认 Neko 专用服务规则同时加入 Trojan 与跨族 TCP/UDP 端口并查询生效；模拟后续服务启动失败，确认状态、配置、Hysteria systemd 单元、firewalld 配置与已有 qrc/NextTrace 一起恢复。另模拟可选 NextTrace 更新来源损坏，确认核心升级仍成功、原组件保持不变且暂存目录清理。
+- 分别从 schema 1、schema 2 与 schema 3 的双栈/IPv4-only/IPv6-only 模拟升级到 Neko 1.10.0，确认原端口、协议凭据、REALITY 参数、安装模式、令牌和旧订阅 URL 继续可用；旧双栈只新增跨族端口集与两个令牌。schema 4 再次升级会原样保留两组端口、四个令牌和全部节点身份。缺少 Trojan 的旧状态只补充其端口/密码，schema 1/2 旧共享令牌迁移为两个同族字段。
+- 模拟 firewalld 管理的旧安装升级，确认 Neko 专用服务规则同时加入 Trojan 与跨族 TCP/UDP 端口并查询生效；升级成功会移除旧版自研体检与 NextTrace，后续服务启动失败时则恢复升级前的状态、配置、Hysteria systemd 单元、firewalld 配置与可选 qrc。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
 本次修改在当前 Ubuntu 24.04 用户空间中完成；这里 PID 1 不是 systemd，也没有分配可用于 ACME 的公网测试域名。真实核心配置校验能够运行，但不能据此声称完成了一次真实 VPS 安装。
@@ -64,7 +62,7 @@ bash tests/run.sh
 `.github/workflows/ci.yml` 运行两个层次：
 
 1. Ubuntu 24.04 runner 下载真实冻结核心并执行完整 `tests/run.sh`。
-2. 8 个发行版镜像分别在 amd64 与 QEMU arm64 用户空间运行全部 Shell 语法解析、对应架构的真实 qrc 和 NextTrace Tiny、真实 `/etc/os-release` 平台检测、体检离线硬件报告，并实际渲染和结构化检查 IPv4-only、IPv6-only、dual 三种模式，共 16 个系统/架构组合；amd64 另外从缺少工具的镜像执行一次离线 Bootstrap，真实调用该发行版的包管理器。
+2. 8 个发行版镜像分别在 amd64 与 QEMU arm64 用户空间运行全部 Shell 语法解析、对应架构的真实 qrc、真实 `/etc/os-release` 平台检测，并实际渲染和结构化检查 IPv4-only、IPv6-only、dual 三种模式，共 16 个系统/架构组合；amd64 另外从缺少工具的镜像执行一次离线 Bootstrap，真实调用该发行版的包管理器。
 
 矩阵目标：
 

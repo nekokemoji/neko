@@ -50,13 +50,6 @@ set -e
 (( SECONDS - rate_limit_started < 5 ))
 [[ "$rate_limit_output" == *'脚本已停止长时间等待'* ]]
 
-diagnostics_output="$(
-  NEKO_LIBEXEC="$ROOT" bash "$ROOT/runtime/diagnostics.sh" --system
-)"
-[[ "$diagnostics_output" == *'系统与硬件（只读）'* ]]
-[[ "$diagnostics_output" == *'根文件系统'* ]]
-[[ "$diagnostics_output" == *'体检小结'* ]]
-
 printf '通过：%s %s / %s（Bash %s）\n' \
   "$OS_ID" "$OS_VERSION" "$ARCH" "${BASH_VERSION}"
 
@@ -70,21 +63,6 @@ if [[ -n "${NEKO_CONTAINER_QRC:-}" ]]; then
         --ec-level M --scale 1 --border 4
   )"
   [[ -n "$qrc_output" && "$qrc_output" == *'█'* ]]
-fi
-
-if [[ -n "${NEKO_CONTAINER_NEXTTRACE:-}" ]]; then
-  [[ -x "$NEKO_CONTAINER_NEXTTRACE" ]]
-  nexttrace_version="$(
-    NO_COLOR=1 "$NEKO_CONTAINER_NEXTTRACE" --version 2>&1
-  )"
-  [[ "$nexttrace_version" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
-  nexttrace_help="$(
-    NO_COLOR=1 "$NEKO_CONTAINER_NEXTTRACE" --help 2>&1
-  )"
-  [[ "$nexttrace_help" == *'--source'* ]]
-  [[ "$nexttrace_help" == *'--json'* ]]
-  [[ "$nexttrace_help" == *'--ipv4'* ]]
-  [[ "$nexttrace_help" == *'--ipv6'* ]]
 fi
 
 # Exercise each distro's real awk while mocking only the explicit DNS query,

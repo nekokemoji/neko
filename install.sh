@@ -317,8 +317,7 @@ assert_work_space() {
 
 download_release_binaries() {
   local xray_asset sing_asset hysteria_asset caddy_asset lego_asset
-  local qrc_asset nexttrace_asset
-  local qrc_help="" nexttrace_version=""
+  local qrc_asset qrc_help=""
   if [[ "$ARCH" == "amd64" ]]; then
     xray_asset="Xray-linux-64.zip"
   else
@@ -329,7 +328,6 @@ download_release_binaries() {
   caddy_asset="caddy_${CADDY_VERSION}_linux_${ARCH}.tar.gz"
   lego_asset="lego_v${LEGO_VERSION}_linux_${ARCH}.tar.gz"
   qrc_asset="qrc_${QRC_VERSION}_linux_${ARCH}.tar.gz"
-  nexttrace_asset="nexttrace-tiny_linux_${ARCH}"
 
   mkdir -p "$WORKDIR/downloads" "$WORKDIR/unpack" "$WORKDIR/bin"
   download_verified "Xray ${XRAY_VERSION}" \
@@ -364,23 +362,6 @@ download_release_binaries() {
       warn "qrc 解压或运行检查失败；Neko 仍会继续安装，文字订阅链接不受影响。"
     fi
   fi
-  if download_optional_verified "NextTrace Tiny ${NEXTTRACE_VERSION}" \
-      "https://github.com/nxtrace/NTrace-core/releases/download/v${NEXTTRACE_VERSION}/${nexttrace_asset}" \
-      "$(sha_for_arch NEXTTRACE)" "$WORKDIR/downloads/nexttrace-tiny"; then
-    if install -m 0755 \
-        "$WORKDIR/downloads/nexttrace-tiny" "$WORKDIR/bin/nexttrace-tiny" \
-      && nexttrace_version="$(
-        NO_COLOR=1 "$WORKDIR/bin/nexttrace-tiny" --version 2>&1 || true
-      )" \
-      && grep -Fq "NextTrace v${NEXTTRACE_VERSION}" \
-        <<< "$nexttrace_version"; then
-      ok "可选三网线路组件 NextTrace Tiny ${NEXTTRACE_VERSION} 已校验。"
-    else
-      rm -f -- "$WORKDIR/bin/nexttrace-tiny"
-      warn "NextTrace 运行检查失败；Neko 仍会继续安装，只跳过三网线路测试。"
-    fi
-  fi
-
   unzip -q "$WORKDIR/downloads/xray.zip" -d "$WORKDIR/unpack/xray"
   tar --no-same-owner -xzf "$WORKDIR/downloads/sing-box.tar.gz" -C "$WORKDIR/unpack"
   mkdir -p "$WORKDIR/unpack/caddy" "$WORKDIR/unpack/lego"
@@ -520,7 +501,7 @@ create_service_user_and_dirs() {
 }
 
 install_payload() {
-  local qrc_tmp="" nexttrace_tmp="" unit
+  local qrc_tmp="" unit
   install -m 0755 "$WORKDIR/bin/xray" "$NEKO_LIBEXEC/xray"
   install -m 0755 "$WORKDIR/bin/sing-box" "$NEKO_LIBEXEC/sing-box"
   install -m 0755 "$WORKDIR/bin/hysteria" "$NEKO_LIBEXEC/hysteria"
@@ -534,22 +515,11 @@ install_payload() {
       warn "qrc 安装失败；Neko 仍会继续安装，文字订阅链接不受影响。"
     fi
   fi
-  if [[ -x "$WORKDIR/bin/nexttrace-tiny" ]]; then
-    if ! nexttrace_tmp="$(
-        mktemp "${NEKO_LIBEXEC}/.nexttrace-tiny.tmp.XXXXXX"
-      )" \
-      || ! install -m 0755 "$WORKDIR/bin/nexttrace-tiny" "$nexttrace_tmp" \
-      || ! mv -f -- "$nexttrace_tmp" "$NEKO_LIBEXEC/nexttrace-tiny"; then
-      [[ -z "$nexttrace_tmp" ]] || rm -f -- "$nexttrace_tmp"
-      warn "NextTrace 安装失败；Neko 仍会继续安装，只跳过三网线路测试。"
-    fi
-  fi
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
-  install -m 0755 "$SCRIPT_DIR/runtime/diagnostics.sh" "$NEKO_LIBEXEC/diagnostics.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
   ln -s "$NEKO_LIBEXEC/panel.sh" /usr/local/bin/neko
