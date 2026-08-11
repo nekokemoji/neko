@@ -563,12 +563,12 @@ main() {
     reserve_random_port trojan_port
   fi
   if [[ "$anyreality_enabled" == true ]]; then
-    [[ -z "${NEKO_RESERVED_PORTS[$anyreality_port]+x}" ]] \
-      || die "state.json 中的 AnyReality 端口与现有代理端口冲突。"
+    # initialize_port_reservations also sees the currently running Neko
+    # listeners.  A preserved AnyReality port is therefore expected to be in
+    # this map during an in-place upgrade; validate_proxy_port_layout below
+    # still rejects real overlaps inside state.json.
     NEKO_RESERVED_PORTS["$anyreality_port"]=1
     if network_mode_has_cross_routes; then
-      [[ -z "${NEKO_RESERVED_PORTS[$cross_anyreality_port]+x}" ]] \
-        || die "state.json 中的跨族 AnyReality 端口与现有代理端口冲突。"
       NEKO_RESERVED_PORTS["$cross_anyreality_port"]=1
     fi
   fi

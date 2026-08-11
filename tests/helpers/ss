@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+if [[ -n "${NEKO_TEST_LISTENING_PORTS:-}" ]]; then
+  for port in ${NEKO_TEST_LISTENING_PORTS//,/ }; do
+    [[ "$port" =~ ^[0-9]+$ ]] || exit 2
+    printf 'tcp LISTEN 0 4096 0.0.0.0:%s 0.0.0.0:*\n' "$port"
+  done
+  exit 0
+fi
+
+for system_ss in /usr/bin/ss /bin/ss; do
+  if [[ -x "$system_ss" ]]; then
+    exec "$system_ss" "$@"
+  fi
+done
+
+exit 0

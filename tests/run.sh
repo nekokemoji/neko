@@ -361,7 +361,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.11.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.11.1"' "$ROOT/versions.env"
 grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/install.sh"
 if grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh" \
@@ -1609,7 +1609,9 @@ schema4_identity_before="$(jq -cS '{
     ipv6_to_ipv4: .subscription.ipv6_to_ipv4_token
   }
 }' "$UPGRADE_SCHEMA4/etc/state.json")"
-run_upgrade "$UPGRADE_SCHEMA4" > "$UPGRADE_SCHEMA4/upgrade.log"
+run_upgrade "$UPGRADE_SCHEMA4" \
+  NEKO_TEST_LISTENING_PORTS="34000,35000" \
+  > "$UPGRADE_SCHEMA4/upgrade.log"
 [[ "$(jq -cS '{
   ports,
   credentials,
@@ -1625,6 +1627,36 @@ run_upgrade "$UPGRADE_SCHEMA4" > "$UPGRADE_SCHEMA4/upgrade.log"
 assert_trojan_migrated "$UPGRADE_SCHEMA4"
 assert_cross_routes_migrated "$UPGRADE_SCHEMA4"
 assert_anyreality_migrated "$UPGRADE_SCHEMA4"
+
+UPGRADE_SCHEMA4_CONFLICT="$WORK/upgrade-schema4-conflict"
+prepare_upgrade_install "$UPGRADE_SCHEMA4_CONFLICT" 4 1.10.0-test dual true
+jq '
+  .experimental.anyreality = {
+    enabled: true,
+    port: .ports.anytls,
+    cross_port: .ports.cross.anytls,
+    password: "conflicting-anyreality-password",
+    private_key: .reality.vision_private_key,
+    public_key: .reality.vision_public_key,
+    short_id: "3132333435363738"
+  }
+' "$UPGRADE_SCHEMA4_CONFLICT/etc/state.json" \
+  > "$UPGRADE_SCHEMA4_CONFLICT/etc/state.anyreality.json"
+mv -f -- "$UPGRADE_SCHEMA4_CONFLICT/etc/state.anyreality.json" \
+  "$UPGRADE_SCHEMA4_CONFLICT/etc/state.json"
+schema4_conflict_before="$(
+  sha256sum "$UPGRADE_SCHEMA4_CONFLICT/etc/state.json" | awk '{print $1}'
+)"
+set +e
+run_upgrade "$UPGRADE_SCHEMA4_CONFLICT" \
+  > "$UPGRADE_SCHEMA4_CONFLICT/upgrade.log" 2>&1
+schema4_conflict_rc=$?
+set -e
+(( schema4_conflict_rc != 0 ))
+grep -Fq 'AnyReality 端口' "$UPGRADE_SCHEMA4_CONFLICT/upgrade.log"
+grep -Fq '与 AnyTLS 冲突' "$UPGRADE_SCHEMA4_CONFLICT/upgrade.log"
+[[ "$(sha256sum "$UPGRADE_SCHEMA4_CONFLICT/etc/state.json" | awk '{print $1}')" \
+  == "$schema4_conflict_before" ]]
 
 UPGRADE_FIREWALL="$WORK/upgrade-firewall"
 prepare_upgrade_install "$UPGRADE_FIREWALL" 3 1.6.1-test dual false
