@@ -21,6 +21,7 @@ Shadowrocket、sing-box 生成订阅。
 | IPv4 被“送中”或 IP 信誉异常 | 保持入口不变，把出口切换到 IPv6，例如 `IPv4→IPv6` 或 `IPv6→IPv6` |
 | 不知道 VPS 线路好不好 | 从当前真实 IPv4/IPv6 源地址测试六地区三网回程，查看 ASN 线路、平均/P95 延迟和固定 100 包丢包；目标不回应 ICMP 时自动改测 100 次 TCP 连接 |
 | 想进一步检查 IP 质量和流媒体表现 | 从功能 7 直接进入 GOECS 融合怪或 NodeQuality；这些结果由对应第三方脚本生成 |
+| 想让整台 VPS 临时或永久使用 AKDNS | 从功能 9 进入固定、校验且带 Neko 外层回滚的 AKDNS 3.0.0；默认不会启用 |
 | 担心一键脚本装到一半 | 安装、升级、补装和凭据轮换都先检查、再验证；失败或中断时尽量恢复旧配置和服务 |
 
 这里最重要的不是“支持 IPv6”这五个字，而是 **入站和出站可以独立选择**：
@@ -56,7 +57,7 @@ bash "$TMP"
 这条入口命令本身需要系统已有 `curl` 和 `mktemp`；进入 Bootstrap 后，`tar`、`gzip`
 等精简系统可能缺少的首次安装工具会自动补齐。
 
-Bootstrap 会下载固定的 Neko 1.11.1 源码版本；核心程序也固定版本并校验对应架构的
+Bootstrap 会下载固定的 Neko 1.12.0 源码版本；核心程序也固定版本并校验对应架构的
 SHA-256，不会在安装时临时解析不确定的 `latest`。
 
 还没有配置 DNS？先不要急，继续看下面的“第一次使用，照着做就行”。
@@ -286,7 +287,36 @@ Google 搜索页面底部的位置可以作为参考。如果它明确写着“�
 每个目标固定发送 100 个 ICMP 包；目标不回应 ICMP 时改测 100 次 TCP 连接成功率。
 运行前会显示预计耗时，并要求输入 `ROUTE`，但不会修改 Neko 或系统配置。
 
-### 9. 终端面板能做什么
+### 9. 可选使用 AKDNS 智能 DNS 解锁
+
+在 `neko` 面板选择 `9`。这个功能默认关闭，并且不会在安装或升级时自动改变 DNS。
+
+Neko 不复制或修改 AKDNS 源码，而是在每次打开时只下载 AKDNS 3.0.0 的固定上游提交
+`d9a3f7caa08f528d55d799d73d37394026326a4d`，核对固定 SHA-256 后才执行。`main` 分支
+后来发生变化不会静默进入已安装机器。
+
+AKDNS 是**整台 VPS 的系统 DNS 接管**，不是只影响 sing-box、Xray 或某一条订阅。
+永久启用前，Neko 会额外保存以下精确状态：
+
+- `/etc/resolv.conf` 的文件/符号链接类型、内容、权限和 immutable 状态；
+- `/etc/nsswitch.conf`、AKDNS 可能生成的备份和 NetworkManager 接管文件；
+- `systemd-resolved` 与 `resolvconf` 的 active/enabled 状态。
+
+上游脚本返回后，Neko 会再次检查固定官方 DNS 地址、严格 `v4.`/`v6.` A/AAAA、
+sing-box/Xray/Caddy 配置，并重启确认四个 Neko 服务。下载失败、脚本异常退出、未知 DNS、
+严格解析失败、服务失败或终端中断都会恢复操作前快照。功能 9 的“紧急恢复”不依赖
+AKDNS 自己的备份菜单，可直接恢复 Neko 保存的启用前状态；恢复前不会允许卸载 Neko。
+
+AKDNS 3.0.0 当前提供的是 IPv4 DNS 服务器。它可以回答 A 和 AAAA，但 VPS 本身仍必须
+能连接 IPv4 DNS/53；没有 IPv4 出站的严格 IPv6-only VPS 不适合启用。云厂商、上游
+防火墙或安全策略还需要允许到所选 AKDNS 地址的 UDP/TCP 53。
+
+> AKDNS 菜单中的“流媒体解锁检测”会再运行由 AKDNS 上游选择的另一份第三方脚本；
+> 那份检测脚本不属于 Neko 的固定源码与 SHA-256 边界。只需要设置 DNS 时不要选择它。
+> 需要还原时应退出 AKDNS 上游界面，回到 Neko 功能 9 选择“紧急恢复”，不要使用上游
+> 的备份编号恢复，以确保使用的是 Neko 在本次接管前保存的精确快照。
+
+### 10. 终端面板能做什么
 
 | 选项 | 功能 | 常见用途 |
 |---:|---|---|
@@ -298,6 +328,7 @@ Google 搜索页面底部的位置可以作为参考。如果它明确写着“�
 | 6 | 卸载全部协议 | 删除 Neko 服务、数据和自己创建的防火墙规则 |
 | 7 | 第三方 VPS 体检 & Neko 自带体检 | 第三方综合测试或六地三网线路检测 |
 | 8 | 双栈线路怎么选？（同时拥有 IPv4 和 IPv6 时查看） | 阅读说明后按被墙入口和“送中”出口生成推荐/备用链接与二维码 |
+| 9 | AKDNS 智能 DNS 解锁（第三方、可选） | 打开固定上游脚本、紧急恢复或查看当前接管状态 |
 
 订阅 URL 与节点凭据分开管理：
 
@@ -422,8 +453,9 @@ HTTP-01 可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不�
 
 ### 固定版本与测试证据
 
-当前 Neko 版本为 **1.11.1**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
-lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256。
+当前 Neko 版本为 **1.12.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
+lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256；可选 AKDNS 还固定
+上游提交与脚本 SHA-256。
 
 本地完整测试：
 
@@ -434,12 +466,13 @@ bash tests/run.sh
 
 测试覆盖三种安装模式、4/4/16 份订阅、四方向真实核心解析、严格 DNS 与异族拒绝、
 Cloudflare DNS-01、HTTP-01、证书扩展、令牌与凭据轮换、端点刷新、补装、升级迁移、
-二维码解码、第三方体检直达、六地三网线路、默认 AnyReality 以及失败回滚。
+二维码解码、第三方体检直达、六地三网线路、默认 AnyReality、AKDNS 系统文件事务以及
+失败回滚。
 
 GitHub Actions 的发行版用户空间矩阵覆盖 Debian 12/13、Ubuntu 24.04/26.04、Rocky
 Linux 9/10、AlmaLinux 9/10 的 amd64 与 arm64，共 16 个组合。专用 VM 工作流还会在
-8 个官方 amd64 云镜像的完整 QEMU/systemd 环境中运行四线路渲染、ACME 保护和 unit
-解析/启动。
+8 个官方 amd64 云镜像的完整 QEMU/systemd 环境中运行四线路渲染、AKDNS 隔离事务、
+ACME 保护和 unit 解析/启动。
 
 完整 VM 仍不能替代真实公网 DNS、ACME、云安全组和移动客户端。自动化已经验证什么、
 仍需真实 VPS 验证什么，请看 [TESTING.md](TESTING.md)。
@@ -504,6 +537,7 @@ journalctl -u neko-renew.service --since '7 days ago'
 | sing-box Remote Profile 导入失败 | 链接不完整，或所用应用不支持当前官方配置格式 | 重新复制完整链接，并优先使用近期版本的 sing-box 内核客户端 |
 | 二维码没有显示 | qrc 下载、终端宽度或环境不满足 | 直接复制文字链接，代理服务不受影响 |
 | 第三方体检下载失败 | GitHub Raw 或 NodeQuality 入口暂时不可达 | 稍后重试，不影响代理服务 |
+| AKDNS 自动恢复 | 固定脚本下载/校验失败，DNS 不在官方列表，或严格解析/服务验证失败 | 查看上方具体错误；原 DNS 已恢复时可继续用 Neko，勿反复强制修改 `/etc/resolv.conf` |
 
 安全检查命令：
 
@@ -527,6 +561,7 @@ SSH 密码或 SSH 私钥。
 - [Hysteria2 服务端配置](https://v2.hysteria.network/docs/advanced/Full-Server-Config/) 与 [端口跳跃](https://v2.hysteria.network/docs/advanced/Port-Hopping/)
 - [Xray REALITY](https://xtls.github.io/en/config/transports/reality.html)、[XHTTP](https://xtls.github.io/en/config/transports/xhttp.html) 与 [出站策略](https://xtls.github.io/en/config/outbound.html)
 - [Caddy TLS](https://caddyserver.com/docs/caddyfile/directives/tls)
+- [AKDNS 固定上游提交](https://github.com/akile-network/aktools/blob/d9a3f7caa08f528d55d799d73d37394026326a4d/akdns.sh)
 - [GOECS](https://github.com/oneclickvirt/ecs) 与 [NodeQuality](https://github.com/LloydAsp/NodeQuality)
 
 </details>

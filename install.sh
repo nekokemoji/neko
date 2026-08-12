@@ -547,6 +547,7 @@ install_payload() {
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
+  install -m 0755 "$SCRIPT_DIR/runtime/akdns.sh" "$NEKO_LIBEXEC/akdns.sh"
   install -m 0755 \
     "$SCRIPT_DIR/runtime/route-diagnostics.sh" "$NEKO_LIBEXEC/route-diagnostics.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"

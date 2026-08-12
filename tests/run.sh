@@ -24,7 +24,7 @@ done
 
 source "$ROOT/versions.env"
 
-printf '[1/9] Bash 语法、ShellCheck 与 Python YAML……\n'
+printf '[1/10] Bash 语法、ShellCheck 与 Python YAML……\n'
 mapfile -t shell_files <<< "$(find "$ROOT" -type f -name '*.sh' -print | sort)"
 bash -n "${shell_files[@]}"
 command -v shellcheck >/dev/null 2>&1 \
@@ -36,7 +36,7 @@ command -v zbarimg >/dev/null 2>&1 \
 # Dynamic library sourcing and cross-file globals are intentional.
 shellcheck -x -e SC1090,SC1091,SC2016,SC2034 "${shell_files[@]}"
 
-printf '[2/9] 发行版、架构、DNS 与防火墙区域逻辑……\n'
+printf '[2/10] 发行版、架构、DNS 与防火墙区域逻辑……\n'
 bash "$ROOT/tests/platform-matrix.sh"
 bash -c '
   set -Eeuo pipefail
@@ -338,7 +338,10 @@ if ! NEKO_ETC="$FIREWALL_TEST_WORK/etc" \
 fi
 rm -rf -- "$FIREWALL_TEST_WORK"
 
-printf '[3/9] 冻结版本身份与 lego v5 CLI……\n'
+printf '[3/10] AKDNS 固定来源、事务恢复与失败回滚……\n'
+bash "$ROOT/tests/akdns-transaction.sh"
+
+printf '[4/10] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$("$XRAY" version)" == *"$XRAY_VERSION"* ]]
 [[ "$("$SING_BOX" version)" == *"$SING_BOX_VERSION"* ]]
 [[ "$("$HYSTERIA" version 2>&1)" == *"v${HYSTERIA_VERSION}"* ]]
@@ -361,7 +364,9 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.11.1"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.12.0"' "$ROOT/versions.env"
+grep -Fq 'runtime/akdns.sh' "$ROOT/bootstrap.sh"
+grep -Fq 'runtime/akdns.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/install.sh"
 if grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh" \
@@ -614,7 +619,7 @@ set -e
 grep -Fq '证书申请超过 1 秒' <<< "$acme_timeout_output"
 rm -rf -- "$ACME_WORK"
 
-printf '[4/9] 渲染服务端配置与客户端订阅……\n'
+printf '[5/10] 渲染服务端配置与客户端订阅……\n'
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-tests.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 mkdir -p "$WORK/etc" "$WORK/var/lego/certificates" "$WORK/var/acme"
@@ -688,7 +693,7 @@ NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO
   bash -c 'source "$1"; source "$2"; render_all' \
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
 
-printf '[5/9] 用真实冻结核心校验配置……\n'
+printf '[6/10] 用真实冻结核心校验配置……\n'
 "$SING_BOX" check -c "$WORK/etc/config/sing-box.json"
 "$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v4.json"
 "$SING_BOX" check -c "$WORK/etc/subscriptions/sing-box-v6.json"
@@ -716,7 +721,7 @@ for family in v4 v6 v4-to-v6 v6-to-v4; do
   grep -Fq 'executable file not found' "$WORK/hysteria-${family}-check.log"
 done
 
-printf '[6/9] 校验严格订阅、出口策略、端口和 REALITY 目标……\n'
+printf '[7/10] 校验严格订阅、出口策略、端口和 REALITY 目标……\n'
 bash -c '
   set -Eeuo pipefail
   source "$1"
@@ -1166,7 +1171,7 @@ SING_BOX_BIN="$SING_BOX" XRAY_BIN="$XRAY" \
   bash "$ROOT/tests/default-anyreality-install.sh"
 SING_BOX_BIN="$SING_BOX" bash "$ROOT/tests/experimental-anyreality.sh"
 
-printf '[7/9] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
+printf '[8/10] 模拟订阅令牌轮换，并检查 systemd 安全关键项……\n'
 jq '.subscription.ipv4_token = "replacement-ipv4-token"' \
   "$WORK/etc/state.json" > "$WORK/etc/state.new"
 mv "$WORK/etc/state.new" "$WORK/etc/state.json"
@@ -1273,10 +1278,10 @@ lock_line="$(grep -n 'exec 9>/run/lock/neko-install.lock' "$ROOT/install.sh" | t
   && dependency_line < domain_gate_line
   && domain_gate_line < lock_line ))
 
-printf '[8/9] IPv4-only、IPv6-only 与面板地址族事务……\n'
+printf '[9/10] IPv4-only、IPv6-only 与面板地址族事务……\n'
 bash "$ROOT/tests/family-modes.sh"
 
-printf '[9/9] 模拟旧版本原地升级成功与失败回滚……\n'
+printf '[10/10] 模拟旧版本原地升级成功与失败回滚……\n'
 prepare_upgrade_install() {
   local target="$1" schema="${2:-1}" source_release="${3:-}"
   local source_mode="${4:-dual}"
@@ -1503,6 +1508,7 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ "$(find "$UPGRADE_OK/etc/subscriptions" -maxdepth 1 -type f | wc -l | tr -d ' ')" == 16 ]]
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
 [[ -x "$UPGRADE_OK/libexec/route-diagnostics.sh" ]]
+[[ -x "$UPGRADE_OK/libexec/akdns.sh" ]]
 [[ ! -e "$UPGRADE_OK/libexec/diagnostics.sh" ]]
 cmp -s -- "$QRC" "$UPGRADE_OK/libexec/qrc"
 cmp -s -- "$NEXTTRACE" "$UPGRADE_OK/libexec/nexttrace-tiny"
@@ -1538,6 +1544,7 @@ run_upgrade "$UPGRADE_SCHEMA2" > "$UPGRADE_SCHEMA2/upgrade.log"
 [[ "$(jq -r '.subscription.ipv6_token' "$UPGRADE_SCHEMA2/etc/state.json")" \
   == "$(jq -r '.token' <<< "$schema2_identity_before")" ]]
 [[ -x "$UPGRADE_SCHEMA2/libexec/hysteria-dual.sh" ]]
+[[ -x "$UPGRADE_SCHEMA2/libexec/akdns.sh" ]]
 [[ ! -e "$UPGRADE_SCHEMA2/libexec/diagnostics.sh" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v4.yaml" ]]
 [[ -s "$UPGRADE_SCHEMA2/etc/config/hysteria-v6.yaml" ]]
@@ -1827,6 +1834,7 @@ grep -Fxq -- '--reload' "$UPGRADE_FAIL/firewall/commands.log"
     | sort | sha256sum | awk '{print $1}'
 )" == "$subscriptions_before" ]]
 [[ ! -e "$UPGRADE_FAIL/libexec/hysteria-dual.sh" ]]
+[[ ! -e "$UPGRADE_FAIL/libexec/akdns.sh" ]]
 [[ ! -e "$UPGRADE_FAIL/libexec/diagnostics.sh" ]]
 grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
 if find "$UPGRADE_FAIL/tmp" -maxdepth 1 \

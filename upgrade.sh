@@ -255,6 +255,8 @@ rollback_upgrade() {
   restore_optional_file \
     "$BACKUP_DIR/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh" || rollback_ok=0
   restore_optional_file \
+    "$BACKUP_DIR/akdns.sh" "$NEKO_LIBEXEC/akdns.sh" || rollback_ok=0
+  restore_optional_file \
     "$BACKUP_DIR/qrc" "$NEKO_LIBEXEC/qrc" || rollback_ok=0
   restore_optional_file \
     "$BACKUP_DIR/nexttrace-tiny" \
@@ -421,6 +423,7 @@ main() {
     && -r "$SCRIPT_DIR/runtime/route-diagnostics.sh" \
     && -r "$SCRIPT_DIR/runtime/renew.sh" \
     && -r "$SCRIPT_DIR/runtime/hysteria-dual.sh" \
+    && -r "$SCRIPT_DIR/runtime/akdns.sh" \
     && -r "$SCRIPT_DIR/systemd/neko-hysteria.service" ]] || die "升级包不完整。"
   [[ -d "$NEKO_SYSTEMD" && -w "$NEKO_SYSTEMD" ]] \
     || die "systemd 单元目录不可写：${NEKO_SYSTEMD}"
@@ -681,6 +684,8 @@ main() {
       "$NEKO_LIBEXEC/route-diagnostics.sh" "$BACKUP_DIR/route-diagnostics.sh"
   [[ ! -e "$NEKO_LIBEXEC/hysteria-dual.sh" ]] \
     || cp -a -- "$NEKO_LIBEXEC/hysteria-dual.sh" "$BACKUP_DIR/hysteria-dual.sh"
+  [[ ! -e "$NEKO_LIBEXEC/akdns.sh" ]] \
+    || cp -a -- "$NEKO_LIBEXEC/akdns.sh" "$BACKUP_DIR/akdns.sh"
   [[ ! -e "$NEKO_LIBEXEC/qrc" ]] \
     || cp -a -- "$NEKO_LIBEXEC/qrc" "$BACKUP_DIR/qrc"
   [[ ! -e "$NEKO_LIBEXEC/nexttrace-tiny" ]] \
@@ -701,6 +706,7 @@ main() {
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"
   install -m 0755 \
     "$SCRIPT_DIR/runtime/hysteria-dual.sh" "$NEKO_LIBEXEC/hysteria-dual.sh"
+  install -m 0755 "$SCRIPT_DIR/runtime/akdns.sh" "$NEKO_LIBEXEC/akdns.sh"
   install_staged_qrc
   install_staged_nexttrace
   rm -f -- "$NEKO_LIBEXEC/diagnostics.sh"
