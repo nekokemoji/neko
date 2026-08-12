@@ -2,6 +2,9 @@
 
 set -Eeuo pipefail
 
+[[ "${2:-}" == "${NEKO_ETC}/config" ]]
+[[ "${3:-}" == "${NEKO_ETC}/subscriptions" ]]
+
 root="${NEKO_AKDNS_SYSTEM_ROOT%/}"
 resolv="${root}/etc/resolv.conf"
 if [[ "${NEKO_AKDNS_TEST_REJECT_ACTIVE:-0}" == "1" \

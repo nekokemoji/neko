@@ -57,7 +57,7 @@ bash "$TMP"
 这条入口命令本身需要系统已有 `curl` 和 `mktemp`；进入 Bootstrap 后，`tar`、`gzip`
 等精简系统可能缺少的首次安装工具会自动补齐。
 
-Bootstrap 会下载固定的 Neko 1.12.0 源码版本；核心程序也固定版本并校验对应架构的
+Bootstrap 会下载固定的 Neko 1.12.1 源码版本；核心程序也固定版本并校验对应架构的
 SHA-256，不会在安装时临时解析不确定的 `latest`。
 
 还没有配置 DNS？先不要急，继续看下面的“第一次使用，照着做就行”。
@@ -453,7 +453,7 @@ HTTP-01 可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不�
 
 ### 固定版本与测试证据
 
-当前 Neko 版本为 **1.12.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
+当前 Neko 版本为 **1.12.1**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
 lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256；可选 AKDNS 还固定
 上游提交与脚本 SHA-256。
 
