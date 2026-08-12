@@ -7,6 +7,8 @@ NEKO_ETC="${NEKO_ETC:-/etc/neko}"
 NEKO_VAR="${NEKO_VAR:-/var/lib/neko}"
 NEKO_LIBEXEC="${NEKO_LIBEXEC:-/usr/local/libexec/neko}"
 NEKO_STATE="${NEKO_STATE:-${NEKO_ETC}/state.json}"
+NEKO_CONFIG_DIR="${NEKO_CONFIG_DIR:-${NEKO_ETC}/config}"
+NEKO_SUB_DIR="${NEKO_SUB_DIR:-${NEKO_ETC}/subscriptions}"
 NEKO_AKDNS_TEST_MODE="${NEKO_AKDNS_TEST_MODE:-0}"
 
 if [[ "$NEKO_AKDNS_TEST_MODE" == "1" ]]; then
@@ -376,7 +378,8 @@ akdns_is_active() {
 validate_neko_runtime() {
   local restart_services="${1:-0}" service
   if [[ "$NEKO_AKDNS_TEST_MODE" == "1" && -n "$AKDNS_TEST_VALIDATOR" ]]; then
-    "$AKDNS_TEST_VALIDATOR" "$restart_services"
+    "$AKDNS_TEST_VALIDATOR" \
+      "$restart_services" "$NEKO_CONFIG_DIR" "$NEKO_SUB_DIR"
     return
   fi
 

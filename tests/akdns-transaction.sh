@@ -39,7 +39,7 @@ setup_case() {
 run_wrapper() {
   local target="$1" action="$2"
   shift 2
-  env \
+  env -u NEKO_CONFIG_DIR -u NEKO_SUB_DIR \
     NEKO_ETC="$target/neko/etc" \
     NEKO_VAR="$target/neko/var" \
     NEKO_LIBEXEC="$target/neko/libexec" \
