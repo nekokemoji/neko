@@ -18,6 +18,8 @@ if [[ "$NEKO_AKDNS_TEST_MODE" == "1" ]]; then
   AKDNS_SYSTEMCTL="${NEKO_AKDNS_SYSTEMCTL:-systemctl}"
   AKDNS_TEST_SCRIPT="${NEKO_AKDNS_TEST_SCRIPT:-}"
   AKDNS_TEST_VALIDATOR="${NEKO_AKDNS_TEST_VALIDATOR:-}"
+  AKDNS_TEST_HEALTH_CHECK="${NEKO_AKDNS_TEST_HEALTH_CHECK:-}"
+  AKDNS_TEST_RENDERER="${NEKO_AKDNS_TEST_RENDERER:-}"
 else
   # Test hooks must never be able to redirect a production DNS transaction.
   AKDNS_SYSTEM_ROOT="/"
@@ -26,14 +28,18 @@ else
   AKDNS_SYSTEMCTL="systemctl"
   AKDNS_TEST_SCRIPT=""
   AKDNS_TEST_VALIDATOR=""
+  AKDNS_TEST_HEALTH_CHECK=""
+  AKDNS_TEST_RENDERER=""
 fi
 
-export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_STATE
+export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_STATE NEKO_CONFIG_DIR NEKO_SUB_DIR
 
 # shellcheck source=versions.env
 source "${NEKO_LIBEXEC}/versions.env"
 # shellcheck source=lib/common.sh
 source "${NEKO_LIBEXEC}/lib/common.sh"
+# shellcheck source=lib/render.sh
+source "${NEKO_LIBEXEC}/lib/render.sh"
 
 AKDNS_SOURCE_URL="https://raw.githubusercontent.com/akile-network/aktools/${AKDNS_SOURCE_COMMIT}/akdns.sh"
 AKDNS_DATA_DIR="${NEKO_VAR}/akdns"
@@ -69,6 +75,7 @@ RESOLV_CONF="$(system_path /etc/resolv.conf)"
 NSSWITCH_CONF="$(system_path /etc/nsswitch.conf)"
 NETWORKMANAGER_CONF="$(system_path /etc/NetworkManager/conf.d/akdns-dns.conf)"
 NSSWITCH_BACKUP="$(system_path /etc/nsswitch.conf.akdns.bak)"
+export NEKO_RESOLV_CONF="$RESOLV_CONF"
 
 assert_safe_paths() {
   local path
@@ -177,6 +184,102 @@ capture_system_snapshot() {
   capture_path "$snapshot" networkmanager "$NETWORKMANAGER_CONF" || return 1
   capture_service "$snapshot" resolved systemd-resolved.service || return 1
   capture_service "$snapshot" resolvconf resolvconf.service || return 1
+}
+
+subscription_path_is_safe() {
+  [[ "$NEKO_SUB_DIR" == /* && "$NEKO_SUB_DIR" != "/" \
+    && "$NEKO_SUB_DIR" != "/etc" && "$NEKO_SUB_DIR" != "/var" \
+    && "$NEKO_SUB_DIR" != *"/../"* && "$NEKO_SUB_DIR" != *"/.." \
+    && "$NEKO_SUB_DIR" != *"//"* ]]
+}
+
+capture_subscription_snapshot() {
+  local snapshot="$1"
+  subscription_path_is_safe || return 1
+  install -d -m 0700 "$snapshot" || return 1
+  if [[ -e "$NEKO_SUB_DIR" ]]; then
+    [[ -d "$NEKO_SUB_DIR" && ! -L "$NEKO_SUB_DIR" ]] || return 1
+    printf 'directory\n' > "$snapshot/subscriptions.kind" || return 1
+    cp -a -- "$NEKO_SUB_DIR" "$snapshot/subscriptions.directory" || return 1
+  else
+    printf 'absent\n' > "$snapshot/subscriptions.kind" || return 1
+  fi
+}
+
+capture_managed_data_snapshot() {
+  local snapshot="$1"
+  install -d -m 0700 "$snapshot" || return 1
+  if [[ -e "$AKDNS_DATA_DIR" ]]; then
+    [[ -d "$AKDNS_DATA_DIR" && ! -L "$AKDNS_DATA_DIR" ]] || return 1
+    printf 'directory\n' > "$snapshot/akdns-data.kind" || return 1
+    cp -a -- "$AKDNS_DATA_DIR" "$snapshot/akdns-data.directory" || return 1
+  else
+    printf 'absent\n' > "$snapshot/akdns-data.kind" || return 1
+  fi
+}
+
+managed_data_snapshot_is_valid() {
+  local snapshot="$1" kind
+  [[ -d "$snapshot" && ! -L "$snapshot" \
+    && -f "$snapshot/akdns-data.kind" \
+    && ! -L "$snapshot/akdns-data.kind" ]] || return 1
+  kind="$(<"$snapshot/akdns-data.kind")"
+  case "$kind" in
+    absent) ;;
+    directory)
+      [[ -d "$snapshot/akdns-data.directory" \
+        && ! -L "$snapshot/akdns-data.directory" ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_managed_data_snapshot() {
+  local snapshot="$1" kind
+  managed_data_snapshot_is_valid "$snapshot" || return 1
+  [[ "$AKDNS_DATA_DIR" == "${NEKO_VAR%/}/akdns" \
+    && "$AKDNS_DATA_DIR" != "/" && "$AKDNS_DATA_DIR" != "/akdns" ]] \
+    || return 1
+  if [[ -e "$AKDNS_DATA_DIR" ]]; then
+    [[ -d "$AKDNS_DATA_DIR" && ! -L "$AKDNS_DATA_DIR" ]] || return 1
+    rm -rf -- "$AKDNS_DATA_DIR" || return 1
+  fi
+  kind="$(<"$snapshot/akdns-data.kind")"
+  if [[ "$kind" == directory ]]; then
+    cp -a -- "$snapshot/akdns-data.directory" "$AKDNS_DATA_DIR" || return 1
+  fi
+}
+
+subscription_snapshot_is_valid() {
+  local snapshot="$1" kind
+  [[ -d "$snapshot" && ! -L "$snapshot" \
+    && -f "$snapshot/subscriptions.kind" \
+    && ! -L "$snapshot/subscriptions.kind" ]] || return 1
+  kind="$(<"$snapshot/subscriptions.kind")"
+  case "$kind" in
+    absent) ;;
+    directory)
+      [[ -d "$snapshot/subscriptions.directory" \
+        && ! -L "$snapshot/subscriptions.directory" ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_subscription_snapshot() {
+  local snapshot="$1" kind parent
+  subscription_path_is_safe || return 1
+  subscription_snapshot_is_valid "$snapshot" || return 1
+  parent="$(dirname -- "$NEKO_SUB_DIR")"
+  [[ -d "$parent" && ! -L "$parent" ]] || return 1
+  if [[ -e "$NEKO_SUB_DIR" ]]; then
+    [[ -d "$NEKO_SUB_DIR" && ! -L "$NEKO_SUB_DIR" ]] || return 1
+    rm -rf -- "$NEKO_SUB_DIR" || return 1
+  fi
+  kind="$(<"$snapshot/subscriptions.kind")"
+  if [[ "$kind" == directory ]]; then
+    cp -a -- "$snapshot/subscriptions.directory" "$NEKO_SUB_DIR" || return 1
+  fi
 }
 
 snapshot_is_valid() {
@@ -375,8 +478,61 @@ akdns_is_active() {
   current_akdns_server >/dev/null 2>&1
 }
 
+validate_akdns_resolver() {
+  local server="$1" output="" status="" answer_count=0 ede="" transport
+  local -a transport_argument=()
+  if [[ "$NEKO_AKDNS_TEST_MODE" == "1" && -n "$AKDNS_TEST_HEALTH_CHECK" ]]; then
+    "$AKDNS_TEST_HEALTH_CHECK" "$server"
+    return
+  fi
+
+  for transport in udp tcp; do
+    transport_argument=()
+    [[ "$transport" == udp ]] || transport_argument=(+tcp)
+    if output="$(dig "@${server}" www.google.com. A \
+        "${transport_argument[@]}" +time=4 +tries=1 +noall \
+        +answer +comments 2>&1)"; then
+      status="$(sed -nE \
+        's/^;; ->>HEADER<<- opcode: [A-Z]+, status: ([A-Z]+),.*/\1/p' \
+        <<< "$output" | awk 'NR == 1 {print}')"
+      answer_count="$(awk '
+        tolower($1) == "www.google.com." && $4 == "A" {count++}
+        END {print count + 0}
+      ' <<< "$output")"
+      if [[ "$status" == NOERROR ]] && (( answer_count > 0 )); then
+        info "AKDNS ${server} ${transport^^} 递归解析健康（www.google.com A）。"
+        return 0
+      fi
+    fi
+    ede="$(sed -nE 's/^.*EDE:[[:space:]]*([0-9]+).*$/\1/p' \
+      <<< "$output" | awk 'NR == 1 {print}')"
+  done
+
+  if [[ "$ede" == 17 ]]; then
+    warn "AKDNS ${server} 返回 EDE 17（Filtered）；请在 AKDNS 控制台确认本机公网 IPv4 和服务节点。"
+  else
+    warn "AKDNS ${server} 不能正常递归解析 www.google.com A（状态：${status:-unknown}）。"
+  fi
+  return 1
+}
+
+render_client_subscriptions() {
+  local mode="$1" server="${2:-}"
+  if [[ "$NEKO_AKDNS_TEST_MODE" == "1" && -n "$AKDNS_TEST_RENDERER" ]]; then
+    "$AKDNS_TEST_RENDERER" "$mode" "$server" "$NEKO_SUB_DIR"
+    return
+  fi
+  load_state
+  if [[ "$mode" == on ]]; then
+    NEKO_AKDNS_CLIENT_MODE=on \
+      NEKO_AKDNS_CLIENT_RESOLVER="$server" render_subscriptions
+  else
+    NEKO_AKDNS_CLIENT_MODE=off render_subscriptions
+  fi
+}
+
 validate_neko_runtime() {
-  local restart_services="${1:-0}" service
+  local restart_services="${1:-0}" strict_resolver="${2:-}" service
   if [[ "$NEKO_AKDNS_TEST_MODE" == "1" && -n "$AKDNS_TEST_VALIDATOR" ]]; then
     "$AKDNS_TEST_VALIDATOR" \
       "$restart_services" "$NEKO_CONFIG_DIR" "$NEKO_SUB_DIR"
@@ -384,8 +540,9 @@ validate_neko_runtime() {
   fi
 
   load_state
-  if ! (check_strict_stack_dns "$DOMAIN" "$NETWORK_MODE" >/dev/null); then
-    warn "AKDNS 切换后，Neko 的严格 A/AAAA 域名验证失败。"
+  if ! (export NEKO_STRICT_DNS_SERVER="$strict_resolver"; \
+      check_strict_stack_dns "$DOMAIN" "$NETWORK_MODE" >/dev/null); then
+    warn "Neko 的公网严格 A/AAAA 域名验证失败。"
     return 1
   fi
   "$NEKO_LIBEXEC/sing-box" check \
@@ -514,6 +671,10 @@ rollback_transaction() {
   set +e
   warn "AKDNS 操作未完成，正在恢复操作前的 DNS 与 Neko 服务……"
   restore_system_snapshot "$snapshot" || restored=0
+  restore_subscription_snapshot "${AKDNS_TRANSACTION_DIR}/client-before" \
+    || restored=0
+  restore_managed_data_snapshot "${AKDNS_TRANSACTION_DIR}/managed-before" \
+    || restored=0
   validate_neko_runtime 1 || restored=0
   AKDNS_TRANSACTION_ACTIVE=0
   if (( restored == 1 )); then
@@ -553,6 +714,10 @@ start_transaction() {
   transaction_path_is_safe || die "无法建立安全的 AKDNS 事务目录。"
   capture_system_snapshot "$AKDNS_TRANSACTION_DIR/before" \
     || die "无法备份当前 DNS；没有运行 AKDNS。"
+  capture_subscription_snapshot "$AKDNS_TRANSACTION_DIR/client-before" \
+    || die "无法备份当前客户端订阅；没有运行 AKDNS。"
+  capture_managed_data_snapshot "$AKDNS_TRANSACTION_DIR/managed-before" \
+    || die "无法备份 AKDNS 管理状态；没有运行 AKDNS。"
   AKDNS_TRANSACTION_ACTIVE=1
 }
 
@@ -564,9 +729,17 @@ run_akdns() {
   local before_fingerprint after_fingerprint before_active=0 after_active=0
   local script_rc=0 server=""
 
-  validate_neko_runtime 0 \
-    || die "Neko 当前 DNS、配置或服务不健康；请先修复，未运行 AKDNS。"
   akdns_is_active && before_active=1
+  if (( before_active == 1 )); then
+    server="$(current_akdns_server)" || return 1
+    validate_akdns_resolver "$server" \
+      || die "当前 AKDNS 递归解析不健康；未继续修改。"
+    validate_neko_runtime 0 1.1.1.1 \
+      || die "Neko 当前公网 DNS、配置或服务不健康；请先修复，未运行 AKDNS。"
+  else
+    validate_neko_runtime 0 \
+      || die "Neko 当前 DNS、配置或服务不健康；请先修复，未运行 AKDNS。"
+  fi
   before_fingerprint="$(system_fingerprint)"
   start_transaction
 
@@ -584,12 +757,18 @@ run_akdns() {
   after_fingerprint="$(system_fingerprint)"
   akdns_is_active && after_active=1
   if [[ "$before_fingerprint" == "$after_fingerprint" ]]; then
-    validate_neko_runtime 0 || {
-      warn "AKDNS 临时操作后的严格 DNS、配置或 Neko 服务验证失败。"
-      return 1
-    }
+    if (( after_active == 1 )); then
+      server="$(current_akdns_server)" || return 1
+      validate_akdns_resolver "$server" || return 1
+      render_client_subscriptions on "$server" || return 1
+      validate_neko_runtime 0 1.1.1.1 || return 1
+      [[ ! -d "$AKDNS_ORIGINAL_SNAPSHOT" ]] \
+        || write_managed_status "$server" || return 1
+    else
+      validate_neko_runtime 0 || return 1
+    fi
     commit_transaction
-    ok "AKDNS 没有留下永久系统配置改动；Neko 验证通过。"
+    ok "AKDNS 没有留下新的系统配置改动；DNS 与 Neko 验证通过。"
     return 0
   fi
 
@@ -604,13 +783,14 @@ run_akdns() {
     restore_system_snapshot "$AKDNS_ORIGINAL_SNAPSHOT" || return 1
   fi
 
-  validate_neko_runtime 1 || {
-    warn "AKDNS 改动后的严格 DNS、配置或 Neko 服务验证失败。"
-    return 1
-  }
-
   if (( after_active == 1 )); then
     server="$(current_akdns_server)" || return 1
+    validate_akdns_resolver "$server" || return 1
+    render_client_subscriptions on "$server" || return 1
+    validate_neko_runtime 1 1.1.1.1 || {
+      warn "AKDNS 改动后的公网域名、配置或 Neko 服务验证失败。"
+      return 1
+    }
     if (( before_active == 0 )); then
       save_original_snapshot "${AKDNS_TRANSACTION_DIR}/before" || {
         warn "无法持久保存 AKDNS 启用前快照。"
@@ -621,8 +801,13 @@ run_akdns() {
       write_managed_status "$server" || return 1
     fi
     commit_transaction
-    ok "AKDNS ${AKDNS_VERSION} 已启用并通过 Neko 严格 DNS 与服务验证：${server}"
+    ok "AKDNS ${AKDNS_VERSION} 已启用；公网域名、AKDNS 递归、订阅配置与服务均已验证：${server}"
   else
+    render_client_subscriptions off || return 1
+    validate_neko_runtime 1 || {
+      warn "恢复后的公网域名、配置或 Neko 服务验证失败。"
+      return 1
+    }
     clear_managed_snapshot || return 1
     commit_transaction
     ok "AKDNS 已关闭；启用前的 DNS 与 resolver 服务状态已恢复并验证。"
@@ -636,8 +821,9 @@ restore_original() {
     || die "AKDNS 启用前快照不完整；拒绝继续覆盖系统 DNS。"
   start_transaction
   restore_system_snapshot "$AKDNS_ORIGINAL_SNAPSHOT" || return 1
+  render_client_subscriptions off || return 1
   validate_neko_runtime 1 || {
-    warn "恢复后的严格 DNS、配置或 Neko 服务验证失败。"
+    warn "恢复后的公网域名、配置或 Neko 服务验证失败。"
     return 1
   }
   clear_managed_snapshot || return 1
@@ -646,13 +832,20 @@ restore_original() {
 }
 
 show_status() {
-  local server="" managed=no
+  local server="" managed_server="" managed=no
   [[ -d "$AKDNS_ORIGINAL_SNAPSHOT" ]] && managed=yes
   server="$(current_akdns_server 2>/dev/null || true)"
+  managed_server="$(managed_akdns_resolver 2>/dev/null || true)"
   printf 'AKDNS 固定版本：%s\n' "$AKDNS_VERSION"
   printf '上游提交：%s\n' "$AKDNS_SOURCE_COMMIT"
   if [[ -n "$server" ]]; then
     printf '当前系统 DNS：AKDNS（%s）\n' "$server"
+    if [[ "$managed_server" == "$server" ]]; then
+      printf 'IPv4 出口订阅 DNS：经代理使用 AKDNS（%s，TCP/53）\n' "$server"
+      printf 'IPv6 出口订阅 DNS：经代理使用严格公共 IPv6 DoH\n'
+    else
+      printf '客户端订阅 DNS：当前 AKDNS 不在 Neko 管理状态，未声明自动接管\n'
+    fi
   else
     printf '当前系统 DNS：不是已知的官方 AKDNS 单服务器配置\n'
   fi
@@ -679,6 +872,9 @@ main() {
   case "${1:---run}" in
     --run)
       require_commands bash
+      if [[ "$NEKO_AKDNS_TEST_MODE" != "1" || -z "$AKDNS_TEST_HEALTH_CHECK" ]]; then
+        require_commands dig
+      fi
       if [[ "$NEKO_AKDNS_TEST_MODE" != "1" || -z "$AKDNS_TEST_SCRIPT" ]]; then
         require_commands curl
       fi

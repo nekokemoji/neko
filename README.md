@@ -57,7 +57,7 @@ bash "$TMP"
 这条入口命令本身需要系统已有 `curl` 和 `mktemp`；进入 Bootstrap 后，`tar`、`gzip`
 等精简系统可能缺少的首次安装工具会自动补齐。
 
-Bootstrap 会下载固定的 Neko 1.12.1 源码版本；核心程序也固定版本并校验对应架构的
+Bootstrap 会下载固定的 Neko 1.13.0 源码版本；核心程序也固定版本并校验对应架构的
 SHA-256，不会在安装时临时解析不确定的 `latest`。
 
 还没有配置 DNS？先不要急，继续看下面的“第一次使用，照着做就行”。
@@ -302,14 +302,25 @@ AKDNS 是**整台 VPS 的系统 DNS 接管**，不是只影响 sing-box、Xray �
 - `/etc/nsswitch.conf`、AKDNS 可能生成的备份和 NetworkManager 接管文件；
 - `systemd-resolved` 与 `resolvconf` 的 active/enabled 状态。
 
-上游脚本返回后，Neko 会再次检查固定官方 DNS 地址、严格 `v4.`/`v6.` A/AAAA、
-sing-box/Xray/Caddy 配置，并重启确认四个 Neko 服务。下载失败、脚本异常退出、未知 DNS、
-严格解析失败、服务失败或终端中断都会恢复操作前快照。功能 9 的“紧急恢复”不依赖
-AKDNS 自己的备份菜单，可直接恢复 Neko 保存的启用前状态；恢复前不会允许卸载 Neko。
+上游脚本返回后，Neko 会把两类检查分开：固定官方 AKDNS 必须能通过 UDP 或 TCP 正常
+递归解析公共域名；Neko 自己的严格 `v4.`/`v6.` A/AAAA 则通过中立公共 DNS 核验，避免
+智能 DNS 对自定义域名返回 `NXDOMAIN / EDE 17 (Filtered)` 时产生假失败。随后会重新
+生成并校验客户端订阅、sing-box/Xray/Caddy 配置，并重启确认四个 Neko 服务。下载失败、
+脚本异常退出、未知 DNS、递归健康失败、配置/服务失败或终端中断，都会同时恢复系统 DNS、
+AKDNS 管理状态和操作前的订阅文件。功能 9 的“紧急恢复”不依赖 AKDNS 自己的备份菜单。
 
 AKDNS 3.0.0 当前提供的是 IPv4 DNS 服务器。它可以回答 A 和 AAAA，但 VPS 本身仍必须
 能连接 IPv4 DNS/53；没有 IPv4 出站的严格 IPv6-only VPS 不适合启用。云厂商、上游
 防火墙或安全策略还需要允许到所选 AKDNS 地址的 UDP/TCP 53。
+
+启用成功后，Neko 会让 **IPv4 出口**的 sing-box、Mihomo 和 Stash 订阅把 DNS 请求
+放进代理隧道，再由该 VPS 以 TCP/53 查询当前 AKDNS；这才会让控制台给本机公网 IPv4
+选择的服务节点实际参与 YouTube 等域名解析。IPv6 出口仍使用严格公共 IPv6 DoH，因为
+AKDNS 当前没有 IPv6 解析器地址。需要重新导入或更新一次订阅，旧客户端配置不会自动改变。
+Shadowrocket 的节点订阅格式不能可靠覆盖应用的全局 DNS 设置；使用它时应在 Shadowrocket
+中把远程 DNS 手动设为当前 AKDNS，并开启“通过代理/遵循代理”后清除 DNS 与浏览器缓存。
+账号地区、Cookie、设备定位以及网站按出口 IP 判定仍可能影响页面地区，DNS 解锁不能改变
+VPS 自身公网 IP 的注册国家。
 
 > AKDNS 菜单中的“流媒体解锁检测”会再运行由 AKDNS 上游选择的另一份第三方脚本；
 > 那份检测脚本不属于 Neko 的固定源码与 SHA-256 边界。只需要设置 DNS 时不要选择它。
@@ -453,7 +464,7 @@ HTTP-01 可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不�
 
 ### 固定版本与测试证据
 
-当前 Neko 版本为 **1.12.1**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
+当前 Neko 版本为 **1.13.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
 lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256；可选 AKDNS 还固定
 上游提交与脚本 SHA-256。
 
@@ -537,7 +548,7 @@ journalctl -u neko-renew.service --since '7 days ago'
 | sing-box Remote Profile 导入失败 | 链接不完整，或所用应用不支持当前官方配置格式 | 重新复制完整链接，并优先使用近期版本的 sing-box 内核客户端 |
 | 二维码没有显示 | qrc 下载、终端宽度或环境不满足 | 直接复制文字链接，代理服务不受影响 |
 | 第三方体检下载失败 | GitHub Raw 或 NodeQuality 入口暂时不可达 | 稍后重试，不影响代理服务 |
-| AKDNS 自动恢复 | 固定脚本下载/校验失败，DNS 不在官方列表，或严格解析/服务验证失败 | 查看上方具体错误；原 DNS 已恢复时可继续用 Neko，勿反复强制修改 `/etc/resolv.conf` |
+| AKDNS 自动恢复 | 固定脚本下载/校验失败、DNS 不在官方列表、公共递归不健康，或订阅/服务验证失败 | 查看上方具体错误；原 DNS 与订阅已恢复时可继续用 Neko，勿反复强制修改 `/etc/resolv.conf` |
 
 安全检查命令：
 

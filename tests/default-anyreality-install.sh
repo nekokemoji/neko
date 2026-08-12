@@ -45,7 +45,7 @@ bash -c '
 
 state="$WORK/etc/state.json"
 jq -e '
-  .release == "1.12.1"
+  .release == "1.13.0"
   and .experimental.anyreality.enabled == true
   and (.experimental.anyreality.port | type == "number")
   and (.experimental.anyreality.cross_port | type == "number")

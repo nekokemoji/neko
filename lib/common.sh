@@ -438,15 +438,66 @@ absolute_dns_name() {
   printf '%s.\n' "$name"
 }
 
+managed_akdns_resolver() {
+  local status_file="${NEKO_VAR}/akdns/status"
+  local resolv_file="${NEKO_RESOLV_CONF:-/etc/resolv.conf}"
+  local resolver="" status_count nameserver_count
+
+  [[ -f "$status_file" && ! -L "$status_file" \
+    && -f "$resolv_file" && ! -L "$resolv_file" ]] || return 1
+  status_count="$(awk -F= '$1 == "resolver" {count++; value=$2} END {
+    if (count == 1) print count " " value
+  }' "$status_file")"
+  [[ "$status_count" == "1 "* ]] || return 1
+  resolver="${status_count#1 }"
+  is_ipv4_literal "$resolver" || return 1
+  case "$resolver" in
+    66.66.66.66|45.207.157.146|108.160.138.51|139.180.133.239|\
+    45.76.83.113|45.76.71.83|45.63.99.176|166.0.199.207) ;;
+    *) return 1 ;;
+  esac
+
+  nameserver_count="$(awk -v wanted="$resolver" '
+    $1 == "nameserver" {count++; if ($2 == wanted) matched++}
+    END {print count + 0, matched + 0}
+  ' "$resolv_file")"
+  [[ "$nameserver_count" == "1 1" ]] || return 1
+  printf '%s\n' "$resolver"
+}
+
+strict_dns_resolver() {
+  local resolver="${NEKO_STRICT_DNS_SERVER:-}"
+  if [[ -n "$resolver" ]]; then
+    is_safe_ip_literal "$resolver" || return 1
+    printf '%s\n' "$resolver"
+    return 0
+  fi
+  # Smart DNS resolvers can intentionally synthesize, suppress, or filter
+  # records.  Once Neko has positively identified its managed AKDNS state,
+  # strict endpoint ownership must therefore be checked through a neutral
+  # public resolver instead of the modified system resolver.
+  managed_akdns_resolver >/dev/null 2>&1 || return 1
+  printf '1.1.1.1\n'
+}
+
 dns_records() {
-  local record_type="${1^^}" query_name output status
+  local record_type="${1^^}" query_name output status resolver=""
+  local -a resolver_argument=()
   query_name="$(absolute_dns_name "$2")"
   case "$record_type" in
     A|AAAA) ;;
     *) die "不支持的 DNS 记录类型：${record_type}" ;;
   esac
 
-  if ! output="$(dig +time=4 +tries=2 +noall +answer +comments \
+  if [[ -n "${NEKO_STRICT_DNS_SERVER:-}" ]]; then
+    resolver="$(strict_dns_resolver)" \
+      || die "严格 DNS 解析器地址无效：${NEKO_STRICT_DNS_SERVER}"
+  else
+    resolver="$(strict_dns_resolver 2>/dev/null || true)"
+  fi
+  [[ -z "$resolver" ]] || resolver_argument=("@${resolver}")
+  if ! output="$(dig "${resolver_argument[@]}" \
+    +time=4 +tries=2 +noall +answer +comments \
     "$query_name" "$record_type" 2>&1)"; then
     die "DNS 查询失败：${query_name} ${record_type}。请检查 VPS 的 DNS 与网络后重试。"
   fi

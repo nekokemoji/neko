@@ -16,6 +16,7 @@ setup_case() {
     "$target/system/etc" \
     "$target/system/run/systemd/resolve" \
     "$target/neko/libexec/lib" \
+    "$target/neko/etc/subscriptions" \
     "$target/neko/var" \
     "$target/systemctl" \
     "$target/tmp"
@@ -27,6 +28,8 @@ setup_case() {
     > "$target/system/etc/nsswitch.conf"
   cp -a -- "$ROOT/versions.env" "$target/neko/libexec/versions.env"
   cp -a -- "$ROOT/lib/common.sh" "$target/neko/libexec/lib/common.sh"
+  cp -a -- "$ROOT/lib/render.sh" "$target/neko/libexec/lib/render.sh"
+  printf 'public\n' > "$target/neko/etc/subscriptions/dns-mode"
   for service in \
     systemd-resolved.service \
     neko-caddy.service neko-sing-box.service neko-xray.service \
@@ -54,6 +57,8 @@ run_wrapper() {
     NEKO_AKDNS_TEST_SCRIPT="$ROOT/tests/fixtures/akdns-mock.sh" \
     NEKO_AKDNS_TEST_ACTION="$action" \
     NEKO_AKDNS_TEST_VALIDATOR="$ROOT/tests/fixtures/akdns-validator.sh" \
+    NEKO_AKDNS_TEST_HEALTH_CHECK="$ROOT/tests/fixtures/akdns-health.sh" \
+    NEKO_AKDNS_TEST_RENDERER="$ROOT/tests/fixtures/akdns-renderer.sh" \
     NEKO_AKDNS_VALIDATOR_LOG="$target/validator.log" \
     NEKO_AKDNS_SERVICE_WAIT_SECONDS=0 \
     "$@" \
@@ -82,10 +87,13 @@ run_wrapper "$SUCCESS" apply > "$SUCCESS/apply.log"
 grep -Fxq 'nameserver 66.66.66.66' "$SUCCESS/system/etc/resolv.conf"
 [[ -d "$SUCCESS/neko/var/akdns/pre-akdns" ]]
 grep -Fxq 'version=3.0.0' "$SUCCESS/neko/var/akdns/status"
-grep -Fq '已启用并通过' "$SUCCESS/apply.log"
+grep -Fq '订阅配置与服务均已验证' "$SUCCESS/apply.log"
+grep -Fxq 'on 66.66.66.66' "$SUCCESS/neko/etc/subscriptions/dns-mode"
 env \
+  NEKO_ETC="$SUCCESS/neko/etc" \
   NEKO_VAR="$SUCCESS/neko/var" \
   NEKO_LIBEXEC="$SUCCESS/neko/libexec" \
+  NEKO_STATE="$SUCCESS/neko/etc/state.json" \
   NEKO_AKDNS_TEST_MODE=1 \
   NEKO_AKDNS_SYSTEM_ROOT="$SUCCESS/system" \
   NEKO_AKDNS_TMP_BASE="$SUCCESS/tmp" \
@@ -96,8 +104,10 @@ env \
 grep -Fq '当前系统 DNS：AKDNS（66.66.66.66）' "$SUCCESS/status.log"
 
 env \
+  NEKO_ETC="$SUCCESS/neko/etc" \
   NEKO_VAR="$SUCCESS/neko/var" \
   NEKO_LIBEXEC="$SUCCESS/neko/libexec" \
+  NEKO_STATE="$SUCCESS/neko/etc/state.json" \
   NEKO_AKDNS_TEST_MODE=1 \
   NEKO_AKDNS_SYSTEM_ROOT="$SUCCESS/system" \
   NEKO_AKDNS_TMP_BASE="$SUCCESS/tmp" \
@@ -105,11 +115,13 @@ env \
   NEKO_AKDNS_SYSTEMCTL="$ROOT/tests/fixtures/akdns-systemctl.sh" \
   NEKO_AKDNS_SYSTEMCTL_STATE_DIR="$SUCCESS/systemctl" \
   NEKO_AKDNS_TEST_VALIDATOR="$ROOT/tests/fixtures/akdns-validator.sh" \
+  NEKO_AKDNS_TEST_RENDERER="$ROOT/tests/fixtures/akdns-renderer.sh" \
   NEKO_AKDNS_SERVICE_WAIT_SECONDS=0 \
   bash "$ROOT/runtime/akdns.sh" --restore > "$SUCCESS/restore.log"
 assert_original_state "$SUCCESS"
 [[ ! -e "$SUCCESS/neko/var/akdns/pre-akdns" ]]
 grep -Fq '启用前的精确 DNS' "$SUCCESS/restore.log"
+grep -Fxq 'off' "$SUCCESS/neko/etc/subscriptions/dns-mode"
 
 for action in fail invalid interrupt; do
   target="$WORK/$action"
@@ -131,14 +143,44 @@ if run_wrapper "$VALIDATION" apply \
   exit 1
 fi
 assert_original_state "$VALIDATION"
-grep -Fq '严格 DNS、配置或 Neko 服务验证失败' "$VALIDATION/run.log"
+grep -Fq '公网域名、配置或 Neko 服务验证失败' "$VALIDATION/run.log"
+grep -Fxq 'public' "$VALIDATION/neko/etc/subscriptions/dns-mode"
+
+HEALTH="$WORK/health"
+setup_case "$HEALTH"
+if run_wrapper "$HEALTH" apply \
+    NEKO_AKDNS_TEST_REJECT_HEALTH=1 > "$HEALTH/run.log" 2>&1; then
+  printf 'AKDNS 递归健康检查失败场景没有回滚。\n' >&2
+  exit 1
+fi
+assert_original_state "$HEALTH"
+grep -Fq '正在恢复操作前的 DNS' "$HEALTH/run.log"
+grep -Fxq 'public' "$HEALTH/neko/etc/subscriptions/dns-mode"
 
 NOCHANGE="$WORK/nochange"
 setup_case "$NOCHANGE"
 run_wrapper "$NOCHANGE" nochange > "$NOCHANGE/run.log"
 assert_original_state "$NOCHANGE"
 [[ ! -e "$NOCHANGE/neko/var/akdns/pre-akdns" ]]
-grep -Fq '没有留下永久系统配置改动' "$NOCHANGE/run.log"
+grep -Fq '没有留下新的系统配置改动' "$NOCHANGE/run.log"
+
+DNS_BYPASS="$WORK/dns-bypass"
+mkdir -p "$DNS_BYPASS/var/akdns" "$DNS_BYPASS/etc"
+printf 'resolver=66.66.66.66\n' > "$DNS_BYPASS/var/akdns/status"
+printf 'nameserver 66.66.66.66\noptions use-vc\n' > "$DNS_BYPASS/etc/resolv.conf"
+NEKO_VAR="$DNS_BYPASS/var" NEKO_RESOLV_CONF="$DNS_BYPASS/etc/resolv.conf" \
+  DNS_BYPASS_LOG="$DNS_BYPASS/dig.log" bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    dig() {
+      printf "%s\n" "$*" >> "$DNS_BYPASS_LOG"
+      printf "%s\n" \
+        ";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1" \
+        "v4.example.com. 60 IN A 192.0.2.44"
+    }
+    [[ "$(resolved_ipv4_addresses v4.example.com)" == 192.0.2.44 ]]
+  ' _ "$ROOT/lib/common.sh"
+grep -Fq '@1.1.1.1' "$DNS_BYPASS/dig.log"
 
 grep -Fq \
   'AKDNS_SOURCE_COMMIT="d9a3f7caa08f528d55d799d73d37394026326a4d"' \
