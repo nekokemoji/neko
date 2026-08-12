@@ -67,6 +67,12 @@ bash "$ROOT/tests/family-render-smoke.sh"
 mapfile -t shell_files < <(find "$ROOT" -type f -name '*.sh' -print | sort)
 bash -n "${shell_files[@]}"
 
+# Exercise the AKDNS system-file transaction against an isolated fake root in
+# every supported full VM.  Live public DNS is deliberately not made a CI
+# dependency, while symlink restoration and resolver service states are real
+# guest Bash/filesystem operations.
+bash "$ROOT/tests/akdns-transaction.sh"
+
 for ((attempt = 0; attempt < 250; attempt++)); do
   fast_failure_output=""
   fast_failure_rc=0

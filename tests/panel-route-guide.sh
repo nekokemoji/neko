@@ -54,9 +54,10 @@ menu_output="$(
     bash -c 'source "$1"; draw_menu' _ "$ROOT/runtime/panel.sh" 2>&1
 )"
 [[ "$menu_output" == *'8. 双栈线路怎么选？（同时拥有 IPv4 和 IPv6 时查看）'* ]]
-[[ "$menu_output" != *'9. '* ]]
-grep -Fq 'read -r -p "请选择 [0-8]：" choice' "$ROOT/runtime/panel.sh"
-grep -Fq '*) warn "请输入 0 到 8。" ;;' "$ROOT/runtime/panel.sh"
+[[ "$menu_output" == *'9. AKDNS 智能 DNS 解锁（第三方、可选）'* ]]
+grep -Fq 'read -r -p "请选择 [0-9]：" choice' "$ROOT/runtime/panel.sh"
+grep -Fq '*) warn "请输入 0 到 9。" ;;' "$ROOT/runtime/panel.sh"
 grep -A2 -F '8)' "$ROOT/runtime/panel.sh" | grep -Fq 'show_route_guide'
+grep -A2 -F '9)' "$ROOT/runtime/panel.sh" | grep -Fq 'manage_akdns'
 
 printf '面板第 8 项文案、四种推荐映射、真实链接与双二维码测试通过。\n'

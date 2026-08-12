@@ -1,6 +1,6 @@
-# Neko 1.11.1 测试范围
+# Neko 1.12.0 测试范围
 
-最近核对日期：2026-08-10（America/Los_Angeles）。
+最近核对日期：2026-08-13（Asia/Tokyo）。
 
 这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
@@ -20,7 +20,8 @@ bash tests/run.sh
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
 - firewalld 只根据已安装地址族的默认路由网卡寻找实际 zone，而不是盲目使用 default zone；补装另一族时不会接管或回滚预先存在的区域规则。
-- Bootstrap 离线解压固定源码包、核对 1.11.1 标记并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- Bootstrap 离线解压固定源码包、核对 1.12.0 标记与 AKDNS 运行组件并清理临时目录；模拟精简系统缺少 `tar`/`gzip` 时会先通过系统包管理器补齐。
+- AKDNS 只使用固定的 3.0.0 上游提交与 SHA-256；隔离系统根目录动态覆盖永久启用、精确恢复、无改动、未知 DNS、上游非零退出和 Neko 后置验证失败，确认 `/etc/resolv.conf` 符号链接、`nsswitch.conf`、NetworkManager 文件及 resolver 服务状态完整恢复。
 - 所有发行版容器都用各自真实的 `awk` 解析模拟 DNS 结果；其中 Debian 12 的旧版 mawk 不支持正则区间表达式，测试会确认严格 IPv4 解析不依赖该语法。
 - HTTP-01 在签发前为 firewalld/UFW 临时放行 TCP 80，并在完成后只删除本次创建的临时规则；firewalld 规则带自动过期保护。
 - Xray 26.3.27、sing-box 1.13.14、Hysteria 2.10.0、Caddy 2.11.4、lego 5.2.2、Mihomo 1.19.29、可选 qrc 0.9.0 与 NextTrace Tiny 1.7.1 的版本身份和所需 CLI 参数。
@@ -49,10 +50,10 @@ bash tests/run.sh
 - 面板第 8 项先显示确认的 IP 被墙、“送中”、入站与出站文案，再询问客户端、被墙入口和“送中”出口；四种组合均验证推荐/备用映射、两条真实客户端订阅 URL、两次二维码输出和只读状态。
 - 面板第 7 项列出 GOECS、NodeQuality 与 Neko 三网线路检测；离线替身验证前两项无需 Neko 确认直接运行，线路菜单严格使用广东、上海、北京、四川、湖北、辽宁、全部地区的顺序。
 - Neko 自带线路组件只包含六地三网回程：每个目标固定 100 包 ICMP，ICMP 不回应时改测 100 次 TCP 连接，显示 ASN 路径、平均/P95 延迟、丢包或 TCP 成功率；不包含旧版硬件、IP 质量、BGP 注册和跑分模块。
-- AnyReality 在新安装和旧版升级时默认启用，使用独立端口、密码、REALITY 密钥和严格出口路由；仅加入 sing-box 与 Shadowrocket，Mihomo、Stash 保持不变，防火墙同步开放对应 TCP 端口。面板不再提供功能 9 或 AnyReality 卸载入口。
+- AnyReality 在新安装和旧版升级时默认启用，使用独立端口、密码、REALITY 密钥和严格出口路由；仅加入 sing-box 与 Shadowrocket，Mihomo、Stash 保持不变，防火墙同步开放对应 TCP 端口。面板不提供 AnyReality 卸载入口；功能 9 现为独立的可选 AKDNS 事务入口。
 - 控制面板端点刷新在地址未变化时不重启；模拟新地址更新成功、服务失败后完整回滚，以及回滚服务仍失败时保留状态备份。
 - 控制面板从 IPv4-only 补装 IPv6 的成功、第二组跨族端口无碰撞、两个跨族令牌、证书扩容、重复请求无操作、服务失败后配置/证书/firewalld 自动回滚；恢复路径还会拒绝根目录等危险目标。
-- 分别从 schema 1、schema 2 与 schema 3 的双栈/IPv4-only/IPv6-only 模拟升级到 Neko 1.11.1，确认原端口、协议凭据、REALITY 参数、安装模式、令牌和旧订阅 URL 继续可用；升级只新增 AnyReality 及旧版缺少的跨族/Trojan 数据。schema 4 已有 AnyReality 且端口正在监听时，升级仍原样保留其身份，同时继续拒绝状态文件中的真实端口重叠。
+- 分别从 schema 1、schema 2 与 schema 3 的双栈/IPv4-only/IPv6-only 模拟升级到 Neko 1.12.0，确认原端口、协议凭据、REALITY 参数、安装模式、令牌和旧订阅 URL 继续可用；升级安装 AKDNS 事务组件，只新增 AnyReality 及旧版缺少的跨族/Trojan 数据。schema 4 已有 AnyReality 且端口正在监听时，升级仍原样保留其身份，同时继续拒绝状态文件中的真实端口重叠。
 - 模拟 firewalld 管理的旧安装升级，确认 Neko 专用服务规则加入 AnyReality、Trojan 与跨族 TCP/UDP 端口；升级成功安装精简线路脚本与 NextTrace，并移除旧版完整体检，后续服务失败时恢复升级前状态、配置、systemd 单元、防火墙和可选组件。
 - systemd 单元的关键沙箱、能力与续期写路径静态断言。
 
@@ -85,8 +86,9 @@ Actions 使用固定 commit SHA 引用 checkout 与 QEMU action。矩阵状态�
 `.github/workflows/vm-smoke.yml` 不在每个普通 PR 自动运行，只能手动触发，或在专用
 `agent/vm-validation/**` 分支运行。它从 Debian、Ubuntu、Rocky Linux 与 AlmaLinux
 官方站点下载云镜像并核对同站校验和，在 QEMU amd64 完整虚拟机中确认 PID 1 确实是
-systemd，再运行平台识别、全部 Shell 语法、schema 4 四线路渲染、250 次 ACME 快速
-失败、限额/超时保护、systemd unit 解析和实际临时 unit 启动。Debian 12 还会安装
+systemd，再运行平台识别、全部 Shell 语法、AKDNS 隔离系统根的启用/恢复/失败回滚、
+schema 4 四线路渲染、250 次 ACME 快速失败、限额/超时保护、systemd unit 解析和实际
+临时 unit 启动。Debian 12 还会安装
 固定版本且经过校验的 sing-box 与 Mihomo，使用生成的订阅对 TUIC、SS2022、AnyTLS、
 AnyReality 和 Trojan 做 IPv4-only 与双栈域名往返；客户端位于独立 network namespace，入站
 必须穿过由 Neko 配置且默认拒绝其他入站的 UFW。八个发行版 job 相互独立，单个失败
@@ -102,6 +104,7 @@ Actions run 为准。
 以下项目需要真实、可重装的公网 VPS 与真机客户端：
 
 - 8 个发行版各自使用真实公网 DNS/证书完成安装、重启、升级、失败回滚和卸载循环；
+- 8 个发行版真实接管到公共 AKDNS、UDP/TCP 53 可达性、流媒体区域结果与长期稳定性；
 - 单栈/双栈活动 DNS 名称的真实 Let’s Encrypt 生产证书签发、面板 SAN 扩容及后续自动续期；
 - Cloudflare 生产 API 对 Token 权限、TXT 传播和清理的真实端到端调用；
 - 云厂商安全组、firewalld/UFW 与 Hysteria 端口跳跃在真实内核上的联动；
