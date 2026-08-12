@@ -52,16 +52,17 @@ if [[ "${subscription_files[*]}" != "${expected_files[*]}" ]]; then
 fi
 
 check_profile() {
-  local profile="$1" address="$2" dns_server="$3"
-  local dns_strategy="$4" rejected_ip_version="$5"
-  local hy2_ports="$6" tuic_port="$7" ss_port="$8" anytls_port="$9"
-  local trojan_port="${10}" vision_port="${11}"
+  local etc_dir="$1" profile="$2" address="$3" dns_server="$4"
+  local dns_mode="$5" dns_strategy="$6" rejected_ip_version="$7"
+  local hy2_ports="$8" tuic_port="$9" ss_port="${10}" anytls_port="${11}"
+  local trojan_port="${12}" vision_port="${13}"
   local vision_public_key vision_short_id
   vision_public_key="$(jq -r '.reality.vision_public_key' "$WORK/etc/state.json")"
   vision_short_id="$(jq -r '.reality.vision_short_id' "$WORK/etc/state.json")"
   jq -e \
     --arg address "$address" \
     --arg dns_server "$dns_server" \
+    --arg dns_mode "$dns_mode" \
     --arg dns_strategy "$dns_strategy" \
     --arg vision_public_key "$vision_public_key" \
     --arg vision_short_id "$vision_short_id" \
@@ -74,20 +75,31 @@ check_profile() {
     --argjson vision_port "$vision_port" \
     '
       .dns.strategy == $dns_strategy
-      and .dns.final == "strict-doh"
-      and .dns.servers == [{
-        type: "https",
-        tag: "strict-doh",
-        server: $dns_server,
-        server_port: 443,
-        path: "/dns-query",
-        tls: {
-          enabled: true,
-          server_name: "cloudflare-dns.com",
-          insecure: false
-        },
-        detour: "PROXY"
-      }]
+      and (if $dns_mode == "akdns" then
+        .dns.final == "smart-akdns"
+        and .dns.servers == [{
+          type: "tcp",
+          tag: "smart-akdns",
+          server: $dns_server,
+          server_port: 53,
+          detour: "PROXY"
+        }]
+      else
+        .dns.final == "strict-doh"
+        and .dns.servers == [{
+          type: "https",
+          tag: "strict-doh",
+          server: $dns_server,
+          server_port: 443,
+          path: "/dns-query",
+          tls: {
+            enabled: true,
+            server_name: "cloudflare-dns.com",
+            insecure: false
+          },
+          detour: "PROXY"
+        }]
+      end)
       and (.inbounds | length == 1)
       and .inbounds[0].type == "tun"
       and .inbounds[0].auto_route
@@ -129,17 +141,86 @@ check_profile() {
       and .outbounds[6].server_port == $vision_port
       and .outbounds[6].tls.reality.public_key == $vision_public_key
       and .outbounds[6].tls.reality.short_id == $vision_short_id
-    ' "$WORK/etc/subscriptions/sing-box-${profile}.json" >/dev/null
+    ' "$etc_dir/subscriptions/sing-box-${profile}.json" >/dev/null
 }
 
-check_profile v4 127.0.0.1 1.1.1.1 ipv4_only 6 \
+check_profile "$WORK/etc" v4 127.0.0.1 1.1.1.1 public ipv4_only 6 \
   21000:21127 22000 23000 24000 24500 25000
-check_profile v6 ::1 2606:4700:4700::1111 ipv6_only 4 \
+check_profile "$WORK/etc" v6 ::1 2606:4700:4700::1111 public ipv6_only 4 \
   21000:21127 22000 23000 24000 24500 25000
-check_profile v4-to-v6 127.0.0.1 2606:4700:4700::1111 ipv6_only 4 \
+check_profile "$WORK/etc" v4-to-v6 127.0.0.1 2606:4700:4700::1111 public ipv6_only 4 \
   27000:27127 28000 29000 30000 31000 32000
-check_profile v6-to-v4 ::1 1.1.1.1 ipv4_only 6 \
+check_profile "$WORK/etc" v6-to-v4 ::1 1.1.1.1 public ipv4_only 6 \
   27000:27127 28000 29000 30000 31000 32000
+
+mkdir -p "$WORK/etc-akdns"
+cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/etc-akdns/state.json"
+NEKO_ETC="$WORK/etc-akdns" \
+  NEKO_VAR="$WORK/var-akdns" \
+  NEKO_STATE="$WORK/etc-akdns/state.json" \
+  NEKO_USER=root \
+  NEKO_AKDNS_CLIENT_MODE=on \
+  NEKO_AKDNS_CLIENT_RESOLVER=66.66.66.66 \
+  bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    source "$2"
+    render_all
+  ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
+
+check_profile "$WORK/etc-akdns" v4 127.0.0.1 66.66.66.66 akdns ipv4_only 6 \
+  21000:21127 22000 23000 24000 24500 25000
+check_profile "$WORK/etc-akdns" v6 ::1 2606:4700:4700::1111 public ipv6_only 4 \
+  21000:21127 22000 23000 24000 24500 25000
+check_profile "$WORK/etc-akdns" v4-to-v6 127.0.0.1 2606:4700:4700::1111 public ipv6_only 4 \
+  27000:27127 28000 29000 30000 31000 32000
+check_profile "$WORK/etc-akdns" v6-to-v4 ::1 66.66.66.66 akdns ipv4_only 6 \
+  27000:27127 28000 29000 30000 31000 32000
+
+for profile in v4 v6-to-v4; do
+  grep -Fq 'respect-rules: true' \
+    "$WORK/etc-akdns/subscriptions/mihomo-${profile}.yaml"
+  grep -Fq 'tcp://66.66.66.66#PROXY' \
+    "$WORK/etc-akdns/subscriptions/mihomo-${profile}.yaml"
+  grep -Fq 'follow-rule: true' \
+    "$WORK/etc-akdns/subscriptions/stash-${profile}.yaml"
+  grep -Fq '    - "tcp://66.66.66.66"' \
+    "$WORK/etc-akdns/subscriptions/stash-${profile}.yaml"
+done
+for profile in v6 v4-to-v6; do
+  if grep -Fq '66.66.66.66' \
+      "$WORK/etc-akdns/subscriptions/mihomo-${profile}.yaml"; then
+    printf 'IPv6 出口 Mihomo 订阅不应使用 AKDNS：%s\n' "$profile" >&2
+    exit 1
+  fi
+  if grep -Fq '66.66.66.66' \
+      "$WORK/etc-akdns/subscriptions/stash-${profile}.yaml"; then
+    printf 'IPv6 出口 Stash 订阅不应使用 AKDNS：%s\n' "$profile" >&2
+    exit 1
+  fi
+done
+
+# The normal upgrade/panel render path uses auto detection rather than the
+# explicit transaction override.  Exercise the root-owned status + exact
+# resolv.conf match that permits that transition.
+mkdir -p "$WORK/etc-auto" "$WORK/var-auto/akdns" "$WORK/system-auto"
+cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/etc-auto/state.json"
+printf 'resolver=108.160.138.51\n' > "$WORK/var-auto/akdns/status"
+printf 'nameserver 108.160.138.51\noptions use-vc\n' \
+  > "$WORK/system-auto/resolv.conf"
+NEKO_ETC="$WORK/etc-auto" \
+  NEKO_VAR="$WORK/var-auto" \
+  NEKO_STATE="$WORK/etc-auto/state.json" \
+  NEKO_RESOLV_CONF="$WORK/system-auto/resolv.conf" \
+  NEKO_USER=root \
+  bash -c '
+    set -Eeuo pipefail
+    source "$1"
+    source "$2"
+    render_all
+  ' _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
+check_profile "$WORK/etc-auto" v4 127.0.0.1 108.160.138.51 akdns ipv4_only 6 \
+  21000:21127 22000 23000 24000 24500 25000
 
 caddy="$WORK/etc/config/Caddyfile"
 grep -Fq 'rewrite * /sing-box-v4.json' "$caddy"

@@ -595,16 +595,17 @@ EOF
 }
 
 render_sing_box_client() {
-  local target="$1" server="$2" dns_server="$3"
-  local dns_strategy="$4" rejected_ip_version="$5"
-  local route_hy2_start="$6" route_hy2_end="$7" route_tuic_port="$8"
-  local route_ss_port="$9" route_anytls_port="${10}" route_trojan_port="${11}"
-  local route_vision_port="${12}" route_anyreality_port="${13:-null}"
+  local target="$1" server="$2" dns_server="$3" dns_mode="$4"
+  local dns_strategy="$5" rejected_ip_version="$6"
+  local route_hy2_start="$7" route_hy2_end="$8" route_tuic_port="$9"
+  local route_ss_port="${10}" route_anytls_port="${11}" route_trojan_port="${12}"
+  local route_vision_port="${13}" route_anyreality_port="${14:-null}"
 
   jq -n \
     --arg domain "$DOMAIN" \
     --arg server "$server" \
     --arg dns_server "$dns_server" \
+    --arg dns_mode "$dns_mode" \
     --arg dns_strategy "$dns_strategy" \
     --argjson rejected_ip_version "$rejected_ip_version" \
     --arg hy2_ports "${route_hy2_start}:${route_hy2_end}" \
@@ -634,8 +635,13 @@ render_sing_box_client() {
         timestamp: true
       },
       dns: {
-        servers: [
-          {
+        servers: [(if $dns_mode == "akdns" then {
+          type: "tcp",
+          tag: "smart-akdns",
+          server: $dns_server,
+          server_port: 53,
+          detour: "PROXY"
+        } else {
             type: "https",
             tag: "strict-doh",
             server: $dns_server,
@@ -647,9 +653,8 @@ render_sing_box_client() {
               insecure: false
             },
             detour: "PROXY"
-          }
-        ],
-        final: "strict-doh",
+          } end)],
+        final: (if $dns_mode == "akdns" then "smart-akdns" else "strict-doh" end),
         strategy: $dns_strategy
       },
       inbounds: [
@@ -923,12 +928,24 @@ render_stash_yaml() {
   local target="$1" server="$2" route_hy2_start="$3" route_hy2_end="$4"
   local route_tuic_port="$5" route_ss_port="$6" route_anytls_port="$7"
   local route_trojan_port="$8" route_vision_port="$9"
-  write_atomic "$target" <<EOF
+  local dns_mode="${10}" dns_server="${11}"
+  {
+  cat <<EOF
 mixed-port: 7890
 allow-lan: false
 mode: rule
 log-level: info
 ipv6: true
+EOF
+  if [[ "$dns_mode" == akdns ]]; then
+    cat <<EOF
+dns:
+  nameserver:
+    - "tcp://${dns_server}"
+  follow-rule: true
+EOF
+  fi
+  cat <<EOF
 
 proxies:
   - name: "HY2"
@@ -1000,6 +1017,7 @@ proxy-groups:
 rules:
   - MATCH,PROXY
 EOF
+  } | write_atomic "$target"
 }
 
 render_client_yaml() {
@@ -1007,6 +1025,7 @@ render_client_yaml() {
   local route_hy2_start="$5" route_hy2_end="$6" route_tuic_port="$7"
   local route_ss_port="$8" route_anytls_port="$9" route_trojan_port="${10}"
   local route_vision_port="${11}" route_xhttp_port="${12}"
+  local dns_mode="${13}" dns_server="${14}"
   if [[ "$include_xhttp" == "yes" ]]; then
     names='[HY2, TUIC-v5, SS2022, AnyTLS, Trojan-TLS, VLESS-Reality-Vision, VLESS-Reality-XHTTP]'
   else
@@ -1020,6 +1039,23 @@ allow-lan: false
 mode: rule
 log-level: info
 ipv6: true
+EOF
+    if [[ "$dns_mode" == akdns ]]; then
+      cat <<EOF
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: redir-host
+  respect-rules: true
+  default-nameserver:
+    - 1.1.1.1
+  proxy-server-nameserver:
+    - 1.1.1.1
+  nameserver:
+    - "tcp://${dns_server}#PROXY"
+EOF
+    fi
+    cat <<EOF
 
 proxies:
 EOF
@@ -1160,33 +1196,52 @@ EOF
 
 render_subscription_route() {
   local profile="$1" server="$2" ingress_ip_version="$3" dns_server="$4"
-  local dns_strategy="$5" rejected_ip_version="$6"
-  local route_hy2_start="$7" route_hy2_end="$8" route_tuic_port="$9"
-  local route_ss_port="${10}" route_anytls_port="${11}" route_trojan_port="${12}"
-  local route_vision_port="${13}" route_xhttp_port="${14}"
-  local route_anyreality_port="${15:-}"
+  local dns_mode="$5" dns_strategy="$6" rejected_ip_version="$7"
+  local route_hy2_start="$8" route_hy2_end="$9" route_tuic_port="${10}"
+  local route_ss_port="${11}" route_anytls_port="${12}" route_trojan_port="${13}"
+  local route_vision_port="${14}" route_xhttp_port="${15}"
+  local route_anyreality_port="${16:-}"
 
   render_client_yaml "${NEKO_SUB_DIR}/mihomo-${profile}.yaml" yes \
     "$server" "$ingress_ip_version" \
     "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
-    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" "$route_xhttp_port"
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" "$route_xhttp_port" \
+    "$dns_mode" "$dns_server"
   # Stash does not implement XHTTP; each strict route has six nodes.
   render_stash_yaml "${NEKO_SUB_DIR}/stash-${profile}.yaml" "$server" \
     "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
-    "$route_anytls_port" "$route_trojan_port" "$route_vision_port"
+    "$route_anytls_port" "$route_trojan_port" "$route_vision_port" \
+    "$dns_mode" "$dns_server"
   render_shadowrocket "${NEKO_SUB_DIR}/shadowrocket-${profile}.txt" "$server" \
     "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
     "$route_anytls_port" "$route_trojan_port" "$route_vision_port" "$route_xhttp_port" \
     "$route_anyreality_port"
   # Official sing-box Remote Profiles are complete JSON configurations.
   render_sing_box_client "${NEKO_SUB_DIR}/sing-box-${profile}.json" \
-    "$server" "$dns_server" "$dns_strategy" "$rejected_ip_version" \
+    "$server" "$dns_server" "$dns_mode" "$dns_strategy" "$rejected_ip_version" \
     "$route_hy2_start" "$route_hy2_end" "$route_tuic_port" "$route_ss_port" \
     "$route_anytls_port" "$route_trojan_port" "$route_vision_port" \
     "$route_anyreality_port"
 }
 
 render_subscriptions() {
+  local akdns_resolver="" v4_dns_mode=public v4_dns_server=1.1.1.1
+  case "${NEKO_AKDNS_CLIENT_MODE:-auto}" in
+    on)
+      akdns_resolver="${NEKO_AKDNS_CLIENT_RESOLVER:-}"
+      is_ipv4_literal "$akdns_resolver" \
+        || die "AKDNS 客户端解析地址无效：${akdns_resolver:-empty}"
+      ;;
+    off) ;;
+    auto)
+      akdns_resolver="$(managed_akdns_resolver 2>/dev/null || true)"
+      ;;
+    *) die "不支持的 AKDNS 客户端渲染模式：${NEKO_AKDNS_CLIENT_MODE}" ;;
+  esac
+  if [[ -n "$akdns_resolver" ]]; then
+    v4_dns_mode=akdns
+    v4_dns_server="$akdns_resolver"
+  fi
   mkdir -p "$NEKO_SUB_DIR"
   rm -f -- \
     "${NEKO_SUB_DIR}/mihomo-v4.yaml" \
@@ -1207,24 +1262,24 @@ render_subscriptions() {
     "${NEKO_SUB_DIR}/sing-box-v6-to-v4.json"
   if network_mode_has_ipv4; then
     render_subscription_route v4 "$SUBSCRIPTION_IPV4_ADDRESS" ipv4 \
-      "1.1.1.1" ipv4_only 6 \
+      "$v4_dns_server" "$v4_dns_mode" ipv4_only 6 \
       "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" \
       "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT" "$ANYREALITY_PORT"
   fi
   if network_mode_has_ipv6; then
     render_subscription_route v6 "$SUBSCRIPTION_IPV6_ADDRESS" ipv6 \
-      "2606:4700:4700::1111" ipv6_only 4 \
+      "2606:4700:4700::1111" public ipv6_only 4 \
       "$HY2_START" "$HY2_END" "$TUIC_PORT" "$SS_PORT" "$ANYTLS_PORT" \
       "$TROJAN_PORT" "$VISION_PORT" "$XHTTP_PORT" "$ANYREALITY_PORT"
   fi
   if network_mode_has_cross_routes; then
     render_subscription_route v4-to-v6 "$SUBSCRIPTION_IPV4_ADDRESS" ipv4 \
-      "2606:4700:4700::1111" ipv6_only 4 \
+      "2606:4700:4700::1111" public ipv6_only 4 \
       "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" \
       "$CROSS_ANYTLS_PORT" "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" \
       "$CROSS_XHTTP_PORT" "$CROSS_ANYREALITY_PORT"
     render_subscription_route v6-to-v4 "$SUBSCRIPTION_IPV6_ADDRESS" ipv6 \
-      "1.1.1.1" ipv4_only 6 \
+      "$v4_dns_server" "$v4_dns_mode" ipv4_only 6 \
       "$CROSS_HY2_START" "$CROSS_HY2_END" "$CROSS_TUIC_PORT" "$CROSS_SS_PORT" \
       "$CROSS_ANYTLS_PORT" "$CROSS_TROJAN_PORT" "$CROSS_VISION_PORT" \
       "$CROSS_XHTTP_PORT" "$CROSS_ANYREALITY_PORT"
