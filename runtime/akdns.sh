@@ -661,7 +661,9 @@ show_status() {
 }
 
 main() {
-  require_root
+  if (( EUID != 0 )) && [[ "$NEKO_AKDNS_TEST_MODE" != "1" ]]; then
+    die "请使用 root 运行。"
+  fi
   require_commands flock sha256sum awk stat cp mv rm install mktemp readlink
   assert_safe_paths
   install -d -m 0700 "$AKDNS_DATA_DIR"
