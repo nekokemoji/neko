@@ -364,7 +364,7 @@ grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
 grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
 grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
 grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.13.0"' "$ROOT/versions.env"
+grep -Fq 'NEKO_RELEASE="1.13.1"' "$ROOT/versions.env"
 grep -Fq 'runtime/akdns.sh' "$ROOT/bootstrap.sh"
 grep -Fq 'runtime/akdns.sh' "$ROOT/install.sh"
 grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/bootstrap.sh"
@@ -1010,36 +1010,44 @@ v6_egress_tags = [
     "tuic-v4-to-v6-in", "ss2022-v4-to-v6-in",
     "anytls-v4-to-v6-in", "trojan-v4-to-v6-in",
 ]
-assert sing["route"]["rules"][0] == {"network": "tcp", "port": 25, "action": "reject"}
+assert sing["route"]["rules"][0] == {
+    "port": [80, 443],
+    "action": "sniff",
+    "sniffer": ["http", "tls", "quic"],
+    "timeout": "1s",
+}
 assert sing["route"]["rules"][1] == {
+    "network": "tcp", "port": 25, "action": "reject"
+}
+assert sing["route"]["rules"][2] == {
     "inbound": v4_egress_tags,
     "action": "resolve",
     "server": "local",
     "strategy": "ipv4_only",
 }
-assert sing["route"]["rules"][2] == {
+assert sing["route"]["rules"][3] == {
     "inbound": v6_egress_tags,
     "action": "resolve",
-    "server": "local",
+    "server": "strict-v6",
     "strategy": "ipv6_only",
 }
-assert sing["route"]["rules"][3] == {"ip_is_private": True, "action": "reject"}
-assert sing["route"]["rules"][4] == {
+assert sing["route"]["rules"][4] == {"ip_is_private": True, "action": "reject"}
+assert sing["route"]["rules"][5] == {
     "inbound": v4_egress_tags,
     "ip_version": 6,
     "action": "reject",
 }
-assert sing["route"]["rules"][5] == {
+assert sing["route"]["rules"][6] == {
     "inbound": v6_egress_tags,
     "ip_version": 4,
     "action": "reject",
 }
-assert sing["route"]["rules"][6] == {
+assert sing["route"]["rules"][7] == {
     "inbound": v4_egress_tags,
     "action": "route",
     "outbound": "direct-v4",
 }
-assert sing["route"]["rules"][7] == {
+assert sing["route"]["rules"][8] == {
     "inbound": v6_egress_tags,
     "action": "route",
     "outbound": "direct-v6",
@@ -1056,12 +1064,41 @@ assert sing_outbounds == {
         "type": "direct",
         "tag": "direct-v6",
         "inet6_bind_address": v6_address,
-        "domain_resolver": {"server": "local", "strategy": "ipv6_only"},
+        "domain_resolver": {"server": "strict-v6", "strategy": "ipv6_only"},
     },
 }
 assert sing["dns"] == {
-    "servers": [{"type": "local", "tag": "local", "prefer_go": True}]
+    "servers": [
+        {"type": "local", "tag": "local", "prefer_go": True},
+        {
+            "type": "https",
+            "tag": "strict-v6",
+            "server": "2606:4700:4700::1111",
+            "server_port": 443,
+            "path": "/dns-query",
+            "tls": {
+                "enabled": True,
+                "server_name": "cloudflare-dns.com",
+                "insecure": False,
+            },
+        },
+    ]
 }
+assert xray["dns"] == {
+    "queryStrategy": "UseIP",
+    "servers": [
+        {"address": "localhost", "queryStrategy": "UseIPv4"},
+        {
+            "address": "https+local://[2606:4700:4700::1111]/dns-query",
+            "queryStrategy": "UseIPv6",
+        },
+    ],
+}
+assert all(inbound["sniffing"] == {
+    "enabled": True,
+    "destOverride": ["http", "tls", "quic"],
+    "routeOnly": False,
+} for inbound in xray["inbounds"])
 assert {o["tag"]: o["protocol"] for o in xray["outbounds"]} == {
     "direct-v4": "freedom", "direct-v6": "freedom", "blocked": "blackhole"
 }
@@ -1108,6 +1145,25 @@ for family, hysteria, address, mode, bind_field, listen in (
     assert hysteria["tls"] == {"cert": cert_path, "key": key_path}
     assert hysteria["auth"]["password"] == "test-hy2-password"
     assert hysteria["obfs"]["salamander"]["password"] == "test-hy2-obfs-password"
+    assert hysteria["sniff"] == {
+        "enable": True,
+        "timeout": "1s",
+        "rewriteDomain": False,
+        "tcpPorts": "80,443",
+        "udpPorts": "443",
+    }
+    if mode == 6:
+        assert hysteria["resolver"] == {
+            "type": "https",
+            "https": {
+                "addr": "[2606:4700:4700::1111]:443",
+                "timeout": "10s",
+                "sni": "cloudflare-dns.com",
+                "insecure": False,
+            },
+        }
+    else:
+        assert "resolver" not in hysteria
     assert hysteria["outbounds"] == [{
         "name": "direct",
         "type": "direct",

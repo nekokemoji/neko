@@ -57,7 +57,7 @@ bash "$TMP"
 这条入口命令本身需要系统已有 `curl` 和 `mktemp`；进入 Bootstrap 后，`tar`、`gzip`
 等精简系统可能缺少的首次安装工具会自动补齐。
 
-Bootstrap 会下载固定的 Neko 1.13.0 源码版本；核心程序也固定版本并校验对应架构的
+Bootstrap 会下载固定的 Neko 1.13.1 源码版本；核心程序也固定版本并校验对应架构的
 SHA-256，不会在安装时临时解析不确定的 `latest`。
 
 还没有配置 DNS？先不要急，继续看下面的“第一次使用，照着做就行”。
@@ -316,9 +316,15 @@ AKDNS 3.0.0 当前提供的是 IPv4 DNS 服务器。它可以回答 A 和 AAAA�
 启用成功后，Neko 会让 **IPv4 出口**的 sing-box、Mihomo 和 Stash 订阅把 DNS 请求
 放进代理隧道，再由该 VPS 以 TCP/53 查询当前 AKDNS；这才会让控制台给本机公网 IPv4
 选择的服务节点实际参与 YouTube 等域名解析。IPv6 出口仍使用严格公共 IPv6 DoH，因为
-AKDNS 当前没有 IPv6 解析器地址。需要重新导入或更新一次订阅，旧客户端配置不会自动改变。
+AKDNS 当前没有 IPv6 解析器地址。服务端也按出口隔离解析：IPv4 出口继续继承系统
+AKDNS，IPv6 出口固定通过 IPv6 DoH 查询 AAAA，不会因 AKDNS 对目标返回空 AAAA 而失效。
+这只能恢复目标真实 IPv6，不能让 IPv6 出口获得 AKDNS 控制台选择的 IPv4 解锁地区。
+需要重新导入或更新一次订阅，旧客户端配置不会自动改变。
 Shadowrocket 的节点订阅格式不能可靠覆盖应用的全局 DNS 设置；使用它时应在 Shadowrocket
 中把远程 DNS 手动设为当前 AKDNS，并开启“通过代理/遵循代理”后清除 DNS 与浏览器缓存。
+服务端会在目标仅以 IP 传入时恢复常见 HTTP Host 与 TLS/QUIC SNI，再按出口地址族解析；
+sing-box 与 Hysteria 把新增恢复范围限制在 HTTP/HTTPS 常用端口，Xray 继续使用原有入站
+嗅探。这样可避免把客户端拿到的 IPv4 AKDNS 结果直接塞进严格 IPv6 出口。
 账号地区、Cookie、设备定位以及网站按出口 IP 判定仍可能影响页面地区，DNS 解锁不能改变
 VPS 自身公网 IP 的注册国家。
 
@@ -403,6 +409,10 @@ TUIC、Trojan 等节点即使使用 IP 字面量作为服务器，也保留基�
 - sing-box 服务端设置同族解析策略、异族拒绝与 `inet4_bind_address` / `inet6_bind_address`；
 - Xray 为四个方向生成独立入站，并使用精确 `listen`、`sendThrough` 与 `ForceIPv4` / `ForceIPv6`；
 - Hysteria 双栈生成四份配置，使用对应 `mode` 与 `bindIPv4` / `bindIPv6`；
+- IPv4 服务端出口继续使用系统解析器，IPv6 服务端出口使用独立 IPv6 DoH，避免系统
+  AKDNS 的 IPv4 解锁回答干扰严格 IPv6；
+- sing-box 与 Hysteria 只在 TCP 80/443、UDP 443 恢复 HTTP Host、TLS/QUIC SNI；
+  Xray 沿用已有入站嗅探，三个核心随后都按出口地址族解析，不把严格 IPv6 静默回落到 IPv4；
 - 四个 Hysteria 子进程作为一组监管，任一退出时停止其余进程，再由 systemd 重启整组。
 
 入口或出口不可用时都会明确失败，不会自动换成另一族。只绑定出站源地址不足以阻止
@@ -464,7 +474,7 @@ HTTP-01 可改用 `--acme-method http-01`。`--yes` 只跳过最终确认，不�
 
 ### 固定版本与测试证据
 
-当前 Neko 版本为 **1.13.0**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
+当前 Neko 版本为 **1.13.1**。`versions.env` 固定 Xray、sing-box、Hysteria、Caddy、
 lego、Mihomo、qrc 和 NextTrace Tiny 的版本与 amd64/arm64 SHA-256；可选 AKDNS 还固定
 上游提交与脚本 SHA-256。
 

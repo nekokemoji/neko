@@ -87,10 +87,105 @@ assert_family() {
   fi
 }
 
+assert_server_dns_isolation() {
+  local target="$1" mode="$2" has_v4=false has_v6=false
+  local config
+  [[ "$mode" == ipv6-only ]] || has_v4=true
+  [[ "$mode" == ipv4-only ]] || has_v6=true
+
+  jq -e \
+    --argjson has_v4 "$has_v4" \
+    --argjson has_v6 "$has_v6" '
+      .dns.servers == (
+        [{type: "local", tag: "local", prefer_go: true}]
+        + (if $has_v6 then [{
+          type: "https",
+          tag: "strict-v6",
+          server: "2606:4700:4700::1111",
+          server_port: 443,
+          path: "/dns-query",
+          tls: {
+            enabled: true,
+            server_name: "cloudflare-dns.com",
+            insecure: false
+          }
+        }] else [] end)
+      )
+      and .route.rules[0] == {
+        port: [80, 443],
+        action: "sniff",
+        sniffer: ["http", "tls", "quic"],
+        timeout: "1s"
+      }
+      and (if $has_v4 then
+        any(.outbounds[];
+          .tag == "direct-v4"
+          and .domain_resolver == {
+            server: "local", strategy: "ipv4_only"
+          })
+        and any(.route.rules[];
+          .action == "resolve"
+          and .server == "local"
+          and .strategy == "ipv4_only")
+      else true end)
+      and (if $has_v6 then
+        any(.outbounds[];
+          .tag == "direct-v6"
+          and .domain_resolver == {
+            server: "strict-v6", strategy: "ipv6_only"
+          })
+        and any(.route.rules[];
+          .action == "resolve"
+          and .server == "strict-v6"
+          and .strategy == "ipv6_only")
+      else true end)
+    ' "$target/etc/config/sing-box.json" >/dev/null
+
+  jq -e \
+    --argjson has_v4 "$has_v4" \
+    --argjson has_v6 "$has_v6" '
+      .dns == {
+        queryStrategy: "UseIP",
+        servers: (
+          (if $has_v4 then [{
+            address: "localhost", queryStrategy: "UseIPv4"
+          }] else [] end)
+          + (if $has_v6 then [{
+            address: "https+local://[2606:4700:4700::1111]/dns-query",
+            queryStrategy: "UseIPv6"
+          }] else [] end)
+        )
+      }
+      and ([.inbounds[].sniffing
+        | .enabled == true
+          and .routeOnly == false
+          and .destOverride == ["http", "tls", "quic"]]
+        | all)
+    ' "$target/etc/config/xray.json" >/dev/null
+
+  while IFS= read -r -d '' config; do
+    grep -Fq 'sniff:' "$config"
+    grep -Fq '  enable: true' "$config"
+    grep -Fq '  rewriteDomain: false' "$config"
+    grep -Fq '  tcpPorts: "80,443"' "$config"
+    grep -Fq '  udpPorts: "443"' "$config"
+    if grep -Fq '      mode: 6' "$config"; then
+      grep -Fq 'resolver:' "$config"
+      grep -Fq '    addr: "[2606:4700:4700::1111]:443"' "$config"
+      grep -Fq '    sni: cloudflare-dns.com' "$config"
+    elif grep -Fq 'resolver:' "$config"; then
+      printf 'IPv4 出站 Hysteria 不应绕过系统 AKDNS：%s\n' "$config" >&2
+      exit 1
+    fi
+  done < <(find "$target/etc/config" -maxdepth 1 -type f \
+    -name 'hysteria-*.yaml' -print0)
+}
+
 for mode in ipv4-only ipv6-only dual; do
   target="$WORK/$mode"
   prepare_state "$mode" "$target"
   render_mode "$target"
+  assert_server_dns_isolation "$target" "$mode"
 
   mapfile -t files < <(
     find "$target/etc/subscriptions" -maxdepth 1 -type f -printf '%f\n' | sort

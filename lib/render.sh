@@ -12,6 +12,11 @@ fi
 
 NEKO_SUB_DIR="${NEKO_SUB_DIR:-${NEKO_ETC}/subscriptions}"
 NEKO_CONFIG_DIR="${NEKO_CONFIG_DIR:-${NEKO_ETC}/config}"
+# IPv4 server exits intentionally keep the system resolver so managed AKDNS
+# still applies. Strict IPv6 exits use this literal endpoint and never need the
+# AKDNS-managed system resolver to bootstrap their DNS connection.
+NEKO_STRICT_IPV6_DNS_ADDRESS="2606:4700:4700::1111"
+NEKO_STRICT_DNS_TLS_NAME="cloudflare-dns.com"
 
 write_atomic() {
   local target="$1" mode="${2:-0640}" tmp
@@ -31,6 +36,8 @@ render_sing_box() {
     --arg mode "$NETWORK_MODE" \
     --arg listen_v4 "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg listen_v6 "$SUBSCRIPTION_IPV6_ADDRESS" \
+    --arg strict_dns_v6 "$NEKO_STRICT_IPV6_DNS_ADDRESS" \
+    --arg strict_dns_tls_name "$NEKO_STRICT_DNS_TLS_NAME" \
     --arg cert "$CERT_FILE" \
     --arg key "$KEY_FILE" \
     --argjson tuic_port "$TUIC_PORT" \
@@ -150,7 +157,20 @@ render_sing_box() {
     {
       log: {level: "info", timestamp: true},
       dns: {
-        servers: [{type: "local", tag: "local", prefer_go: true}]
+        servers:
+          ([{type: "local", tag: "local", prefer_go: true}]
+          + (if has_v6 then [{
+            type: "https",
+            tag: "strict-v6",
+            server: $strict_dns_v6,
+            server_port: 443,
+            path: "/dns-query",
+            tls: {
+              enabled: true,
+              server_name: $strict_dns_tls_name,
+              insecure: false
+            }
+          }] else [] end))
       },
       inbounds:
         ((if has_v4 then family_inbounds(
@@ -180,11 +200,17 @@ render_sing_box() {
           type: "direct",
           tag: "direct-v6",
           inet6_bind_address: $listen_v6,
-          domain_resolver: {server: "local", strategy: "ipv6_only"}
+          domain_resolver: {server: "strict-v6", strategy: "ipv6_only"}
         }] else [] end)),
       route: {
         rules:
-          ([{network: "tcp", port: 25, action: "reject"}]
+          ([{
+            port: [80, 443],
+            action: "sniff",
+            sniffer: ["http", "tls", "quic"],
+            timeout: "1s"
+          },
+          {network: "tcp", port: 25, action: "reject"}]
           + (if has_v4 then [{
             inbound: v4_egress_inbound_tags,
             action: "resolve",
@@ -194,7 +220,7 @@ render_sing_box() {
           + (if has_v6 then [{
             inbound: v6_egress_inbound_tags,
             action: "resolve",
-            server: "local",
+            server: "strict-v6",
             strategy: "ipv6_only"
           }] else [] end)
           + [{ip_is_private: true, action: "reject"}]
@@ -229,6 +255,7 @@ render_xray() {
     --arg mode "$NETWORK_MODE" \
     --arg listen_v4 "$SUBSCRIPTION_IPV4_ADDRESS" \
     --arg listen_v6 "$SUBSCRIPTION_IPV6_ADDRESS" \
+    --arg strict_dns_v6 "$NEKO_STRICT_IPV6_DNS_ADDRESS" \
     --argjson vision_port "$VISION_PORT" \
     --arg vision_uuid "$VISION_UUID" \
     --arg vision_private "$VISION_PRIVATE_KEY" \
@@ -261,7 +288,11 @@ render_xray() {
             shortIds: [$vision_sid]
           }
         },
-        sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+        sniffing: {
+          enabled: true,
+          destOverride: ["http", "tls", "quic"],
+          routeOnly: false
+        }
       };
     def xhttp_inbound($suffix; $listen; $route_xhttp_port): {
         tag: ("vless-reality-xhttp-" + $suffix + "-in"),
@@ -288,13 +319,29 @@ render_xray() {
             mode: "auto"
           }
         },
-        sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]}
+        sniffing: {
+          enabled: true,
+          destOverride: ["http", "tls", "quic"],
+          routeOnly: false
+        }
       };
     def has_v4: ($mode == "ipv4-only" or $mode == "dual");
     def has_v6: ($mode == "ipv6-only" or $mode == "dual");
     def has_cross: ($mode == "dual");
     {
       log: {loglevel: "warning"},
+      dns: {
+        queryStrategy: "UseIP",
+        servers:
+          ((if has_v4 then [{
+            address: "localhost",
+            queryStrategy: "UseIPv4"
+          }] else [] end)
+          + (if has_v6 then [{
+            address: ("https+local://[" + $strict_dns_v6 + "]/dns-query"),
+            queryStrategy: "UseIPv6"
+          }] else [] end))
+      },
       inbounds:
         ((if has_v4 then [
           vision_inbound("v4"; $listen_v4; $vision_port),
@@ -372,6 +419,18 @@ render_xray() {
 
 render_hysteria_family() {
   local target="$1" listen="$2" mode="$3" bind_field="$4" bind_address="$5"
+  local resolver_block=""
+  if [[ "$mode" == 6 ]]; then
+    resolver_block="
+resolver:
+  type: https
+  https:
+    addr: \"[${NEKO_STRICT_IPV6_DNS_ADDRESS}]:443\"
+    timeout: 10s
+    sni: ${NEKO_STRICT_DNS_TLS_NAME}
+    insecure: false
+"
+  fi
   write_atomic "$target" <<EOF
 listen: "${listen}"
 
@@ -387,6 +446,13 @@ obfs:
   type: salamander
   salamander:
     password: "${HY2_OBFS_PASSWORD}"
+${resolver_block}
+sniff:
+  enable: true
+  timeout: 1s
+  rewriteDomain: false
+  tcpPorts: "80,443"
+  udpPorts: "443"
 
 masquerade:
   type: proxy
