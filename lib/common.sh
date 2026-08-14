@@ -19,6 +19,7 @@ NEKO_STATE_SCHEMA=4
 NETWORK_MODE_IPV4="ipv4-only"
 NETWORK_MODE_IPV6="ipv6-only"
 NETWORK_MODE_DUAL="dual"
+NEKO_RUNTIME_SERVICES=(neko-caddy neko-sing-box neko-xray neko-hysteria)
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_BLUE=$'\033[1;34m'
@@ -83,6 +84,214 @@ network_mode_has_ipv6() {
 
 network_mode_has_cross_routes() {
   [[ "${1:-${NETWORK_MODE:-$NETWORK_MODE_DUAL}}" == "$NETWORK_MODE_DUAL" ]]
+}
+
+runtime_common_fail() {
+  printf '运行公共接口参数无效：%s\n' "$*" >&2
+  return 64
+}
+
+runtime_run_checked() {
+  local output_mode="$1"
+  shift
+  case "$output_mode" in
+    visible) "$@" ;;
+    stdout-quiet) "$@" >/dev/null ;;
+    all-quiet) "$@" >/dev/null 2>&1 ;;
+    *) runtime_common_fail "未知输出模式 ${output_mode}。" ;;
+  esac
+}
+
+runtime_validate_core_configs() {
+  local libexec_dir="" config_dir="" subscription_dir="" network_mode=""
+  local output_mode="" normalized_mode profile
+  local -a subscription_profiles=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --libexec-dir)
+        (( $# >= 2 )) || runtime_common_fail "--libexec-dir 缺少值。" || return
+        libexec_dir="$2"
+        shift 2
+        ;;
+      --config-dir)
+        (( $# >= 2 )) || runtime_common_fail "--config-dir 缺少值。" || return
+        config_dir="$2"
+        shift 2
+        ;;
+      --subscription-dir)
+        (( $# >= 2 )) || runtime_common_fail "--subscription-dir 缺少值。" || return
+        subscription_dir="$2"
+        shift 2
+        ;;
+      --network-mode)
+        (( $# >= 2 )) || runtime_common_fail "--network-mode 缺少值。" || return
+        network_mode="$2"
+        shift 2
+        ;;
+      --output)
+        (( $# >= 2 )) || runtime_common_fail "--output 缺少值。" || return
+        output_mode="$2"
+        shift 2
+        ;;
+      *) runtime_common_fail "未知选项 $1。" || return ;;
+    esac
+  done
+  [[ -n "$libexec_dir" && -n "$config_dir" && -n "$subscription_dir" \
+    && -n "$network_mode" && -n "$output_mode" ]] \
+    || runtime_common_fail "核心校验选项不完整。" || return
+  normalized_mode="$(normalize_network_mode "$network_mode")" \
+    || runtime_common_fail "未知网络模式 ${network_mode}。" || return
+  case "$output_mode" in
+    visible|stdout-quiet|all-quiet) ;;
+    *) runtime_common_fail "未知输出模式 ${output_mode}。" || return ;;
+  esac
+
+  subscription_profiles+=(sing-box-v4.json)
+  if [[ "$normalized_mode" == "$NETWORK_MODE_IPV6" ]]; then
+    subscription_profiles=(sing-box-v6.json)
+  elif [[ "$normalized_mode" == "$NETWORK_MODE_DUAL" ]]; then
+    subscription_profiles+=(
+      sing-box-v6.json sing-box-v4-to-v6.json sing-box-v6-to-v4.json
+    )
+  fi
+  runtime_run_checked "$output_mode" \
+    "$libexec_dir/sing-box" check -c "$config_dir/sing-box.json" || return
+  for profile in "${subscription_profiles[@]}"; do
+    runtime_run_checked "$output_mode" \
+      "$libexec_dir/sing-box" check -c "$subscription_dir/$profile" || return
+  done
+  runtime_run_checked "$output_mode" \
+    "$libexec_dir/xray" run -test -c "$config_dir/xray.json" || return
+  runtime_run_checked "$output_mode" \
+    "$libexec_dir/caddy" validate \
+      --config "$config_dir/Caddyfile" --adapter caddyfile
+}
+
+runtime_set_lego_permissions() {
+  local lego_dir="" service_user="" ownership="" path_policy=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --lego-dir)
+        (( $# >= 2 )) || runtime_common_fail "--lego-dir 缺少值。" || return
+        lego_dir="$2"
+        shift 2
+        ;;
+      --service-user)
+        (( $# >= 2 )) || runtime_common_fail "--service-user 缺少值。" || return
+        service_user="$2"
+        shift 2
+        ;;
+      --ownership)
+        (( $# >= 2 )) || runtime_common_fail "--ownership 缺少值。" || return
+        ownership="$2"
+        shift 2
+        ;;
+      --path-policy)
+        (( $# >= 2 )) || runtime_common_fail "--path-policy 缺少值。" || return
+        path_policy="$2"
+        shift 2
+        ;;
+      *) runtime_common_fail "未知选项 $1。" || return ;;
+    esac
+  done
+  [[ -n "$lego_dir" && -n "$ownership" && -n "$path_policy" ]] \
+    || runtime_common_fail "lego 权限选项不完整。" || return
+  case "$ownership" in
+    managed)
+      [[ -n "$service_user" ]] \
+        || runtime_common_fail "managed 所有权需要服务用户。" || return
+      ;;
+    preserve) ;;
+    *) runtime_common_fail "所有权模式必须是 managed 或 preserve。" || return ;;
+  esac
+  case "$path_policy" in
+    trusted) ;;
+    reject-symlinks)
+      [[ -d "$lego_dir" && ! -L "$lego_dir" \
+        && -d "$lego_dir/certificates" && ! -L "$lego_dir/certificates" ]] \
+        || return 1
+      ;;
+    *) runtime_common_fail "路径策略必须是 trusted 或 reject-symlinks。" || return ;;
+  esac
+
+  if [[ "$ownership" == managed ]]; then
+    chown -R root:root "$lego_dir" || return
+  fi
+  find "$lego_dir" -type d -exec chmod 0700 {} + || return
+  find "$lego_dir" -type f -exec chmod 0600 {} + || return
+  if [[ "$ownership" == managed ]]; then
+    chown "root:${service_user}" "$lego_dir" || return
+  fi
+  chmod 0750 "$lego_dir" || return
+  if [[ "$ownership" == managed ]]; then
+    chown -R "root:${service_user}" "$lego_dir/certificates" || return
+  fi
+  find "$lego_dir/certificates" -type d -exec chmod 0750 {} + || return
+  find "$lego_dir/certificates" -type f -exec chmod 0640 {} +
+}
+
+runtime_services_are_active() {
+  local systemctl_command=""
+  local -a services=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --systemctl-command)
+        (( $# >= 2 )) \
+          || runtime_common_fail "--systemctl-command 缺少值。" || return
+        systemctl_command="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        services=("$@")
+        break
+        ;;
+      *) runtime_common_fail "未知选项 $1。" || return ;;
+    esac
+  done
+  [[ -n "$systemctl_command" && ${#services[@]} -gt 0 ]] \
+    || runtime_common_fail "服务 active 检查选项不完整。" || return
+  local service
+  for service in "${services[@]}"; do
+    "$systemctl_command" is-active --quiet "${service}.service" || return
+  done
+}
+
+runtime_restart_service_set() {
+  local systemctl_command="" wait_seconds=""
+  local -a services=() units=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --systemctl-command)
+        (( $# >= 2 )) \
+          || runtime_common_fail "--systemctl-command 缺少值。" || return
+        systemctl_command="$2"
+        shift 2
+        ;;
+      --wait-seconds)
+        (( $# >= 2 )) || runtime_common_fail "--wait-seconds 缺少值。" || return
+        wait_seconds="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        services=("$@")
+        break
+        ;;
+      *) runtime_common_fail "未知选项 $1。" || return ;;
+    esac
+  done
+  [[ -n "$systemctl_command" && "$wait_seconds" =~ ^[0-9]+$ \
+    && ${#services[@]} -gt 0 ]] \
+    || runtime_common_fail "服务重启选项不完整。" || return
+  local service
+  for service in "${services[@]}"; do
+    units+=("${service}.service")
+  done
+  "$systemctl_command" restart "${units[@]}" || return
+  sleep "$wait_seconds"
+  runtime_services_are_active \
+    --systemctl-command "$systemctl_command" -- "${services[@]}"
 }
 
 network_mode_label() {

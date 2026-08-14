@@ -87,23 +87,15 @@ certificate_pair_hash() {
 }
 
 set_lego_permissions() {
-  [[ -d "$NEKO_VAR/lego" && ! -L "$NEKO_VAR/lego" ]] || return 1
-  [[ -d "$NEKO_VAR/lego/certificates" \
-    && ! -L "$NEKO_VAR/lego/certificates" ]] || return 1
   if [[ "$NEKO_RENEW_TEST_MODE" != 1 ]]; then
-    chown -R root:root "$NEKO_VAR/lego" || return 1
+    runtime_set_lego_permissions \
+      --lego-dir "$NEKO_VAR/lego" --service-user "$NEKO_USER" \
+      --ownership managed --path-policy reject-symlinks
+    return
   fi
-  find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} + || return 1
-  find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} + || return 1
-  if [[ "$NEKO_RENEW_TEST_MODE" != 1 ]]; then
-    chown "root:${NEKO_USER}" "$NEKO_VAR/lego" || return 1
-  fi
-  chmod 0750 "$NEKO_VAR/lego" || return 1
-  if [[ "$NEKO_RENEW_TEST_MODE" != 1 ]]; then
-    chown -R "root:${NEKO_USER}" "$NEKO_VAR/lego/certificates" || return 1
-  fi
-  find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} + || return 1
-  find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
+  runtime_set_lego_permissions \
+    --lego-dir "$NEKO_VAR/lego" --service-user "$NEKO_USER" \
+    --ownership preserve --path-policy reject-symlinks
 }
 
 snapshot_renewal_state() {
@@ -212,31 +204,10 @@ validate_hysteria_server_config() {
 
 validate_installed_runtime_configs() {
   local family
-  "$NEKO_LIBEXEC/sing-box" check \
-    -c "$NEKO_ETC/config/sing-box.json" >/dev/null 2>&1 || return 1
-  if network_mode_has_ipv4; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v4.json" \
-      >/dev/null 2>&1 || return 1
-  fi
-  if network_mode_has_ipv6; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v6.json" \
-      >/dev/null 2>&1 || return 1
-  fi
-  if network_mode_has_cross_routes; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v4-to-v6.json" \
-      >/dev/null 2>&1 || return 1
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v6-to-v4.json" \
-      >/dev/null 2>&1 || return 1
-  fi
-  "$NEKO_LIBEXEC/xray" run -test \
-    -c "$NEKO_ETC/config/xray.json" >/dev/null 2>&1 || return 1
-  "$NEKO_LIBEXEC/caddy" validate \
-    --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile \
-    >/dev/null 2>&1 || return 1
+  runtime_validate_core_configs \
+    --libexec-dir "$NEKO_LIBEXEC" --config-dir "$NEKO_ETC/config" \
+    --subscription-dir "$NEKO_ETC/subscriptions" \
+    --network-mode "$NETWORK_MODE" --output all-quiet || return 1
 
   if network_mode_has_ipv4; then
     validate_hysteria_server_config \
