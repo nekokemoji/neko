@@ -58,6 +58,24 @@ if ! command -v jq >/dev/null 2>&1; then
   esac
 fi
 
+if ! command -v cmp >/dev/null 2>&1 \
+  || ! command -v diff >/dev/null 2>&1; then
+  case "$EXPECTED_FAMILY" in
+    debian)
+      DEBIAN_FRONTEND=noninteractive apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        diffutils
+      ;;
+    rhel)
+      if command -v microdnf >/dev/null 2>&1; then
+        microdnf -y install diffutils
+      else
+        dnf -y install diffutils
+      fi
+      ;;
+  esac
+fi
+
 # Exercise schema 4 and all four strict route directions with the guest's real
 # Bash, jq and filesystem before touching systemd.  This complements the
 # container matrix without pretending user-mode emulation is a full VM.
@@ -65,6 +83,7 @@ bash "$ROOT/tests/subscription-render-smoke.sh"
 bash "$ROOT/tests/family-render-smoke.sh"
 bash "$ROOT/tests/render-golden.sh"
 bash "$ROOT/tests/maintenance-lock.sh"
+bash "$ROOT/tests/panel-bbr-transaction.sh"
 
 mapfile -t shell_files < <(find "$ROOT" -type f -name '*.sh' -print | sort)
 bash -n "${shell_files[@]}"

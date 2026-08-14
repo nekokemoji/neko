@@ -37,6 +37,7 @@ bash "$ROOT/tests/maintenance-lock.sh"
 bash "$ROOT/tests/panel-refresh.sh"
 bash "$ROOT/tests/panel-token-transaction.sh"
 bash "$ROOT/tests/panel-credentials.sh"
+bash "$ROOT/tests/panel-bbr-transaction.sh"
 
 PREFLIGHT_LOG="$WORK/install-preflight.log"
 set +e
