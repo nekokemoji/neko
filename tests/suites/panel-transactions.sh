@@ -35,6 +35,7 @@ grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' "$ROOT/systemd/nek
 grep -Fq 'ReadWritePaths=/var/lib/neko' "$ROOT/systemd/neko-renew.service"
 bash "$ROOT/tests/maintenance-lock.sh"
 bash "$ROOT/tests/panel-refresh.sh"
+bash "$ROOT/tests/panel-token-transaction.sh"
 bash "$ROOT/tests/panel-credentials.sh"
 
 PREFLIGHT_LOG="$WORK/install-preflight.log"

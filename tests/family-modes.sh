@@ -297,6 +297,8 @@ prepare_rotate_case() {
   local name="$1" mode="$2" target
   target="$WORK/rotate-$name"
   prepare_mode "$mode" "$target"
+  render_mode "$target"
+  mkdir -p "$target/tmp"
 }
 
 run_rotate_case() {
@@ -305,16 +307,25 @@ run_rotate_case() {
   env \
     NEKO_ETC="$target/etc" NEKO_VAR="$target/var" \
     NEKO_STATE="$target/etc/state.json" NEKO_USER=root \
-    NEKO_LIBEXEC="$ROOT" NEKO_TEST_NEW_TOKEN="new-${name}-token-value" \
+    NEKO_LIBEXEC="$ROOT" NEKO_PANEL_TMP_DIR="$target/tmp" \
+    NEKO_TEST_COUNTER="$target/random.count" \
+    NEKO_TEST_NEW_TOKEN="new-${name}-token-value" \
     bash -c '
       set -Eeuo pipefail
       source "$1"
       acquire_maintenance_lock() { :; }
       release_maintenance_lock() { :; }
-      random_urlsafe() { printf "%s" "$NEKO_TEST_NEW_TOKEN"; }
+      random_urlsafe() {
+        local count=0
+        [[ ! -s "$NEKO_TEST_COUNTER" ]] \
+          || count="$(<"$NEKO_TEST_COUNTER")"
+        count=$((count + 1))
+        printf "%s\n" "$count" > "$NEKO_TEST_COUNTER"
+        printf "%s-%s" "$NEKO_TEST_NEW_TOKEN" "$count"
+      }
       render_all() { printf "render\n" >> "$NEKO_ETC/calls"; }
       validate_runtime_configs() { :; }
-      systemctl() { return 0; }
+      restart_runtime_services() { :; }
       show_subscription_links() { :; }
       rotate_subscription <<< "$2"
     ' _ "$ROOT/runtime/panel.sh" "$input" \
@@ -327,11 +338,11 @@ old_v6_to_ipv4_token="$(jq -r '.subscription.ipv6_to_ipv4_token' \
   "$WORK/rotate-ipv4/etc/state.json")"
 run_rotate_case ipv4 $'1\ny'
 [[ "$(jq -r '.subscription.ipv4_token' "$WORK/rotate-ipv4/etc/state.json")" \
-  == new-ipv4-token-value ]]
+  == new-ipv4-token-value-1 ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$WORK/rotate-ipv4/etc/state.json")" \
   == "$old_v6_token" ]]
 [[ "$(jq -r '.subscription.ipv4_to_ipv6_token' \
-  "$WORK/rotate-ipv4/etc/state.json")" == new-ipv4-token-value ]]
+  "$WORK/rotate-ipv4/etc/state.json")" == new-ipv4-token-value-2 ]]
 [[ "$(jq -r '.subscription.ipv6_to_ipv4_token' \
   "$WORK/rotate-ipv4/etc/state.json")" == "$old_v6_to_ipv4_token" ]]
 
@@ -343,22 +354,22 @@ run_rotate_case ipv6 $'2\ny'
 [[ "$(jq -r '.subscription.ipv4_token' "$WORK/rotate-ipv6/etc/state.json")" \
   == "$old_v4_token" ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$WORK/rotate-ipv6/etc/state.json")" \
-  == new-ipv6-token-value ]]
+  == new-ipv6-token-value-1 ]]
 [[ "$(jq -r '.subscription.ipv6_to_ipv4_token' \
-  "$WORK/rotate-ipv6/etc/state.json")" == new-ipv6-token-value ]]
+  "$WORK/rotate-ipv6/etc/state.json")" == new-ipv6-token-value-2 ]]
 [[ "$(jq -r '.subscription.ipv4_to_ipv6_token' \
   "$WORK/rotate-ipv6/etc/state.json")" == "$old_v4_to_ipv6_token" ]]
 
 prepare_rotate_case both dual
 run_rotate_case both $'3\ny'
 [[ "$(jq -r '.subscription.ipv4_token' "$WORK/rotate-both/etc/state.json")" \
-  == new-both-token-value ]]
+  == new-both-token-value-1 ]]
 [[ "$(jq -r '.subscription.ipv6_token' "$WORK/rotate-both/etc/state.json")" \
-  == new-both-token-value ]]
+  == new-both-token-value-2 ]]
 [[ "$(jq -r '.subscription.ipv4_to_ipv6_token' \
-  "$WORK/rotate-both/etc/state.json")" == new-both-token-value ]]
+  "$WORK/rotate-both/etc/state.json")" == new-both-token-value-3 ]]
 [[ "$(jq -r '.subscription.ipv6_to_ipv4_token' \
-  "$WORK/rotate-both/etc/state.json")" == new-both-token-value ]]
+  "$WORK/rotate-both/etc/state.json")" == new-both-token-value-4 ]]
 
 prepare_rotate_case absent ipv4-only
 absent_hash="$(sha256sum "$WORK/rotate-absent/etc/state.json" | awk '{print $1}')"
@@ -371,7 +382,7 @@ grep -Fq 'IPv6 尚未安装' "$WORK/rotate-absent/output"
 prepare_rotate_case single-both ipv4-only
 run_rotate_case single-both $'3\ny\ny'
 [[ "$(jq -r '.subscription.ipv4_token' \
-  "$WORK/rotate-single-both/etc/state.json")" == new-single-both-token-value ]]
+  "$WORK/rotate-single-both/etc/state.json")" == new-single-both-token-value-1 ]]
 [[ "$(jq -r '.subscription.ipv6_token // empty' \
   "$WORK/rotate-single-both/etc/state.json")" == "" ]]
 

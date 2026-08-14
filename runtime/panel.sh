@@ -234,9 +234,12 @@ restore_bbr() {
 }
 
 rotate_subscription() {
-  local answer choice backup new_ipv4_token="" new_ipv6_token=""
+  local answer choice candidate existing
+  local new_ipv4_token="" new_ipv6_token=""
   local new_ipv4_to_ipv6_token="" new_ipv6_to_ipv4_token=""
   local rotate_ipv4=0 rotate_ipv6=0
+  local has_cross=false
+  local -a new_tokens=() old_tokens=()
   load_state
   printf '此操作只让所选地址族的旧下载 URL 失效，不会撤销已经导入客户端的节点凭据。\n\n'
   printf '1. 重置 IPv4 入口的订阅 URL\n'
@@ -286,22 +289,73 @@ rotate_subscription() {
   [[ "$answer" =~ ^[Yy]$ ]] || return 0
 
   acquire_maintenance_lock
+  load_state
+  assert_access_source_tree
+  if (( rotate_ipv4 == 1 )) && ! network_mode_has_ipv4; then
+    release_maintenance_lock
+    die "IPv4 安装状态在确认期间发生变化；没有重置任何订阅 URL。"
+  fi
+  if (( rotate_ipv6 == 1 )) && ! network_mode_has_ipv6; then
+    release_maintenance_lock
+    die "IPv6 安装状态在确认期间发生变化；没有重置任何订阅 URL。"
+  fi
+  network_mode_has_cross_routes && has_cross=true
+
   (( rotate_ipv4 == 0 )) || new_ipv4_token="$(random_urlsafe 24)"
   (( rotate_ipv6 == 0 )) || new_ipv6_token="$(random_urlsafe 24)"
-  if network_mode_has_cross_routes; then
+  if [[ "$has_cross" == true ]]; then
     (( rotate_ipv4 == 0 )) \
       || new_ipv4_to_ipv6_token="$(random_urlsafe 24)"
     (( rotate_ipv6 == 0 )) \
       || new_ipv6_to_ipv4_token="$(random_urlsafe 24)"
   fi
-  backup="$(mktemp "${NEKO_STATE}.backup.XXXXXX")"
-  if ! cp -a -- "$NEKO_STATE" "$backup"; then
-    rm -f -- "$backup"
+
+  old_tokens=(
+    "$SUB_TOKEN_IPV4" "$SUB_TOKEN_IPV6"
+    "$SUB_TOKEN_IPV4_TO_IPV6" "$SUB_TOKEN_IPV6_TO_IPV4"
+  )
+  (( rotate_ipv4 == 0 )) || new_tokens+=("$new_ipv4_token")
+  (( rotate_ipv6 == 0 )) || new_tokens+=("$new_ipv6_token")
+  if [[ "$has_cross" == true ]]; then
+    (( rotate_ipv4 == 0 )) || new_tokens+=("$new_ipv4_to_ipv6_token")
+    (( rotate_ipv6 == 0 )) || new_tokens+=("$new_ipv6_to_ipv4_token")
+  fi
+  for candidate in "${new_tokens[@]}"; do
+    [[ -n "$candidate" ]] || {
+      release_maintenance_lock
+      die "随机生成了空订阅令牌；没有修改订阅 URL，请重新运行。"
+    }
+    for existing in "${old_tokens[@]}"; do
+      if [[ -n "$existing" && "$candidate" == "$existing" ]]; then
+        release_maintenance_lock
+        die "随机生成的新订阅令牌与现有令牌意外相同；没有修改订阅 URL，请重新运行。"
+      fi
+    done
+  done
+  if (( ${#new_tokens[@]} != $(printf '%s\n' "${new_tokens[@]}" | sort -u | wc -l) )); then
     release_maintenance_lock
-    die "无法备份安装状态；没有重置任何订阅 URL。"
+    die "随机生成的新订阅令牌意外重复；没有修改订阅 URL，请重新运行。"
   fi
 
-  if atomic_json_update \
+  if ! ACCESS_BACKUP_DIR="$(
+      mktemp -d "${NEKO_PANEL_TMP_DIR%/}/neko-access-backup.XXXXXX"
+    )"; then
+    ACCESS_BACKUP_DIR=""
+    release_maintenance_lock
+    die "无法创建维护备份；没有重置任何订阅 URL。"
+  fi
+  if ! cp -a -- "$NEKO_ETC" "$ACCESS_BACKUP_DIR/etc"; then
+    cleanup_access_backup || true
+    release_maintenance_lock
+    die "无法完整备份当前配置；没有重置任何订阅 URL。"
+  fi
+
+  ACCESS_TRANSACTION_ACTIVE=1
+  trap finish_access_transaction EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  if ! atomic_json_update \
       'if $rotate_ipv4 then .subscription.ipv4_token = $ipv4_token else . end
        | if $rotate_ipv6 then .subscription.ipv6_token = $ipv6_token else . end
        | if ($has_cross and $rotate_ipv4) then
@@ -312,27 +366,34 @@ rotate_subscription() {
          else . end' \
       --argjson rotate_ipv4 "$([[ $rotate_ipv4 == 1 ]] && printf true || printf false)" \
       --argjson rotate_ipv6 "$([[ $rotate_ipv6 == 1 ]] && printf true || printf false)" \
-      --argjson has_cross "$(network_mode_has_cross_routes && printf true || printf false)" \
+      --argjson has_cross "$has_cross" \
       --arg ipv4_token "$new_ipv4_token" \
       --arg ipv6_token "$new_ipv6_token" \
       --arg ipv4_to_ipv6_token "$new_ipv4_to_ipv6_token" \
-      --arg ipv6_to_ipv4_token "$new_ipv6_to_ipv4_token" \
-    && render_all \
+      --arg ipv6_to_ipv4_token "$new_ipv6_to_ipv4_token"; then
+    if rollback_access_transaction; then
+      die "订阅令牌写入失败，已恢复原订阅、原配置和服务。"
+    fi
+    die "订阅令牌写入失败，且自动恢复未完全成功；请保留上方备份并停止继续操作。"
+  fi
+
+  if render_all \
     && validate_runtime_configs \
-    && systemctl restart neko-caddy.service \
-    && systemctl is-active --quiet neko-caddy.service; then
-    rm -f -- "$backup"
+    && restart_runtime_services; then
+    ACCESS_TRANSACTION_ACTIVE=0
+    trap - EXIT INT TERM
+    cleanup_access_backup \
+      || warn "订阅 URL 已重置，但临时备份无法清理：${ACCESS_BACKUP_DIR}"
     release_maintenance_lock
     ok "所选订阅 URL 已重置；对应旧 URL 不可再访问。"
     show_subscription_links
-  else
-    cp -a -- "$backup" "$NEKO_STATE"
-    rm -f -- "$backup"
-    render_all || true
-    systemctl restart neko-caddy.service >/dev/null 2>&1 || true
-    release_maintenance_lock
-    die "订阅重置失败，已恢复旧链接。"
+    return 0
   fi
+
+  if rollback_access_transaction; then
+    die "订阅 URL 重置失败，已恢复原订阅、原配置和服务。"
+  fi
+  die "订阅 URL 重置失败，且自动恢复未完全成功；请保留上方备份并停止继续操作。"
 }
 
 rotate_node_credentials() {
