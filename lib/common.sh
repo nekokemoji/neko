@@ -1153,6 +1153,454 @@ state_value() {
   jq -er "$1" "$NEKO_STATE"
 }
 
+# This is a read-only source contract, not a migration layer.  It accepts the
+# historical schemas the upgrader already supports, but never rewrites,
+# normalizes, or fills a damaged value before the caller explicitly commits.
+state_contract_fail() {
+  printf 'state.json 验证失败：%s\n' "$*" >&2
+  return 1
+}
+
+validate_canonical_uuid() {
+  [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
+}
+
+validate_urlsafe_secret() {
+  local value="$1" minimum="${2:-16}" maximum="${3:-128}"
+  [[ "$minimum" =~ ^[0-9]+$ && "$maximum" =~ ^[0-9]+$ ]] || return 1
+  (( minimum <= maximum )) || return 1
+  (( ${#value} >= minimum && ${#value} <= maximum )) || return 1
+  [[ "$value" =~ ^[A-Za-z0-9_-]+$ ]]
+}
+
+validate_reality_key() {
+  validate_urlsafe_secret "$1" 43 43
+}
+
+validate_reality_short_id() {
+  [[ "$1" =~ ^[0-9a-f]{16}$ ]]
+}
+
+validate_ss2022_password() {
+  # AES-128-GCM uses exactly 16 bytes.  Their canonical Base64 form has 21
+  # unrestricted symbols, one symbol whose low two bits are zero, and "==".
+  [[ "$1" =~ ^[A-Za-z0-9+/]{21}[AEIMQUYcgkosw048]==$ ]]
+}
+
+validate_xhttp_path() {
+  local path="$1" segment
+  (( ${#path} >= 2 && ${#path} <= 256 )) || return 1
+  [[ "$path" =~ ^/[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)*$ ]] || return 1
+  IFS='/' read -r -a _xhttp_path_segments <<< "${path#/}"
+  for segment in "${_xhttp_path_segments[@]}"; do
+    [[ "$segment" != "." && "$segment" != ".." ]] || return 1
+  done
+}
+
+validate_state_json_types() {
+  local state_file="$1" minimum_schema="$2" maximum_schema="$3"
+  [[ -r "$state_file" ]] || state_contract_fail "文件不可读。" || return
+  [[ "$minimum_schema" =~ ^[0-9]+$ && "$maximum_schema" =~ ^[0-9]+$ ]] \
+    || state_contract_fail "内部 schema 范围无效。" || return
+
+  jq -e --argjson minimum_schema "$minimum_schema" \
+    --argjson maximum_schema "$maximum_schema" '
+      def integer: type == "number" and . == floor;
+      def state_schema: if .schema == null then 1 else .schema end;
+      def state_has_cross_routes:
+        (.network.mode | ascii_downcase) as $mode
+        | $mode == "both" or $mode == "dual" or $mode == "dual-stack";
+      def optional_string: . == null or type == "string";
+      def optional_integer: . == null or integer;
+      def string_array: type == "array" and all(.[]; type == "string");
+      def common_port_types:
+        (.ports | type == "object")
+        and (.ports.hysteria2_start | integer)
+        and (.ports.hysteria2_end | integer)
+        and (.ports.tuic | integer)
+        and (.ports.ss2022 | integer)
+        and (.ports.anytls | integer)
+        and (.ports.trojan | optional_integer)
+        and (.ports.vless_reality_vision | integer)
+        and (.ports.vless_reality_xhttp | integer);
+      def cross_port_types:
+        type == "object"
+        and (.hysteria2_start | integer)
+        and (.hysteria2_end | integer)
+        and (.tuic | integer)
+        and (.ss2022 | integer)
+        and (.anytls | integer)
+        and (.trojan | integer)
+        and (.vless_reality_vision | integer)
+        and (.vless_reality_xhttp | integer);
+      def common_credential_types:
+        (.credentials | type == "object")
+        and (.credentials.hysteria2_password | type == "string")
+        and (.credentials.hysteria2_obfs_password | type == "string")
+        and (.credentials.tuic_uuid | type == "string")
+        and (.credentials.tuic_password | type == "string")
+        and (.credentials.ss2022_password | type == "string")
+        and (.credentials.anytls_password | type == "string")
+        and (.credentials.trojan_password | optional_string)
+        and (.credentials.vision_uuid | type == "string")
+        and (.credentials.xhttp_uuid | type == "string");
+      def reality_types:
+        (.reality | type == "object")
+        and (.reality.vision_private_key | type == "string")
+        and (.reality.vision_public_key | type == "string")
+        and (.reality.vision_short_id | type == "string")
+        and (.reality.xhttp_private_key | type == "string")
+        and (.reality.xhttp_public_key | type == "string")
+        and (.reality.xhttp_short_id | type == "string")
+        and (.reality.xhttp_path | type == "string");
+      def subscription_types:
+        (.subscription | type == "object")
+        and (.subscription.token | optional_string)
+        and (.subscription.shadowrocket_server | optional_string)
+        and (.subscription.ipv4_token | optional_string)
+        and (.subscription.ipv6_token | optional_string)
+        and (.subscription.ipv4_to_ipv6_token | optional_string)
+        and (.subscription.ipv6_to_ipv4_token | optional_string)
+        and (.subscription.ipv4_domain | optional_string)
+        and (.subscription.ipv6_domain | optional_string)
+        and (.subscription.ipv4_address | optional_string)
+        and (.subscription.ipv6_address | optional_string);
+      def optional_metadata_types:
+        (.release | optional_string)
+        and (.installed_at | optional_string)
+        and (.system_user_created == null or (.system_user_created | type == "boolean"))
+        and (.platform == null or (
+          (.platform | type == "object")
+          and (.platform.id | optional_string)
+          and (.platform.version | optional_string)
+          and (.platform.arch | optional_string)))
+        and (.versions == null or (
+          (.versions | type == "object")
+          and all(.versions[]; type == "string")))
+        and (.firewall == null or (
+          (.firewall | type == "object")
+          and (.firewall.manager | optional_string)
+          and (.firewall.zone | optional_string)
+          and (.firewall.zones == null or (.firewall.zones | string_array))))
+        and (.bbr == null or (
+          (.bbr | type == "object")
+          and (.bbr.managed == null or (.bbr.managed | type == "boolean"))
+          and (.bbr.previous_qdisc | optional_string)
+          and (.bbr.previous_congestion_control | optional_string)
+          and (.bbr.previous_available_congestion_control | optional_string)
+          and (.bbr.tcp_bbr_was_loaded == null
+            or (.bbr.tcp_bbr_was_loaded | type == "boolean"))
+          and (.bbr.sch_fq_was_loaded == null
+            or (.bbr.sch_fq_was_loaded | type == "boolean"))));
+      def optional_acme_type:
+        .acme == null or (
+          (.acme | type == "object") and (.acme.method | optional_string));
+      def optional_anyreality_types:
+        .experimental == null or (
+          (.experimental | type == "object")
+          and (.experimental.anyreality == null or (
+            (.experimental.anyreality | type == "object")
+            and (.experimental.anyreality.enabled == null
+              or (.experimental.anyreality.enabled | type == "boolean"))
+            and (.experimental.anyreality.port | optional_integer)
+            and (.experimental.anyreality.cross_port | optional_integer)
+            and (.experimental.anyreality.password | optional_string)
+            and (.experimental.anyreality.private_key | optional_string)
+            and (.experimental.anyreality.public_key | optional_string)
+            and (.experimental.anyreality.short_id | optional_string))));
+
+      type == "object"
+      and (state_schema | integer)
+      and (state_schema >= $minimum_schema)
+      and (state_schema <= $maximum_schema)
+      and ([.. | strings | select(test("[\\x{0000}-\\x{001F}\\x{007F}]"))]
+        | length == 0)
+      and ([.. | objects | keys[]
+        | select(test("[\\x{0000}-\\x{001F}\\x{007F}]"))] | length == 0)
+      and (.domain | type == "string")
+      and (.acme_email | type == "string")
+      and optional_acme_type
+      and common_port_types
+      and common_credential_types
+      and reality_types
+      and subscription_types
+      and optional_metadata_types
+      and optional_anyreality_types
+      and (state_schema as $schema
+        | if $schema >= 3 then
+            (.network | type == "object")
+            and (.network.mode | type == "string")
+          elif $schema == 2 then
+            (.network == null or (
+              (.network | type == "object")
+              and (.network.listen_address | optional_string)))
+          else
+            (.network == null or (.network | type == "object"))
+          end)
+      and (state_schema as $schema
+        | if $schema <= 2 then
+            (.subscription.token | type == "string")
+          else true end)
+      and (state_schema as $schema
+        | if $schema == 4 and state_has_cross_routes then
+            (.ports.cross | cross_port_types)
+          elif $schema == 4 then
+            .ports.cross == null
+          else
+            (.ports.cross == null or (.ports.cross | cross_port_types))
+          end)
+      and (if .experimental.anyreality.enabled == true then
+          (.experimental.anyreality.port | integer)
+          and (.experimental.anyreality.password | type == "string")
+          and (.experimental.anyreality.private_key | type == "string")
+          and (.experimental.anyreality.public_key | type == "string")
+          and (.experimental.anyreality.short_id | type == "string")
+          and (if state_schema == 4 and state_has_cross_routes then
+              (.experimental.anyreality.cross_port | integer)
+            else .experimental.anyreality.cross_port == null end)
+        else true end)
+    ' "$state_file" >/dev/null 2>&1 \
+    || state_contract_fail "JSON、schema 或字段类型无效。"
+}
+
+validate_state_secret_contract() {
+  local state_file="$1" secret_row
+  local hy2_password hy2_obfs_password tuic_uuid tuic_password ss_password
+  local anytls_password trojan_password vision_uuid xhttp_uuid
+  local vision_private vision_public vision_short_id
+  local xhttp_private xhttp_public xhttp_short_id xhttp_path
+  local legacy_token ipv4_token ipv6_token ipv4_to_ipv6_token ipv6_to_ipv4_token
+  local anyreality_enabled anyreality_password anyreality_private
+  local anyreality_public anyreality_short_id token
+
+  secret_row="$(jq -r '[
+      .credentials.hysteria2_password,
+      .credentials.hysteria2_obfs_password,
+      .credentials.tuic_uuid,
+      .credentials.tuic_password,
+      .credentials.ss2022_password,
+      .credentials.anytls_password,
+      (.credentials.trojan_password // ""),
+      .credentials.vision_uuid,
+      .credentials.xhttp_uuid,
+      .reality.vision_private_key,
+      .reality.vision_public_key,
+      .reality.vision_short_id,
+      .reality.xhttp_private_key,
+      .reality.xhttp_public_key,
+      .reality.xhttp_short_id,
+      .reality.xhttp_path,
+      (.subscription.token // ""),
+      (.subscription.ipv4_token // ""),
+      (.subscription.ipv6_token // ""),
+      (.subscription.ipv4_to_ipv6_token // ""),
+      (.subscription.ipv6_to_ipv4_token // ""),
+      ((.experimental.anyreality.enabled // false) | tostring),
+      (.experimental.anyreality.password // ""),
+      (.experimental.anyreality.private_key // ""),
+      (.experimental.anyreality.public_key // ""),
+      (.experimental.anyreality.short_id // "")
+    ] | join("\u001f")' "$state_file")" \
+    || state_contract_fail "无法读取凭据字段。" || return
+  IFS=$'\x1f' read -r \
+    hy2_password hy2_obfs_password tuic_uuid tuic_password ss_password \
+    anytls_password trojan_password vision_uuid xhttp_uuid \
+    vision_private vision_public vision_short_id \
+    xhttp_private xhttp_public xhttp_short_id xhttp_path \
+    legacy_token ipv4_token ipv6_token ipv4_to_ipv6_token ipv6_to_ipv4_token \
+    anyreality_enabled anyreality_password anyreality_private \
+    anyreality_public anyreality_short_id <<< "$secret_row"
+
+  validate_urlsafe_secret "$hy2_password" \
+    || state_contract_fail "Hysteria2 密码格式无效。" || return
+  validate_urlsafe_secret "$hy2_obfs_password" \
+    || state_contract_fail "Hysteria2 混淆密码格式无效。" || return
+  validate_urlsafe_secret "$tuic_password" \
+    || state_contract_fail "TUIC 密码格式无效。" || return
+  validate_urlsafe_secret "$anytls_password" \
+    || state_contract_fail "AnyTLS 密码格式无效。" || return
+  if [[ -n "$trojan_password" ]]; then
+    validate_urlsafe_secret "$trojan_password" \
+      || state_contract_fail "Trojan 密码格式无效。" || return
+  fi
+  validate_canonical_uuid "$tuic_uuid" \
+    || state_contract_fail "TUIC UUID 不是规范格式。" || return
+  validate_canonical_uuid "$vision_uuid" \
+    || state_contract_fail "Vision UUID 不是规范格式。" || return
+  validate_canonical_uuid "$xhttp_uuid" \
+    || state_contract_fail "XHTTP UUID 不是规范格式。" || return
+  validate_ss2022_password "$ss_password" \
+    || state_contract_fail "SS2022 密码不是规范的 16 字节 Base64。" || return
+  validate_reality_key "$vision_private" \
+    || state_contract_fail "Vision REALITY 私钥格式无效。" || return
+  validate_reality_key "$vision_public" \
+    || state_contract_fail "Vision REALITY 公钥格式无效。" || return
+  validate_reality_key "$xhttp_private" \
+    || state_contract_fail "XHTTP REALITY 私钥格式无效。" || return
+  validate_reality_key "$xhttp_public" \
+    || state_contract_fail "XHTTP REALITY 公钥格式无效。" || return
+  validate_reality_short_id "$vision_short_id" \
+    || state_contract_fail "Vision Short ID 格式无效。" || return
+  validate_reality_short_id "$xhttp_short_id" \
+    || state_contract_fail "XHTTP Short ID 格式无效。" || return
+  validate_xhttp_path "$xhttp_path" \
+    || state_contract_fail "XHTTP path 不是安全绝对路径。" || return
+
+  for token in \
+    "$legacy_token" "$ipv4_token" "$ipv6_token" \
+    "$ipv4_to_ipv6_token" "$ipv6_to_ipv4_token"; do
+    [[ -n "$token" ]] || continue
+    validate_urlsafe_secret "$token" \
+      || state_contract_fail "订阅 Token 格式无效。" || return
+  done
+  if [[ "$anyreality_enabled" == true ]]; then
+    validate_urlsafe_secret "$anyreality_password" \
+      || state_contract_fail "AnyReality 密码格式无效。" || return
+    validate_reality_key "$anyreality_private" \
+      || state_contract_fail "AnyReality 私钥格式无效。" || return
+    validate_reality_key "$anyreality_public" \
+      || state_contract_fail "AnyReality 公钥格式无效。" || return
+    validate_reality_short_id "$anyreality_short_id" \
+      || state_contract_fail "AnyReality Short ID 格式无效。" || return
+  fi
+}
+
+validate_state_file_port_layout() {
+  local state_file="$1" schema mode raw_mode kind label first second port
+  local state_metadata port_rows
+  local -A seen_ports=()
+  state_metadata="$(jq -r '[
+      (if .schema == null then 1 else .schema end),
+      (.network.mode // "")
+    ] | join("\u001f")' "$state_file")" \
+    || state_contract_fail "无法读取端口元数据。" || return
+  IFS=$'\x1f' read -r schema raw_mode <<< "$state_metadata"
+  if (( schema >= 3 )); then
+    mode="$(normalize_network_mode "$raw_mode")" \
+      || state_contract_fail "网络模式无效。" || return
+  else
+    mode="$NETWORK_MODE_DUAL"
+  fi
+
+  port_rows="$(jq -r --argjson schema "$schema" --arg mode "$mode" '
+      (["range", "Hysteria2", .ports.hysteria2_start, .ports.hysteria2_end] | @tsv),
+      (["port", "TUIC", .ports.tuic] | @tsv),
+      (["port", "SS2022", .ports.ss2022] | @tsv),
+      (["port", "AnyTLS", .ports.anytls] | @tsv),
+      (if .ports.trojan != null then
+        (["port", "Trojan", .ports.trojan] | @tsv) else empty end),
+      (["port", "VLESS Vision", .ports.vless_reality_vision] | @tsv),
+      (["port", "VLESS XHTTP", .ports.vless_reality_xhttp] | @tsv),
+      (if $schema == 4 and $mode == "dual" then
+        (["range", "跨族 Hysteria2", .ports.cross.hysteria2_start,
+          .ports.cross.hysteria2_end] | @tsv),
+        (["port", "跨族 TUIC", .ports.cross.tuic] | @tsv),
+        (["port", "跨族 SS2022", .ports.cross.ss2022] | @tsv),
+        (["port", "跨族 AnyTLS", .ports.cross.anytls] | @tsv),
+        (["port", "跨族 Trojan", .ports.cross.trojan] | @tsv),
+        (["port", "跨族 VLESS Vision", .ports.cross.vless_reality_vision] | @tsv),
+        (["port", "跨族 VLESS XHTTP", .ports.cross.vless_reality_xhttp] | @tsv)
+      else empty end),
+      (if .experimental.anyreality.enabled == true then
+        (["port", "AnyReality", .experimental.anyreality.port] | @tsv),
+        (if $schema == 4 and $mode == "dual" then
+          (["port", "跨族 AnyReality", .experimental.anyreality.cross_port] | @tsv)
+        else empty end)
+      else empty end)
+    ' "$state_file")" \
+    || state_contract_fail "无法读取端口布局。" || return
+
+  while IFS=$'\t' read -r kind label first second; do
+    [[ -n "$kind" ]] || continue
+    case "$kind" in
+      range)
+        (( first >= 10000 && second <= 60000 && second - first == 127 )) \
+          || state_contract_fail "${label} 必须是 10000-60000 内连续 128 个端口。" \
+          || return
+        for ((port = first; port <= second; port++)); do
+          [[ -z "${seen_ports[$port]+x}" ]] \
+            || state_contract_fail \
+              "${label} 端口 ${port} 与 ${seen_ports[$port]} 冲突。" \
+            || return
+          seen_ports["$port"]="$label"
+        done
+        ;;
+      port)
+        (( first >= 10000 && first <= 60000 )) \
+          || state_contract_fail "${label} 不在 10000-60000。" || return
+        [[ -z "${seen_ports[$first]+x}" ]] \
+          || state_contract_fail \
+            "${label} 端口 ${first} 与 ${seen_ports[$first]} 冲突。" \
+          || return
+        seen_ports["$first"]="$label"
+        ;;
+      *) state_contract_fail "内部端口类型无效。" || return ;;
+    esac
+  done <<< "$port_rows"
+}
+
+validate_state_source_contract() {
+  local state_file="$1" minimum_schema="${2:-1}" maximum_schema="${3:-$NEKO_STATE_SCHEMA}"
+  local metadata schema domain email acme_method raw_network_mode network_mode
+  local legacy_token ipv4_token ipv6_token ipv4_to_ipv6_token ipv6_to_ipv4_token token
+  validate_state_json_types "$state_file" "$minimum_schema" "$maximum_schema" \
+    || return
+  validate_state_secret_contract "$state_file" || return
+  validate_state_file_port_layout "$state_file" || return
+
+  metadata="$(jq -r '[
+      (if .schema == null then 1 else .schema end),
+      .domain,
+      .acme_email,
+      (.acme.method // "http-01"),
+      (.network.mode // ""),
+      (.subscription.token // ""),
+      (.subscription.ipv4_token // ""),
+      (.subscription.ipv6_token // ""),
+      (.subscription.ipv4_to_ipv6_token // ""),
+      (.subscription.ipv6_to_ipv4_token // "")
+    ] | join("\u001f")' "$state_file")" \
+    || state_contract_fail "无法读取状态元数据。" || return
+  IFS=$'\x1f' read -r \
+    schema domain email acme_method raw_network_mode legacy_token \
+    ipv4_token ipv6_token ipv4_to_ipv6_token ipv6_to_ipv4_token <<< "$metadata"
+  validate_domain "$domain" || state_contract_fail "基础域名无效。" || return
+  validate_email "$email" || state_contract_fail "ACME 邮箱无效。" || return
+  normalize_acme_method "$acme_method" >/dev/null \
+    || state_contract_fail "ACME 验证方式无效。" || return
+
+  if (( schema >= 3 )); then
+    network_mode="$(normalize_network_mode "$raw_network_mode")" \
+      || state_contract_fail "网络模式无效。" || return
+  else
+    network_mode="$NETWORK_MODE_DUAL"
+  fi
+  if (( schema <= 2 )); then
+    token="$legacy_token"
+    validate_urlsafe_secret "$token" \
+      || state_contract_fail "旧版订阅 Token 格式无效。" || return
+  else
+    if network_mode_has_ipv4 "$network_mode"; then
+      token="$ipv4_token"
+      validate_urlsafe_secret "$token" \
+        || state_contract_fail "IPv4 订阅 Token 格式无效。" || return
+    fi
+    if network_mode_has_ipv6 "$network_mode"; then
+      token="$ipv6_token"
+      validate_urlsafe_secret "$token" \
+        || state_contract_fail "IPv6 订阅 Token 格式无效。" || return
+    fi
+    if (( schema == 4 )) && network_mode_has_cross_routes "$network_mode"; then
+      token="$ipv4_to_ipv6_token"
+      validate_urlsafe_secret "$token" \
+        || state_contract_fail "IPv4→IPv6 订阅 Token 格式无效。" || return
+      token="$ipv6_to_ipv4_token"
+      validate_urlsafe_secret "$token" \
+        || state_contract_fail "IPv6→IPv4 订阅 Token 格式无效。" || return
+    fi
+  fi
+}
+
 validate_proxy_port_layout() {
   local index label port start end
   local -a range_labels=("Hysteria2")
@@ -1218,6 +1666,9 @@ validate_proxy_port_layout() {
 load_state() {
   local state_schema expected_ipv4_domain expected_ipv6_domain
   [[ -r "$NEKO_STATE" ]] || die "找不到安装状态：${NEKO_STATE}"
+
+  validate_state_source_contract "$NEKO_STATE" "$NEKO_STATE_SCHEMA" "$NEKO_STATE_SCHEMA" \
+    || die "state.json 不符合 schema ${NEKO_STATE_SCHEMA} 的完整状态契约。"
 
   state_schema="$(state_value '.schema')"
   [[ "$state_schema" == "$NEKO_STATE_SCHEMA" ]] \
