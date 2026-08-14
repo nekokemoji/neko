@@ -341,7 +341,7 @@ rm -rf -- "$FIREWALL_TEST_WORK"
 printf '[3/10] AKDNS 固定来源、事务恢复与失败回滚……\n'
 bash "$ROOT/tests/akdns-transaction.sh"
 
-printf '[4/10] 冻结版本身份与 lego v5 CLI……\n'
+printf '[4/10] 冻结版本、lego v5 CLI 与证书续期事务……\n'
 [[ "$("$XRAY" version)" == *"$XRAY_VERSION"* ]]
 [[ "$("$SING_BOX" version)" == *"$SING_BOX_VERSION"* ]]
 [[ "$("$HYSTERIA" version 2>&1)" == *"v${HYSTERIA_VERSION}"* ]]
@@ -352,6 +352,7 @@ printf '[4/10] 冻结版本身份与 lego v5 CLI……\n'
 [[ "$(NO_COLOR=1 "$NEXTTRACE" --version 2>&1)" == *"NextTrace v${NEXTTRACE_VERSION}"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--http.webroot"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--dns"* ]]
+bash "$ROOT/tests/renew-transaction.sh"
 if grep -R "releases/latest\|/latest/download" \
     "$ROOT/install.sh" "$ROOT/upgrade.sh" \
     "$ROOT/tests/fetch-pinned-tools.sh" \
