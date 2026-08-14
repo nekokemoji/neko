@@ -231,6 +231,12 @@ grep -Fxq 'renewed-account-state' \
 [[ "$(stat -c %a "$CASE_DIR/var/lego")" == 750 ]]
 [[ "$(stat -c %a "$CASE_DIR/var/lego/certificates/example.com.crt")" == 640 ]]
 [[ "$(restart_sequence)" == $'neko-caddy.service\nneko-sing-box.service\nneko-hysteria.service\nneko-xray.service' ]]
+grep -Fq -- '--force-cert-domains' "$CASE_DIR/lego.log"
+grep -Fq -- '--no-random-sleep' "$CASE_DIR/lego.log"
+if grep -Fq -- '--renew-force' "$CASE_DIR/lego.log"; then
+  printf '常规续期不应强制重签证书。\n' >&2
+  exit 1
+fi
 assert_all_services_active
 assert_no_snapshot
 assert_complete_core_validation

@@ -20,6 +20,10 @@ printf '[4/10] 冻结版本、lego v5 CLI 与证书续期事务……\n'
 [[ "$("$LEGO" run --help 2>&1)" == *"--http.webroot"* ]]
 [[ "$("$LEGO" run --help 2>&1)" == *"--dns"* ]]
 bash "$ROOT/tests/renew-transaction.sh"
+
+# These scans are deliberate supply-chain and pipefail safety boundaries. A
+# download advertised as "latest", or an early-exiting head in the installer,
+# cannot be exercised deterministically without performing the unsafe action.
 if grep -R "releases/latest\|/latest/download" \
     "$ROOT/install.sh" "$ROOT/upgrade.sh" \
     "$ROOT/tests/fetch-pinned-tools.sh" \
@@ -28,28 +32,83 @@ if grep -R "releases/latest\|/latest/download" \
   printf '发现未冻结的 latest 下载地址。\n' >&2
   exit 1
 fi
-grep -Fq 'NEKO_WORK_BASE=/var/tmp' "$ROOT/install.sh"
-grep -Fq 'minimum_kib=$((768 * 1024))' "$ROOT/install.sh"
-grep -Fq 'mktemp -d "${NEKO_WORK_BASE}/neko-install.XXXXXX"' "$ROOT/install.sh"
-grep -Eq '^NEKO_SOURCE_COMMIT="[0-9a-f]{40}"$' "$ROOT/bootstrap.sh"
-grep -Fq 'NEKO_RELEASE="1.13.1"' "$ROOT/versions.env"
-grep -Fq 'runtime/akdns.sh' "$ROOT/bootstrap.sh"
-grep -Fq 'runtime/akdns.sh' "$ROOT/install.sh"
-grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/bootstrap.sh"
-grep -Fq 'runtime/route-diagnostics.sh' "$ROOT/install.sh"
-if grep -Fq 'runtime/diagnostics.sh' "$ROOT/bootstrap.sh" \
-    || grep -Fq 'runtime/diagnostics.sh' "$ROOT/install.sh"; then
-  printf '新安装不应包含旧版完整自研体检。\n' >&2
-  exit 1
-fi
-grep -Fq -- '--force-cert-domains' "$ROOT/runtime/renew.sh"
-grep -Fq -- '--renew-force' "$ROOT/upgrade.sh"
-grep -Fq -- '--cloudflare-token-file' "$ROOT/install.sh"
-grep -Fq -- '--dns cloudflare' "$ROOT/lib/common.sh"
 if grep -Eq '\|[[:space:]]*head([[:space:]]|$)' "$ROOT/install.sh"; then
   printf '安装器包含可能在 pipefail 下触发 SIGPIPE 的 head 管道。\n' >&2
   exit 1
 fi
+
+ACME_WORK="$(mktemp -d "$ROOT/tests/acme.XXXXXX")"
+
+default_work_base="$(bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  trap - EXIT
+  printf "%s" "$NEKO_WORK_BASE"
+' _ "$ROOT/install.sh")"
+[[ "$default_work_base" == /var/tmp ]]
+
+bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  trap - EXIT
+  NEKO_WORK_BASE="$2"
+  df() {
+    printf "%s\n" \
+      "Filesystem 1024-blocks Used Available Capacity Mounted on" \
+      "testfs 1000000 1 900000 1% $NEKO_WORK_BASE"
+  }
+  assert_work_space
+' _ "$ROOT/install.sh" "$ACME_WORK"
+set +e
+workspace_error="$(bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  trap - EXIT
+  NEKO_WORK_BASE="$2"
+  df() {
+    printf "%s\n" \
+      "Filesystem 1024-blocks Used Available Capacity Mounted on" \
+      "testfs 1000000 1 786431 1% $NEKO_WORK_BASE"
+  }
+  assert_work_space
+' _ "$ROOT/install.sh" "$ACME_WORK" 2>&1)"
+workspace_rc=$?
+set -e
+(( workspace_rc != 0 ))
+[[ "$workspace_error" == *'至少需要 768 MiB'* ]]
+
+bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  trap - EXIT
+  parse_args --cloudflare-token-file "$2"
+  [[ "$CLOUDFLARE_TOKEN_SOURCE_FILE" == "$2" ]]
+' _ "$ROOT/install.sh" "$ACME_WORK/cloudflare-token"
+
+PAYLOAD_WORK="$ACME_WORK/install-payload"
+mkdir -p \
+  "$PAYLOAD_WORK/work/bin" "$PAYLOAD_WORK/libexec/lib" \
+  "$PAYLOAD_WORK/systemd"
+for binary_name in xray sing-box hysteria caddy lego; do
+  install -m 0755 /usr/bin/true "$PAYLOAD_WORK/work/bin/$binary_name"
+done
+NEKO_TEST_PAYLOAD_ROOT="$PAYLOAD_WORK" bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  trap - EXIT
+  WORKDIR="$NEKO_TEST_PAYLOAD_ROOT/work"
+  NEKO_LIBEXEC="$NEKO_TEST_PAYLOAD_ROOT/libexec"
+  NEKO_SYSTEMD="$NEKO_TEST_PAYLOAD_ROOT/systemd"
+  ln() { printf "%s\n" "$*" > "$NEKO_TEST_PAYLOAD_ROOT/link.log"; }
+  install_payload
+' _ "$ROOT/install.sh"
+for installed_runtime in \
+  panel.sh akdns.sh route-diagnostics.sh renew.sh hysteria-dual.sh; do
+  [[ -x "$PAYLOAD_WORK/libexec/$installed_runtime" ]]
+done
+[[ ! -e "$PAYLOAD_WORK/libexec/diagnostics.sh" ]]
+[[ "$(<"$PAYLOAD_WORK/link.log")" \
+  == "-s $PAYLOAD_WORK/libexec/panel.sh /usr/local/bin/neko" ]]
 
 OPTIONAL_DOWNLOAD_WORK="$(mktemp -d "$ROOT/tests/optional-download.XXXXXX")"
 if ! bash -c '
@@ -74,7 +133,6 @@ if ! bash -c '
 fi
 rm -rf -- "$OPTIONAL_DOWNLOAD_WORK"
 
-ACME_WORK="$(mktemp -d "$ROOT/tests/acme.XXXXXX")"
 mkdir -p "$ACME_WORK/bin"
 cat > "$ACME_WORK/bin/lego-fake" <<'EOF'
 #!/usr/bin/env bash

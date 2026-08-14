@@ -4,6 +4,28 @@ set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="${NEKO_TEST_TOOLS_DIR:-$ROOT/tests/.tools}"
+readonly -a SUITE_NAMES=(
+  static
+  state
+  acme
+  render
+  panel-transactions
+  upgrade
+)
+
+if [[ "${1:-}" == --list-suites ]]; then
+  (( $# == 1 )) || {
+    printf '%s\n' '--list-suites 不接受其他参数。' >&2
+    exit 64
+  }
+  printf '%s\n' "${SUITE_NAMES[@]}"
+  exit 0
+fi
+(( $# == 0 )) || {
+  printf '未知测试参数：%s\n' "$1" >&2
+  exit 64
+}
+
 XRAY="${XRAY_BIN:-$TOOLS/xray}"
 SING_BOX="${SING_BOX_BIN:-$TOOLS/sing-box}"
 HYSTERIA="${HYSTERIA_BIN:-$TOOLS/hysteria}"
@@ -27,16 +49,7 @@ source "$ROOT/versions.env"
 NEKO_TEST_SUITE_CONTEXT=1
 # Suites are sourced, not spawned, so the render fixture remains available to
 # the later panel and upgrade suites exactly as it was in the unified runner.
-# shellcheck source=tests/suites/static.sh
-source "$ROOT/tests/suites/static.sh"
-# shellcheck source=tests/suites/state.sh
-source "$ROOT/tests/suites/state.sh"
-# shellcheck source=tests/suites/acme.sh
-source "$ROOT/tests/suites/acme.sh"
-# shellcheck source=tests/suites/render.sh
-source "$ROOT/tests/suites/render.sh"
-# shellcheck source=tests/suites/panel-transactions.sh
-source "$ROOT/tests/suites/panel-transactions.sh"
-# shellcheck source=tests/suites/upgrade.sh
-source "$ROOT/tests/suites/upgrade.sh"
+for suite_name in "${SUITE_NAMES[@]}"; do
+  source "$ROOT/tests/suites/${suite_name}.sh"
+done
 unset NEKO_TEST_SUITE_CONTEXT

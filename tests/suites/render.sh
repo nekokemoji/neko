@@ -38,6 +38,27 @@ if find "$WORK/bootstrap-work" -mindepth 1 -maxdepth 1 -name 'neko-bootstrap.*' 
   exit 1
 fi
 
+for required_runtime in runtime/akdns.sh runtime/route-diagnostics.sh; do
+  missing_case="${required_runtime//\//-}"
+  missing_root="$WORK/bootstrap-missing-$missing_case"
+  mkdir -p "$missing_root/source" "$missing_root/work"
+  tar -xzf "$WORK/bootstrap-source.tar.gz" -C "$missing_root/source"
+  rm -f -- "$missing_root/source/$root_dir_name/$required_runtime"
+  tar -czf "$missing_root/source.tar.gz" \
+    -C "$missing_root/source" "$root_dir_name"
+  set +e
+  missing_output="$(
+    NEKO_BOOTSTRAP_ARCHIVE="$missing_root/source.tar.gz" \
+      NEKO_BOOTSTRAP_WORK_BASE="$missing_root/work" \
+      NEKO_BOOTSTRAP_TEST_MODE=1 \
+      bash "$ROOT/bootstrap.sh" 2>&1
+  )"
+  missing_rc=$?
+  set -e
+  (( missing_rc != 0 ))
+  [[ "$missing_output" == *"缺少 ${required_runtime}"* ]]
+done
+
 mkdir -p "$WORK/bootstrap-minimal/bin" "$WORK/bootstrap-minimal/work"
 for command_name in bash mktemp mkdir grep rm cp; do
   ln -s "$(command -v "$command_name")" "$WORK/bootstrap-minimal/bin/$command_name"
