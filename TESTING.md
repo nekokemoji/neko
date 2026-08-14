@@ -28,6 +28,7 @@ bash tests/run.sh
 - Cloudflare DNS-01 与 HTTP-01 分别传递正确的 lego 参数；DNS-01 只暴露固定的 `_FILE` 凭据变量，清除原始 Token、旧式变量和外部文件变量。
 - 连续模拟 1000 次 lego 快速失败，确认公共 ACME 保护完整保留原始退出码与错误输出，不会再由 Bash `coproc` 竞态产生 `Bad file descriptor`；Cloudflare `9109` 会给出 Token 类型、有效性、最小权限与 Zone 范围提示。发行版矩阵也会在全部 16 个系统/架构组合中执行快速失败路径。
 - 模拟 lego 收到 Let’s Encrypt `rateLimited` 后准备长时间等待，确认公共 ACME 保护在 5 秒内终止、保留并显示 `retry after`，返回临时失败；另模拟无输出挂起，确认 10 分钟总时限的可配置短时测试路径。发行版矩阵也会在全部 16 个系统/架构组合中执行快速限额终止路径。
+- 证书续期事务覆盖无变化、lego 部分写入后失败、成功更新、非法证书、证书/私钥不匹配、严格 SAN 缺失、有效期不足、核心配置失败、服务顺序重启失败、原 inactive 服务恢复及回滚本身失败；逐项确认完整 lego 树与权限恢复、root-only 快照清理/保留、明确人工恢复路径，并在 8 个完整 VM 中用各自真实 Bash、OpenSSL 与文件系统重跑。
 - Cloudflare Token 内容格式、凭据目录 `0700`、文件 `0600` 与非符号链接约束。
 - 真实 `sing-box check` 与 `xray run -test` 分别解析 IPv4-only、IPv6-only、dual 三种服务端配置；双栈四个方向的 sing-box Remote Profile 全部由真实核心解析。
 - Hysteria 的单栈配置或双栈四个配置分别读取并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。

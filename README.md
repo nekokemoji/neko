@@ -546,6 +546,11 @@ systemctl status neko-renew.timer
 journalctl -u neko-renew.service --since '7 days ago'
 ```
 
+每次续期会先在 root-only 目录快照完整 lego 状态，再校验证书/私钥配对、严格 SAN、
+有效期、全部服务端配置和应有的 sing-box 订阅。证书变化后，四个核心按固定顺序逐个
+重启并通过健康检查才会提交；任一步失败会恢复原证书、权限和服务 active 状态。若自动
+恢复本身失败，日志会保留并显示可人工恢复的快照路径。
+
 ## 常见问题
 
 | 现象 | 通常原因 | 怎么处理 |

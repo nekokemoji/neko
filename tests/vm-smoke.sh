@@ -67,6 +67,13 @@ bash "$ROOT/tests/family-render-smoke.sh"
 mapfile -t shell_files < <(find "$ROOT" -type f -name '*.sh' -print | sort)
 bash -n "${shell_files[@]}"
 
+# Run the certificate transaction fault matrix with this VM's real Bash,
+# OpenSSL, permissions and filesystem semantics.  Service/core boundaries are
+# explicit fixtures here; shipped systemd units are parsed separately below.
+command -v openssl >/dev/null 2>&1 \
+  || { printf '完整 VM 缺少续期事务测试所需的 openssl。\n' >&2; exit 1; }
+bash "$ROOT/tests/renew-transaction.sh"
+
 # Exercise the AKDNS system-file transaction against an isolated fake root in
 # every supported full VM.  Live public DNS is deliberately not made a CI
 # dependency, while symlink restoration and resolver service states are real
