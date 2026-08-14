@@ -273,6 +273,33 @@ fi
 grep -Fq '无法确认版本 26.3.27；未开始升级' \
   "$UPGRADE_ACTUAL_CORE_MISMATCH/upgrade.log"
 
+UPGRADE_INVALID_STATE="$WORK/upgrade-invalid-state"
+prepare_upgrade_install "$UPGRADE_INVALID_STATE" 4 1.9.0-test dual true
+jq '.reality.xhttp_path = "/safe?next=/poison"' \
+  "$UPGRADE_INVALID_STATE/etc/state.json" \
+  > "$UPGRADE_INVALID_STATE/etc/state.invalid.json"
+mv -f -- \
+  "$UPGRADE_INVALID_STATE/etc/state.invalid.json" \
+  "$UPGRADE_INVALID_STATE/etc/state.json"
+invalid_state_before="$(upgrade_payload_manifest "$UPGRADE_INVALID_STATE")"
+set +e
+run_upgrade "$UPGRADE_INVALID_STATE" \
+  NEKO_TEST_SYSTEMCTL_LOG="$UPGRADE_INVALID_STATE/systemctl.log" \
+  > "$UPGRADE_INVALID_STATE/upgrade.log" 2>&1
+invalid_state_rc=$?
+set -e
+(( invalid_state_rc != 0 ))
+[[ "$(upgrade_payload_manifest "$UPGRADE_INVALID_STATE")" \
+  == "$invalid_state_before" ]]
+[[ ! -e "$UPGRADE_INVALID_STATE/systemctl.log" ]]
+[[ ! -e "$UPGRADE_INVALID_STATE/firewall/commands.log" ]]
+if find "$UPGRADE_INVALID_STATE/tmp" -mindepth 1 -print -quit | grep -q .; then
+  printf '损坏状态被拒绝前不应创建升级暂存或备份。\n' >&2
+  exit 1
+fi
+grep -Fq '现有 state.json 不符合可升级状态契约；未开始升级' \
+  "$UPGRADE_INVALID_STATE/upgrade.log"
+
 UPGRADE_OK="$WORK/upgrade-ok"
 prepare_upgrade_install "$UPGRADE_OK"
 upgrade_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \

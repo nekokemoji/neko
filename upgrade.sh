@@ -499,6 +499,13 @@ main() {
   # would be required, or if the installed files already diverge from their
   # committed manifest.
   verify_core_upgrade_contract
+  validate_state_source_contract "$NEKO_STATE" 1 "$NEKO_STATE_SCHEMA" \
+    || die "现有 state.json 不符合可升级状态契约；未开始升级。"
+  current_schema="$(jq -er '
+    (if .schema == null then 1 else .schema end)
+    | select(type == "number" and . == floor)' "$NEKO_STATE")" \
+    || die "state.json 缺少有效 schema。"
+  current_release="$(jq -r '.release // "unknown"' "$NEKO_STATE")"
   [[ -d "$NEKO_SYSTEMD" && -w "$NEKO_SYSTEMD" ]] \
     || die "systemd 单元目录不可写：${NEKO_SYSTEMD}"
   [[ -d "$NEKO_UPDATE_TMP_DIR" && -w "$NEKO_UPDATE_TMP_DIR" ]] \
@@ -506,9 +513,6 @@ main() {
   stage_optional_qrc
   stage_optional_nexttrace
 
-  current_schema="$(jq -er '.schema // 1 | select(type == "number")' "$NEKO_STATE")" \
-    || die "state.json 缺少有效 schema。"
-  current_release="$(jq -r '.release // "unknown"' "$NEKO_STATE")"
   (( current_schema == 1 || current_schema == 2 \
     || current_schema == 3 || current_schema == 4 )) \
     || die "不支持从 state schema ${current_schema} 升级。"

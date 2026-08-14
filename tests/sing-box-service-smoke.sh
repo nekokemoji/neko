@@ -99,6 +99,7 @@ jq --arg address "$guest_ipv4" \
   --arg private_key "$anyreality_private" \
   --arg public_key "$anyreality_public" '
   .network.mode = "ipv4-only"
+  | .ports.cross = null
   | .subscription.ipv4_address = $address
   | .experimental.anyreality = {
       enabled: true,
@@ -285,8 +286,10 @@ done
 
 ip -6 address add "${test_ipv6}/128" dev lo
 test_ipv6_added=1
-jq --arg address "$test_ipv6" '
+jq --arg address "$test_ipv6" \
+  --slurpfile fixture "$ROOT/tests/fixtures/state.json" '
   .network.mode = "dual"
+  | .ports.cross = $fixture[0].ports.cross
   | .subscription.ipv6_address = $address
   | .experimental.anyreality.cross_port = 34000
 ' /etc/neko/state.json > "$work/state-dual.json"

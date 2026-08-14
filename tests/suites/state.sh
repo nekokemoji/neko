@@ -10,6 +10,7 @@
 
 printf '[2/10] 发行版、架构、DNS 与防火墙区域逻辑……\n'
 bash "$ROOT/tests/platform-matrix.sh"
+bash "$ROOT/tests/state-validation.sh"
 bash -c '
   set -Eeuo pipefail
   source "$1"
