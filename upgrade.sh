@@ -383,6 +383,94 @@ resolve_strict_endpoints() {
   fi
 }
 
+installed_manifest_value() {
+  local file="$1" key="$2" value
+  value="$(sed -n "s/^${key}=\"\([^\"]*\)\"$/\\1/p" "$file")"
+  [[ -n "$value" && "$value" != *$'\n'* \
+    && "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || return 1
+  printf '%s' "$value"
+}
+
+core_version_output_matches() {
+  local component="$1" version="$2" output="$3" first_line
+  first_line="${output%%$'\n'*}"
+  case "$component" in
+    xray)
+      [[ "$first_line" == "Xray ${version} "* ]]
+      ;;
+    sing-box)
+      [[ "$first_line" == "sing-box version ${version}" ]]
+      ;;
+    hysteria)
+      awk -v expected="v${version}" '
+        $1 == "Version:" && $2 == expected { found = 1 }
+        END { exit(found ? 0 : 1) }
+      ' <<< "$output"
+      ;;
+    caddy)
+      [[ "$first_line" == "v${version}" \
+        || "$first_line" == "v${version} "* ]]
+      ;;
+    lego)
+      [[ "$first_line" == "lego version ${version} "* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+verify_core_upgrade_contract() {
+  local architecture component prefix binary label version_key hash_key
+  local installed_version installed_hash target_version target_hash
+  local version_output
+  local installed_manifest="$NEKO_LIBEXEC/versions.env"
+  local -a core_specs=(
+    'XRAY:xray:Xray'
+    'SING_BOX:sing-box:sing-box'
+    'HYSTERIA:hysteria:Hysteria'
+    'CADDY:caddy:Caddy'
+    'LEGO:lego:lego'
+  )
+
+  case "${ARCH_OVERRIDE:-$(uname -m)}" in
+    x86_64|amd64) architecture=AMD64 ;;
+    aarch64|arm64) architecture=ARM64 ;;
+    *) die "当前 CPU 没有可验证的 Neko 核心清单；未开始升级。" ;;
+  esac
+
+  for component in "${core_specs[@]}"; do
+    IFS=: read -r prefix binary label <<< "$component"
+    version_key="${prefix}_VERSION"
+    hash_key="${prefix}_${architecture}_SHA256"
+    installed_version="$(
+      installed_manifest_value "$installed_manifest" "$version_key"
+    )" || die "已安装版本清单缺少有效的 ${version_key}；未开始升级。"
+    installed_hash="$(
+      installed_manifest_value "$installed_manifest" "$hash_key"
+    )" || die "已安装版本清单缺少有效的 ${hash_key}；未开始升级。"
+    target_version="${!version_key}"
+    target_hash="${!hash_key}"
+
+    [[ "$installed_version" == "$target_version" ]] || die \
+      "目标 ${label} 核心版本 ${target_version} 与已安装清单 ${installed_version} 不同；当前升级器尚未实现核心二进制事务，未开始升级。"
+    [[ "$installed_hash" == "$target_hash" ]] || die \
+      "目标 ${label} ${target_version} 校验值与已安装清单不同；当前升级器尚未实现核心二进制事务，未开始升级。"
+    [[ "$installed_hash" =~ ^[0-9a-f]{64}$ ]] \
+      || die "已安装 ${label} 校验值格式无效；未开始升级。"
+
+    case "$binary" in
+      xray) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
+      sing-box) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
+      hysteria) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
+      caddy) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
+      lego) version_output="$("$NEKO_LIBEXEC/$binary" --version 2>&1)" ;;
+    esac || die "无法读取已安装 ${label} 的版本身份；未开始升级。"
+    core_version_output_matches "$binary" "$installed_version" "$version_output" \
+      || die "已安装 ${label} 无法确认版本 ${installed_version}；未开始升级。"
+  done
+}
+
 main() {
   local current_schema current_release certificate_domain service state_tmp
   local legacy_token trojan_port trojan_password hy2_start hy2_end port
@@ -425,6 +513,12 @@ main() {
     && -r "$SCRIPT_DIR/runtime/hysteria-dual.sh" \
     && -r "$SCRIPT_DIR/runtime/akdns.sh" \
     && -r "$SCRIPT_DIR/systemd/neko-hysteria.service" ]] || die "升级包不完整。"
+  # The current upgrader migrates scripts, state and generated configuration,
+  # but it does not yet provide an atomic core-binary replacement transaction.
+  # Refuse before staging or changing anything if that missing transaction
+  # would be required, or if the installed files already diverge from their
+  # committed manifest.
+  verify_core_upgrade_contract
   [[ -d "$NEKO_SYSTEMD" && -w "$NEKO_SYSTEMD" ]] \
     || die "systemd 单元目录不可写：${NEKO_SYSTEMD}"
   [[ -d "$NEKO_UPDATE_TMP_DIR" && -w "$NEKO_UPDATE_TMP_DIR" ]] \

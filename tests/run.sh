@@ -1482,6 +1482,14 @@ run_upgrade() {
     "$@" bash "$ROOT/upgrade.sh"
 }
 
+upgrade_payload_manifest() {
+  local target="$1"
+  tar --sort=name --mtime='UTC 1970-01-01' \
+    --owner=0 --group=0 --numeric-owner \
+    -cf - -C "$target" etc var libexec systemd \
+    | sha256sum | awk '{print $1}'
+}
+
 assert_trojan_migrated() {
   local target="$1" trojan_port expected_inbounds=1
   trojan_port="$(jq -r '.ports.trojan' "$target/etc/state.json")"
@@ -1542,6 +1550,60 @@ assert_anyreality_migrated() {
   grep -Fq 'name: "AnyReality"' \
     "$target/etc/subscriptions/shadowrocket-${profile}.txt"
 }
+
+UPGRADE_VERSION_MANIFEST_MISMATCH="$WORK/upgrade-version-manifest-mismatch"
+prepare_upgrade_install "$UPGRADE_VERSION_MANIFEST_MISMATCH"
+sed -i 's/^XRAY_VERSION=.*/XRAY_VERSION="0.0.0-test"/' \
+  "$UPGRADE_VERSION_MANIFEST_MISMATCH/libexec/versions.env"
+version_manifest_before="$(
+  upgrade_payload_manifest "$UPGRADE_VERSION_MANIFEST_MISMATCH"
+)"
+set +e
+run_upgrade "$UPGRADE_VERSION_MANIFEST_MISMATCH" \
+  NEKO_TEST_SYSTEMCTL_LOG="$UPGRADE_VERSION_MANIFEST_MISMATCH/systemctl.log" \
+  > "$UPGRADE_VERSION_MANIFEST_MISMATCH/upgrade.log" 2>&1
+version_manifest_rc=$?
+set -e
+(( version_manifest_rc != 0 ))
+[[ "$(upgrade_payload_manifest "$UPGRADE_VERSION_MANIFEST_MISMATCH")" \
+  == "$version_manifest_before" ]]
+[[ ! -e "$UPGRADE_VERSION_MANIFEST_MISMATCH/systemctl.log" ]]
+[[ ! -e "$UPGRADE_VERSION_MANIFEST_MISMATCH/firewall/commands.log" ]]
+if find "$UPGRADE_VERSION_MANIFEST_MISMATCH/tmp" -mindepth 1 -print -quit \
+    | grep -q .; then
+  printf '核心清单不同时不应创建升级暂存或备份。\n' >&2
+  exit 1
+fi
+grep -Fq '当前升级器尚未实现核心二进制事务，未开始升级' \
+  "$UPGRADE_VERSION_MANIFEST_MISMATCH/upgrade.log"
+
+UPGRADE_ACTUAL_CORE_MISMATCH="$WORK/upgrade-actual-core-mismatch"
+prepare_upgrade_install "$UPGRADE_ACTUAL_CORE_MISMATCH"
+rm -f -- "$UPGRADE_ACTUAL_CORE_MISMATCH/libexec/xray"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf "Xray 0.0.0-test (unexpected)\\n"' \
+  > "$UPGRADE_ACTUAL_CORE_MISMATCH/libexec/xray"
+chmod 0755 "$UPGRADE_ACTUAL_CORE_MISMATCH/libexec/xray"
+actual_core_before="$(upgrade_payload_manifest "$UPGRADE_ACTUAL_CORE_MISMATCH")"
+set +e
+run_upgrade "$UPGRADE_ACTUAL_CORE_MISMATCH" \
+  NEKO_TEST_SYSTEMCTL_LOG="$UPGRADE_ACTUAL_CORE_MISMATCH/systemctl.log" \
+  > "$UPGRADE_ACTUAL_CORE_MISMATCH/upgrade.log" 2>&1
+actual_core_rc=$?
+set -e
+(( actual_core_rc != 0 ))
+[[ "$(upgrade_payload_manifest "$UPGRADE_ACTUAL_CORE_MISMATCH")" \
+  == "$actual_core_before" ]]
+[[ ! -e "$UPGRADE_ACTUAL_CORE_MISMATCH/systemctl.log" ]]
+[[ ! -e "$UPGRADE_ACTUAL_CORE_MISMATCH/firewall/commands.log" ]]
+if find "$UPGRADE_ACTUAL_CORE_MISMATCH/tmp" -mindepth 1 -print -quit \
+    | grep -q .; then
+  printf '实际核心不匹配时不应创建升级暂存或备份。\n' >&2
+  exit 1
+fi
+grep -Fq '无法确认版本 26.3.27；未开始升级' \
+  "$UPGRADE_ACTUAL_CORE_MISMATCH/upgrade.log"
 
 UPGRADE_OK="$WORK/upgrade-ok"
 prepare_upgrade_install "$UPGRADE_OK"
