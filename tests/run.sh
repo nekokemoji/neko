@@ -1254,6 +1254,7 @@ grep -Fq 'wait -n "${pids[@]}"' "$ROOT/runtime/hysteria-dual.sh"
 grep -Fq 'ReadWritePaths=/var/lib/neko' "$ROOT/systemd/neko-renew.service"
 grep -Fq 'systemctl stop neko-renew.service' "$ROOT/runtime/panel.sh"
 grep -Fq 'restart_runtime_services' "$ROOT/runtime/panel.sh"
+bash "$ROOT/tests/maintenance-lock.sh"
 bash "$ROOT/tests/panel-refresh.sh"
 bash "$ROOT/tests/panel-credentials.sh"
 

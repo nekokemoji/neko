@@ -9,6 +9,7 @@ NEKO_SYSTEMD="${NEKO_SYSTEMD:-/etc/systemd/system}"
 NEKO_STATE="${NEKO_STATE:-${NEKO_ETC}/state.json}"
 NEKO_USER="${NEKO_USER:-neko-proxy}"
 NEKO_PANEL_TMP_DIR="${NEKO_PANEL_TMP_DIR:-/var/tmp}"
+NEKO_MAINTENANCE_LOCK_FILE="${NEKO_MAINTENANCE_LOCK_FILE:-/run/lock/neko-maintenance.lock}"
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 
 source "${NEKO_LIBEXEC}/lib/common.sh"
@@ -59,7 +60,7 @@ cleanup_family_backup() {
 }
 
 acquire_maintenance_lock() {
-  exec {MAINTENANCE_LOCK_FD}>/run/lock/neko-maintenance.lock
+  exec {MAINTENANCE_LOCK_FD}>"$NEKO_MAINTENANCE_LOCK_FILE"
   flock -n "$MAINTENANCE_LOCK_FD" \
     || die "另一个 Neko 维护任务正在运行，请稍后重试。"
 }
@@ -67,6 +68,19 @@ acquire_maintenance_lock() {
 release_maintenance_lock() {
   flock -u "$MAINTENANCE_LOCK_FD" 2>/dev/null || true
   exec {MAINTENANCE_LOCK_FD}>&-
+}
+
+remove_uninstall_files() {
+  rm -f -- \
+    /etc/systemd/system/neko-caddy.service \
+    /etc/systemd/system/neko-sing-box.service \
+    /etc/systemd/system/neko-xray.service \
+    /etc/systemd/system/neko-hysteria.service \
+    /etc/systemd/system/neko-renew.service \
+    /etc/systemd/system/neko-renew.timer \
+    /usr/local/bin/neko \
+    /run/lock/neko-install.lock
+  rm -rf -- /etc/neko /var/lib/neko /usr/local/libexec/neko
 }
 
 access_backup_path_is_safe() {
@@ -1697,17 +1711,7 @@ uninstall_neko() {
   remove_firewall
   restore_bbr
 
-  rm -f -- \
-    /etc/systemd/system/neko-caddy.service \
-    /etc/systemd/system/neko-sing-box.service \
-    /etc/systemd/system/neko-xray.service \
-    /etc/systemd/system/neko-hysteria.service \
-    /etc/systemd/system/neko-renew.service \
-    /etc/systemd/system/neko-renew.timer \
-    /usr/local/bin/neko \
-    /run/lock/neko-install.lock \
-    /run/lock/neko-maintenance.lock
-  rm -rf -- /etc/neko /var/lib/neko /usr/local/libexec/neko
+  remove_uninstall_files
   systemctl daemon-reload
   systemctl reset-failed >/dev/null 2>&1 || true
 
