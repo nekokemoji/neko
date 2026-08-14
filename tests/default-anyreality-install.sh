@@ -3,6 +3,8 @@
 set -Eeuo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=versions.env
+source "$ROOT/versions.env"
 SING_BOX_BIN="${SING_BOX_BIN:?}"
 XRAY_BIN="${XRAY_BIN:?}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-default-anyreality.XXXXXX")"
@@ -44,8 +46,8 @@ bash -c '
 ' _ "$ROOT/install.sh" "$WORK" "$ROOT/lib/render.sh"
 
 state="$WORK/etc/state.json"
-jq -e '
-  .release == "1.13.1"
+jq -e --arg release "$NEKO_RELEASE" '
+  .release == $release
   and .experimental.anyreality.enabled == true
   and (.experimental.anyreality.port | type == "number")
   and (.experimental.anyreality.cross_port | type == "number")
