@@ -102,6 +102,7 @@ fi
 NEKO_ETC="$WORK/etc" NEKO_VAR="$WORK/var" NEKO_STATE="$WORK/etc/state.json" NEKO_USER=root \
   bash -c 'source "$1"; source "$2"; render_all' \
   _ "$ROOT/lib/common.sh" "$ROOT/lib/render.sh"
+bash "$ROOT/tests/route-context.sh"
 
 printf '[6/10] 用真实冻结核心校验配置……\n'
 "$SING_BOX" check -c "$WORK/etc/config/sing-box.json"
