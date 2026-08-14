@@ -1,6 +1,6 @@
 # Neko 1.13.1 测试范围
 
-最近核对日期：2026-08-13（Asia/Tokyo）。
+最近核对日期：2026-08-14（Asia/Tokyo）。
 
 这份文件把“已经由自动测试验证的内容”和“必须在真实 VPS/客户端验证的内容”分开，避免把容器或静态检查描述成完整系统实装。
 
@@ -13,9 +13,14 @@ bash tests/fetch-pinned-tools.sh
 bash tests/run.sh
 ```
 
-`tests/fetch-pinned-tools.sh` 从上游精确 release tag 下载测试二进制并校验 `versions.env` 中固定的 SHA-256。`tests/run.sh` 当前覆盖：
+`tests/fetch-pinned-tools.sh` 从上游精确 release tag 下载测试二进制并校验
+`versions.env` 中固定的 SHA-256。`tests/run.sh` 保持唯一完整入口，内部按 static、
+state、ACME、render、panel transaction、upgrade 六个职责套件顺序执行。当前覆盖：
 
-- 所有 Shell 文件通过 `bash -n` 与 ShellCheck；缺少 ShellCheck、PyYAML 或独立二维码解码器时测试失败而不是跳过。
+- 所有 Shell 文件通过 `bash -n` 与 ShellCheck；缺少 ShellCheck、PyYAML 或独立二维码
+  解码器时测试失败而不是跳过。发布契约还核对版本清单键/格式、Bootstrap 固定源码
+  提交、当前状态 fixture 的 release/schema 与真实冻结核心版本，并以清单重复、状态漂移
+  和伪造核心身份三种故障注入证明会安全拒绝。
 - `detect_platform` 模拟 Debian 12/13、Ubuntu 24.04/26.04、Rocky 9/10、AlmaLinux 9/10 的 amd64/arm64，共 16 个允许组合，并验证不支持版本会被拒绝。
 - Debian 与 RHEL 两条依赖安装分支使用 mock 调用验证；旧安装升级时若缺少 `dig`，只补 `bind9-dnsutils`/`bind-utils`，且在修改 Neko 前完成。
 - IPv4-only、IPv6-only、dual 的严格 DNS 正例通过；查询使用绝对名称和明确的 A/AAAA 类型，不受 libc `AI_ADDRCONFIG` 或 DNS search 后缀影响；异族记录、CNAME、多个地址和基础域名不匹配都会失败。
