@@ -11,7 +11,7 @@ mkdir -p "$WORK/root/lib" "$WORK/root/tests/fixtures" "$WORK/root/tests/suites"
 cp -a -- \
   "$ROOT/versions.env" "$ROOT/bootstrap.sh" "$ROOT/README.md" \
   "$ROOT/TESTING.md" "$WORK/root/"
-cp -a -- "$ROOT/lib/common.sh" "$WORK/root/lib/"
+cp -a -- "$ROOT/lib/common.sh" "$ROOT/lib/state.sh" "$WORK/root/lib/"
 cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/root/tests/fixtures/"
 cp -a -- "$ROOT/tests/run.sh" "$WORK/root/tests/"
 cp -a -- "$ROOT/tests/suites/." "$WORK/root/tests/suites/"

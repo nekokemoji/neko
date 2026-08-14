@@ -28,6 +28,7 @@ setup_case() {
     > "$target/system/etc/nsswitch.conf"
   cp -a -- "$ROOT/versions.env" "$target/neko/libexec/versions.env"
   cp -a -- "$ROOT/lib/common.sh" "$target/neko/libexec/lib/common.sh"
+  cp -a -- "$ROOT/lib/state.sh" "$target/neko/libexec/lib/state.sh"
   cp -a -- "$ROOT/lib/render.sh" "$target/neko/libexec/lib/render.sh"
   printf 'public\n' > "$target/neko/etc/subscriptions/dns-mode"
   for service in \

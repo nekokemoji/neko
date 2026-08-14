@@ -19,7 +19,7 @@ fail_contract() {
 }
 
 for required_file in \
-  versions.env bootstrap.sh README.md TESTING.md lib/common.sh \
+  versions.env bootstrap.sh README.md TESTING.md lib/common.sh lib/state.sh \
   tests/fixtures/state.json tests/run.sh; do
   [[ -s "$ROOT/$required_file" ]] \
     || fail_contract "缺少 ${required_file}"
