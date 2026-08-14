@@ -27,16 +27,70 @@ if grep -Fq '/test-subscription-token/v4/' \
   printf 'IPv4 的旧订阅令牌仍出现在通用 Caddy 下载入口中。\n' >&2
   exit 1
 fi
+# Unit sandbox/capability declarations are static security boundaries enforced
+# by systemd itself. Keep these narrow scans in addition to VM unit parsing.
 grep -Fq 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' "$ROOT/systemd/neko-sing-box.service"
 grep -Fq 'AmbientCapabilities=CAP_NET_ADMIN' "$ROOT/systemd/neko-hysteria.service"
 grep -Fq 'ExecStart=/usr/local/libexec/neko/hysteria-dual.sh' "$ROOT/systemd/neko-hysteria.service"
-grep -Fq 'wait -n "${pids[@]}"' "$ROOT/runtime/hysteria-dual.sh"
 grep -Fq 'ReadWritePaths=/var/lib/neko' "$ROOT/systemd/neko-renew.service"
-grep -Fq 'systemctl stop neko-renew.service' "$ROOT/runtime/panel.sh"
-grep -Fq 'restart_runtime_services' "$ROOT/runtime/panel.sh"
 bash "$ROOT/tests/maintenance-lock.sh"
 bash "$ROOT/tests/panel-refresh.sh"
 bash "$ROOT/tests/panel-credentials.sh"
+
+PREFLIGHT_LOG="$WORK/install-preflight.log"
+set +e
+NEKO_TEST_PREFLIGHT_LOG="$PREFLIGHT_LOG" bash -c '
+  set -Eeuo pipefail
+  source "$1"
+  trap - EXIT
+  parse_args() { :; }
+  require_root() { :; }
+  detect_platform() { :; }
+  require_systemd() { :; }
+  collect_network_mode() { printf "network\n" >> "$NEKO_TEST_PREFLIGHT_LOG"; }
+  install_dependencies() { printf "dependencies\n" >> "$NEKO_TEST_PREFLIGHT_LOG"; }
+  require_commands() { :; }
+  collect_identity() {
+    printf "identity\n" >> "$NEKO_TEST_PREFLIGHT_LOG"
+    return 73
+  }
+  main
+' _ "$ROOT/install.sh" >/dev/null 2>&1
+preflight_rc=$?
+set -e
+(( preflight_rc == 73 ))
+[[ "$(<"$PREFLIGHT_LOG")" == $'network\ndependencies\nidentity' ]]
+
+UNINSTALL_WORK="$WORK/panel-uninstall"
+mkdir -p "$UNINSTALL_WORK/var"
+jq '.system_user_created = false' "$ROOT/tests/fixtures/state.json" \
+  > "$UNINSTALL_WORK/state.json"
+: > "$UNINSTALL_WORK/actions.log"
+printf 'UNINSTALL\n' \
+  | NEKO_ETC="$UNINSTALL_WORK" NEKO_VAR="$UNINSTALL_WORK/var" \
+    NEKO_STATE="$UNINSTALL_WORK/state.json" NEKO_LIBEXEC="$ROOT" \
+    NEKO_TEST_UNINSTALL_LOG="$UNINSTALL_WORK/actions.log" \
+    bash -c '
+      set -Eeuo pipefail
+      source "$1"
+      acquire_maintenance_lock() { printf "lock\n" >> "$NEKO_TEST_UNINSTALL_LOG"; }
+      systemctl() {
+        printf "systemctl:%s\n" "$*" >> "$NEKO_TEST_UNINSTALL_LOG"
+        [[ "${1:-}" != is-active ]]
+      }
+      remove_firewall() { printf "remove-firewall\n" >> "$NEKO_TEST_UNINSTALL_LOG"; }
+      restore_bbr() { printf "restore-bbr\n" >> "$NEKO_TEST_UNINSTALL_LOG"; }
+      remove_uninstall_files() { printf "remove-files\n" >> "$NEKO_TEST_UNINSTALL_LOG"; }
+      uninstall_neko
+    ' _ "$ROOT/runtime/panel.sh" >/dev/null
+mapfile -t uninstall_actions < "$UNINSTALL_WORK/actions.log"
+[[ "${uninstall_actions[0]}" == lock ]]
+[[ "${uninstall_actions[1]}" \
+  == 'systemctl:disable --now neko-renew.timer' ]]
+[[ "${uninstall_actions[2]}" == 'systemctl:stop neko-renew.service' ]]
+[[ " ${uninstall_actions[*]} " \
+  == *' systemctl:stop neko-hysteria.service neko-xray.service neko-sing-box.service neko-caddy.service '* ]]
+[[ " ${uninstall_actions[*]} " == *' remove-firewall restore-bbr remove-files '* ]]
 
 SUPERVISOR_WORK="$WORK/hysteria-supervisor"
 mkdir -p "$SUPERVISOR_WORK/config"
@@ -107,14 +161,6 @@ for child in v6 v4-to-v6 v6-to-v4; do
     exit 1
   fi
 done
-
-mode_gate_line="$(grep -n 'collect_network_mode' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
-domain_gate_line="$(grep -n 'collect_identity' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
-dependency_line="$(grep -n 'install_dependencies' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
-lock_line="$(grep -n 'exec 9>/run/lock/neko-install.lock' "$ROOT/install.sh" | tail -n 1 | cut -d: -f1)"
-(( mode_gate_line < dependency_line
-  && dependency_line < domain_gate_line
-  && domain_gate_line < lock_line ))
 
 printf '[9/10] IPv4-only、IPv6-only 与面板地址族事务……\n'
 bash "$ROOT/tests/render-golden.sh"

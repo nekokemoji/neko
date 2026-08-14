@@ -316,6 +316,41 @@ if find "$UPGRADE_OK/tmp" -maxdepth 1 \
   exit 1
 fi
 
+UPGRADE_ACME="$WORK/upgrade-acme"
+prepare_upgrade_install "$UPGRADE_ACME"
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+  -subj /CN=wrong.example.net -addext 'subjectAltName=DNS:wrong.example.net' \
+  -keyout "$UPGRADE_ACME/var/lego/certificates/example.com.key" \
+  -out "$UPGRADE_ACME/var/lego/certificates/example.com.crt" \
+  >/dev/null 2>&1
+mkdir -p "$UPGRADE_ACME/helpers"
+install -m 0755 "$ROOT/tests/fixtures/openssl-strict-checkhost.sh" \
+  "$UPGRADE_ACME/helpers/openssl"
+rm -f -- "$UPGRADE_ACME/libexec/lego"
+install -m 0755 "$ROOT/tests/fixtures/upgrade-lego.sh" \
+  "$UPGRADE_ACME/libexec/lego"
+run_upgrade "$UPGRADE_ACME" \
+  NEKO_UPDATE_SKIP_ACME=0 \
+  NEKO_UPDATE_TEST_REAL_OPENSSL="$(command -v openssl)" \
+  NEKO_UPDATE_TEST_LEGO_LOG="$UPGRADE_ACME/lego.log" \
+  NEKO_UPDATE_TEST_CERT="$WORK/var/lego/certificates/example.com.crt" \
+  NEKO_UPDATE_TEST_KEY="$WORK/var/lego/certificates/example.com.key" \
+  PATH="$UPGRADE_ACME/helpers:$ROOT/tests/helpers:$PATH" \
+  > "$UPGRADE_ACME/upgrade.log"
+if [[ ! -s "$UPGRADE_ACME/lego.log" ]]; then
+  printf '升级未对缺少严格域名的证书执行 ACME。\n' >&2
+  jq '{schema, network, subscription}' "$UPGRADE_ACME/etc/state.json" >&2
+  openssl x509 -in "$UPGRADE_ACME/var/lego/certificates/example.com.crt" \
+    -noout -ext subjectAltName >&2
+  exit 1
+fi
+grep -Fq -- '--force-cert-domains' "$UPGRADE_ACME/lego.log"
+grep -Fq -- '--renew-force' "$UPGRADE_ACME/lego.log"
+openssl x509 -in "$UPGRADE_ACME/var/lego/certificates/example.com.crt" \
+  -noout -checkhost v4.example.com | grep -Fq 'does match certificate'
+openssl x509 -in "$UPGRADE_ACME/var/lego/certificates/example.com.crt" \
+  -noout -checkhost v6.example.com | grep -Fq 'does match certificate'
+
 UPGRADE_SCHEMA2="$WORK/upgrade-schema2"
 prepare_upgrade_install "$UPGRADE_SCHEMA2" 2
 schema2_identity_before="$(jq -cS '{ports, credentials, reality, token: .subscription.token}' \

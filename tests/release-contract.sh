@@ -84,6 +84,8 @@ for key in \
     || fail_contract "versions.env 缺少 ${key}"
 done
 
+# Source pin and human-facing release labels are release artifacts rather than
+# runtime behavior. These narrow text contracts intentionally remain static.
 mapfile -t bootstrap_commits < <(
   sed -nE 's/^NEKO_SOURCE_COMMIT="([0-9a-f]{40})"$/\1/p' \
     "$ROOT/bootstrap.sh"
@@ -116,12 +118,12 @@ fixture_schema="$(jq -er '.schema | select(type == "number")' \
   || fail_contract "当前状态 fixture schema 与运行时不一致"
 
 suite_names=(static state acme render panel-transactions upgrade)
+mapfile -t configured_suites < <(bash "$ROOT/tests/run.sh" --list-suites)
+[[ "${configured_suites[*]}" == "${suite_names[*]}" ]] \
+  || fail_contract "tests/run.sh 套件清单或顺序与发布契约不一致"
 for suite in "${suite_names[@]}"; do
   [[ -s "$ROOT/tests/suites/${suite}.sh" ]] \
     || fail_contract "缺少测试套件 ${suite}"
-  grep -Fxq "source \"\$ROOT/tests/suites/${suite}.sh\"" \
-    "$ROOT/tests/run.sh" \
-    || fail_contract "tests/run.sh 未按契约加载 ${suite} 套件"
 done
 
 assert_identity() {
