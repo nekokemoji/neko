@@ -539,6 +539,7 @@ install_payload() {
   fi
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
+  install -m 0644 "$SCRIPT_DIR/lib/state.sh" "$NEKO_LIBEXEC/lib/state.sh"
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
@@ -582,7 +583,7 @@ write_initial_state() {
   local vision_private vision_public xhttp_private xhttp_public
   local vision_sid xhttp_sid xhttp_path sub_token_ipv4 sub_token_ipv6 installed_at
   local anyreality_password anyreality_pair anyreality_private anyreality_public
-  local anyreality_short_id
+  local anyreality_short_id state_tmp
   local sub_token_ipv4_to_ipv6="" sub_token_ipv6_to_ipv4=""
   local HY2_START HY2_END TUIC_PORT SS_PORT ANYTLS_PORT TROJAN_PORT
   local VISION_PORT XHTTP_PORT ANYREALITY_PORT
@@ -645,7 +646,8 @@ write_initial_state() {
   fi
   installed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
-  jq -n \
+  state_tmp="$(mktemp "${NEKO_STATE}.initial.XXXXXX")"
+  if ! jq -n \
     --argjson schema "$NEKO_STATE_SCHEMA" \
     --arg release "$NEKO_RELEASE" \
     --arg installed_at "$installed_at" \
@@ -797,9 +799,16 @@ write_initial_state() {
       },
       firewall: {manager: "none", zone: "", zones: []},
       bbr: {managed: false, previous_qdisc: "", previous_congestion_control: ""}
-    }' > "$NEKO_STATE"
-  chmod 0600 "$NEKO_STATE"
-  chown root:root "$NEKO_STATE"
+    }' > "$state_tmp"; then
+    rm -f -- "$state_tmp"
+    die "无法生成初始 state.json。"
+  fi
+  if ! state_atomic_commit_candidate \
+      "$state_tmp" "$NEKO_STATE" "$NEKO_STATE_SCHEMA"; then
+    rm -f -- "$state_tmp"
+    die "初始 state.json 未通过完整状态契约。"
+  fi
+  rm -f -- "$state_tmp"
 }
 
 validate_generated_configs() {

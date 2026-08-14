@@ -10,7 +10,9 @@ trap 'rm -rf -- "$WORK"' EXIT
 source "$ROOT/versions.env"
 
 mkdir -p "$WORK/bin" "$WORK/tmp" "$WORK/libexec/lib"
-cp -a -- "$ROOT/lib/common.sh" "$ROOT/lib/render.sh" "$ROOT/lib/firewall.sh" \
+cp -a -- \
+  "$ROOT/lib/common.sh" "$ROOT/lib/state.sh" \
+  "$ROOT/lib/render.sh" "$ROOT/lib/firewall.sh" \
   "$WORK/libexec/lib/"
 cat > "$WORK/bin/curl" <<'EOF'
 #!/usr/bin/env bash

@@ -64,7 +64,7 @@ prepare_case() {
     "$CASE_DIR/systemctl/active"
 
   cp -a -- "$ROOT/tests/fixtures/state.json" "$CASE_DIR/etc/state.json"
-  cp -a -- "$ROOT/lib/common.sh" "$CASE_DIR/libexec/lib/common.sh"
+  cp -a -- "$ROOT/lib/common.sh" "$ROOT/lib/state.sh" "$CASE_DIR/libexec/lib/"
   install -m 0755 "$ROOT/tests/fixtures/renew-lego.sh" \
     "$CASE_DIR/libexec/lego"
   install -m 0755 "$ROOT/tests/fixtures/renew-systemctl.sh" \

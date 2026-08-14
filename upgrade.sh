@@ -452,8 +452,8 @@ verify_core_upgrade_contract() {
 }
 
 main() {
-  local current_schema current_release certificate_domain service state_tmp
-  local legacy_token trojan_port trojan_password hy2_start hy2_end port
+  local current_schema current_release certificate_domain service
+  local trojan_port trojan_password hy2_start hy2_end port
   local tuic_port ss_port anytls_port vision_port xhttp_port
   local cross_hy2_start="null" cross_hy2_end="null"
   local cross_tuic_port="null" cross_ss_port="null" cross_anytls_port="null"
@@ -483,10 +483,15 @@ main() {
     && -r "$NEKO_LIBEXEC/lib/firewall.sh" && -r "$NEKO_LIBEXEC/versions.env" \
     && -r "$NEKO_LIBEXEC/panel.sh" && -r "$NEKO_LIBEXEC/renew.sh" ]] \
     || die "现有 Neko 程序文件不完整。"
+  if grep -Fq '/state.sh"' "$NEKO_LIBEXEC/lib/common.sh"; then
+    [[ -r "$NEKO_LIBEXEC/lib/state.sh" ]] \
+      || die "现有 Neko 状态库不完整。"
+  fi
   for service in sing-box xray hysteria caddy lego; do
     [[ -x "$NEKO_LIBEXEC/$service" ]] || die "现有核心缺失：${service}"
   done
-  [[ -r "$SCRIPT_DIR/lib/common.sh" && -r "$SCRIPT_DIR/lib/render.sh" \
+  [[ -r "$SCRIPT_DIR/lib/common.sh" && -r "$SCRIPT_DIR/lib/state.sh" \
+    && -r "$SCRIPT_DIR/lib/render.sh" \
     && -r "$SCRIPT_DIR/lib/firewall.sh" && -r "$SCRIPT_DIR/runtime/panel.sh" \
     && -r "$SCRIPT_DIR/runtime/route-diagnostics.sh" \
     && -r "$SCRIPT_DIR/runtime/renew.sh" \
@@ -580,7 +585,7 @@ main() {
         && "$anyreality_public" =~ ^[A-Za-z0-9_-]{43}$ \
         && "$anyreality_short_id" =~ ^[0-9a-f]{16}$ ]] \
         || die "state.json 中的 AnyReality 凭据无效。"
-      if network_mode_has_cross_routes; then
+      if network_mode_has_cross_routes && (( current_schema == 4 )); then
         cross_anyreality_port="$(jq -er '.experimental.anyreality.cross_port | select(type == "number" and . == floor)' "$NEKO_STATE")" \
           || die "state.json 中的跨族 AnyReality 端口无效。"
         (( cross_anyreality_port >= 10000 && cross_anyreality_port <= 60000 )) \
@@ -649,7 +654,8 @@ main() {
     # this map during an in-place upgrade; validate_proxy_port_layout below
     # still rejects real overlaps inside state.json.
     NEKO_RESERVED_PORTS["$anyreality_port"]=1
-    if network_mode_has_cross_routes; then
+    if network_mode_has_cross_routes \
+      && [[ "$cross_anyreality_port" =~ ^[0-9]+$ ]]; then
       NEKO_RESERVED_PORTS["$cross_anyreality_port"]=1
     fi
   fi
@@ -665,6 +671,9 @@ main() {
       reserve_random_port cross_xhttp_port
       cross_ipv4_to_ipv6_token="$(random_urlsafe 24)"
       cross_ipv6_to_ipv4_token="$(random_urlsafe 24)"
+      if [[ "$anyreality_enabled" == true ]]; then
+        reserve_random_port cross_anyreality_port
+      fi
     fi
   fi
 
@@ -775,6 +784,7 @@ main() {
   ROLLBACK_READY=1
 
   install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
+  install -m 0644 "$SCRIPT_DIR/lib/state.sh" "$NEKO_LIBEXEC/lib/state.sh"
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
@@ -793,111 +803,32 @@ main() {
     "$NEKO_SYSTEMD/neko-hysteria.service"
   systemctl daemon-reload
 
-  state_tmp="$(mktemp "${NEKO_STATE}.tmp.XXXXXX")"
-  legacy_token="$(jq -r '.subscription.token // empty' "$NEKO_STATE")"
-  jq \
-    --argjson schema "$NEKO_STATE_SCHEMA" \
-    --arg release "$NEKO_RELEASE" \
-    --arg network_mode "$NETWORK_MODE" \
-    --arg v4_domain "$SUBSCRIPTION_DOMAIN_IPV4" \
-    --arg v6_domain "$SUBSCRIPTION_DOMAIN_IPV6" \
-    --arg v4_address "$SUBSCRIPTION_IPV4_ADDRESS" \
-    --arg v6_address "$SUBSCRIPTION_IPV6_ADDRESS" \
-    --arg acme_method "$ACME_METHOD" \
-    --argjson trojan_port "$trojan_port" \
-    --argjson cross_hy2_start "$cross_hy2_start" \
-    --argjson cross_hy2_end "$cross_hy2_end" \
-    --argjson cross_tuic_port "$cross_tuic_port" \
-    --argjson cross_ss_port "$cross_ss_port" \
-    --argjson cross_anytls_port "$cross_anytls_port" \
-    --argjson cross_trojan_port "$cross_trojan_port" \
-    --argjson cross_vision_port "$cross_vision_port" \
-    --argjson cross_xhttp_port "$cross_xhttp_port" \
-    --argjson anyreality_port "$anyreality_port" \
-    --argjson cross_anyreality_port "$cross_anyreality_port" \
-    --arg anyreality_password "$anyreality_password" \
-    --arg anyreality_private "$anyreality_private" \
-    --arg anyreality_public "$anyreality_public" \
-    --arg anyreality_short_id "$anyreality_short_id" \
-    --arg trojan_password "$trojan_password" \
-    --arg legacy_token "$legacy_token" \
-    --arg cross_ipv4_to_ipv6_token "$cross_ipv4_to_ipv6_token" \
-    --arg cross_ipv6_to_ipv4_token "$cross_ipv6_to_ipv4_token" \
-    '.schema = $schema
-     | .release = $release
-     | .ports.trojan = $trojan_port
-     | .ports.cross = (
-         if $network_mode == "dual" then {
-           hysteria2_start: $cross_hy2_start,
-           hysteria2_end: $cross_hy2_end,
-           tuic: $cross_tuic_port,
-           ss2022: $cross_ss_port,
-           anytls: $cross_anytls_port,
-           trojan: $cross_trojan_port,
-           vless_reality_vision: $cross_vision_port,
-           vless_reality_xhttp: $cross_xhttp_port
-         } else null end
-     )
-     | .credentials.trojan_password = $trojan_password
-     | .experimental.anyreality = {
-         enabled: true,
-         port: $anyreality_port,
-         cross_port: (
-           if $network_mode == "dual" then $cross_anyreality_port else null end
-         ),
-         password: $anyreality_password,
-         private_key: $anyreality_private,
-         public_key: $anyreality_public,
-         short_id: $anyreality_short_id
-       }
-     | .network = {mode: $network_mode}
-     | .subscription.ipv4_token = (
-         if $network_mode == "ipv4-only" or $network_mode == "dual"
-         then (.subscription.ipv4_token // (
-           if $legacy_token != "" then $legacy_token else null end
-         ))
-         else null end
-       )
-     | .subscription.ipv6_token = (
-         if $network_mode == "ipv6-only" or $network_mode == "dual"
-         then (.subscription.ipv6_token // (
-           if $legacy_token != "" then $legacy_token else null end
-         ))
-         else null end
-       )
-     | .subscription.ipv4_to_ipv6_token = (
-         if $network_mode == "dual" then $cross_ipv4_to_ipv6_token else null end
-       )
-     | .subscription.ipv6_to_ipv4_token = (
-         if $network_mode == "dual" then $cross_ipv6_to_ipv4_token else null end
-       )
-     | .subscription.ipv4_domain = (
-         if $network_mode == "ipv4-only" or $network_mode == "dual"
-         then $v4_domain else null end
-       )
-     | .subscription.ipv6_domain = (
-         if $network_mode == "ipv6-only" or $network_mode == "dual"
-         then $v6_domain else null end
-       )
-     | .subscription.ipv4_address = (
-         if $network_mode == "ipv4-only" or $network_mode == "dual"
-         then $v4_address else null end
-       )
-     | .subscription.ipv6_address = (
-         if $network_mode == "ipv6-only" or $network_mode == "dual"
-         then $v6_address else null end
-       )
-     | del(.subscription.token)
-     | del(.subscription.shadowrocket_server)
-     | .acme = {method: $acme_method}
-     | .firewall.zones = (
-         if (.firewall.zones | type) == "array" then .firewall.zones
-         elif (.firewall.zone // "") != "" then [.firewall.zone]
-         else [] end
-       )' "$NEKO_STATE" > "$state_tmp"
-  chmod 0600 "$state_tmp"
-  chown root:root "$state_tmp" 2>/dev/null || true
-  mv -f -- "$state_tmp" "$NEKO_STATE"
+  state_migrate_to_current \
+    --source "$NEKO_STATE" --target "$NEKO_STATE" \
+    --release "$NEKO_RELEASE" --acme-method "$ACME_METHOD" \
+    --network-mode "$NETWORK_MODE" \
+    --ipv4-domain "$SUBSCRIPTION_DOMAIN_IPV4" \
+    --ipv6-domain "$SUBSCRIPTION_DOMAIN_IPV6" \
+    --ipv4-address "$SUBSCRIPTION_IPV4_ADDRESS" \
+    --ipv6-address "$SUBSCRIPTION_IPV6_ADDRESS" \
+    --trojan-port "$trojan_port" --trojan-password "$trojan_password" \
+    --cross-hysteria2-start "$cross_hy2_start" \
+    --cross-hysteria2-end "$cross_hy2_end" \
+    --cross-tuic-port "$cross_tuic_port" \
+    --cross-ss2022-port "$cross_ss_port" \
+    --cross-anytls-port "$cross_anytls_port" \
+    --cross-trojan-port "$cross_trojan_port" \
+    --cross-vision-port "$cross_vision_port" \
+    --cross-xhttp-port "$cross_xhttp_port" \
+    --ipv4-to-ipv6-token "$cross_ipv4_to_ipv6_token" \
+    --ipv6-to-ipv4-token "$cross_ipv6_to_ipv4_token" \
+    --anyreality-port "$anyreality_port" \
+    --cross-anyreality-port "$cross_anyreality_port" \
+    --anyreality-password "$anyreality_password" \
+    --anyreality-private-key "$anyreality_private" \
+    --anyreality-public-key "$anyreality_public" \
+    --anyreality-short-id "$anyreality_short_id" \
+    || die "state.json 逐版本迁移或最终完整校验失败。"
 
   # shellcheck source=lib/render.sh
   source "$NEKO_LIBEXEC/lib/render.sh"
