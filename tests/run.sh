@@ -1336,6 +1336,7 @@ lock_line="$(grep -n 'exec 9>/run/lock/neko-install.lock' "$ROOT/install.sh" | t
   && domain_gate_line < lock_line ))
 
 printf '[9/10] IPv4-only、IPv6-only 与面板地址族事务……\n'
+bash "$ROOT/tests/render-golden.sh"
 bash "$ROOT/tests/family-modes.sh"
 
 printf '[10/10] 模拟旧版本原地升级成功与失败回滚……\n'

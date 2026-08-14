@@ -112,4 +112,5 @@ fi
 
 bash "$ROOT/tests/subscription-render-smoke.sh"
 bash "$ROOT/tests/family-render-smoke.sh"
+bash "$ROOT/tests/render-golden.sh"
 bash "$ROOT/tests/route-diagnostics.sh"
