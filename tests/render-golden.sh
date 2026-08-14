@@ -9,7 +9,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-render-golden.XXXXXX")"
 ACTUAL="$WORK/render-golden.sha256"
 trap 'rm -rf -- "$WORK"' EXIT
 
-for command_name in diff find jq sed sha256sum sort; do
+for command_name in find jq sed sha256sum sort; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf 'Golden 渲染测试缺少命令：%s\n' "$command_name" >&2
     exit 1
@@ -93,5 +93,14 @@ fi
   printf '缺少 Golden 清单：%s\n' "$EXPECTED" >&2
   exit 1
 }
-diff -u "$EXPECTED" "$ACTUAL"
+expected_digest="$(sha256sum "$EXPECTED" | awk '{print $1}')"
+actual_digest="$(sha256sum "$ACTUAL" | awk '{print $1}')"
+if [[ "$actual_digest" != "$expected_digest" ]]; then
+  printf '%s\n' 'Golden 渲染结果不一致。' >&2
+  printf '%s\n' '--- expected ---' >&2
+  cat "$EXPECTED" >&2
+  printf '%s\n' '--- actual ---' >&2
+  cat "$ACTUAL" >&2
+  exit 1
+fi
 printf '三种网络模式的规范化配置与订阅 Golden 完全一致。\n'
