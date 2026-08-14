@@ -64,6 +64,7 @@ fi
 bash "$ROOT/tests/subscription-render-smoke.sh"
 bash "$ROOT/tests/family-render-smoke.sh"
 bash "$ROOT/tests/render-golden.sh"
+bash "$ROOT/tests/maintenance-lock.sh"
 
 mapfile -t shell_files < <(find "$ROOT" -type f -name '*.sh' -print | sort)
 bash -n "${shell_files[@]}"
