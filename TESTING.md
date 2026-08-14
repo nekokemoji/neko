@@ -32,6 +32,7 @@ bash tests/run.sh
 - Cloudflare Token 内容格式、凭据目录 `0700`、文件 `0600` 与非符号链接约束。
 - 真实 `sing-box check` 与 `xray run -test` 分别解析 IPv4-only、IPv6-only、dual 三种服务端配置；双栈四个方向的 sing-box Remote Profile 全部由真实核心解析。
 - Hysteria 的单栈配置或双栈四个配置分别读取并执行到端口跳跃帮助程序查找阶段；测试刻意不给它 nftables/iptables，避免改动宿主防火墙。
+- IPv4-only、IPv6-only、dual 三种模式的全部服务端配置与四种客户端订阅，在规范化临时路径后逐文件与 SHA-256 Golden 清单精确比较；任何字节变化都会在完整测试、16 个发行版/架构用户态组合和 8 个完整 VM 中失败。
 - 真实 Caddy 校验三种模式，并验证从单栈补装到双栈时，旧证书尚未包含新增 SAN 的短暂配置仍可加载；随后证书扩容参数必须带齐全部活动域名。
 - 真实 Mihomo 分别解析 IPv4→IPv4、IPv6→IPv6、IPv4→IPv6 与 IPv6→IPv4 配置。
 - 订阅目录按模式恰好生成 4、4、16 个文件；不存在未安装地址族的残留订阅或 Hysteria 配置。
