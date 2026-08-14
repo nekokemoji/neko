@@ -314,24 +314,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 validate_installed_configs() {
-  "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/config/sing-box.json" >/dev/null
-  if network_mode_has_ipv4; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v4.json" >/dev/null
-  fi
-  if network_mode_has_ipv6; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v6.json" >/dev/null
-  fi
-  if network_mode_has_cross_routes; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v4-to-v6.json" >/dev/null
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v6-to-v4.json" >/dev/null
-  fi
-  "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json" >/dev/null
-  "$NEKO_LIBEXEC/caddy" validate \
-    --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile >/dev/null
+  runtime_validate_core_configs \
+    --libexec-dir "$NEKO_LIBEXEC" \
+    --config-dir "$NEKO_ETC/config" \
+    --subscription-dir "$NEKO_ETC/subscriptions" \
+    --network-mode "$NETWORK_MODE" --output stdout-quiet
 }
 
 certificate_has_strict_domains() {
@@ -341,21 +328,14 @@ certificate_has_strict_domains() {
 
 set_certificate_permissions() {
   if [[ "${NEKO_UPDATE_TEST_MODE:-0}" == "1" ]]; then
-    find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
-    find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
-    chmod 0750 "$NEKO_VAR/lego"
-    find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} +
-    find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
-    return 0
+    runtime_set_lego_permissions \
+      --lego-dir "$NEKO_VAR/lego" --service-user "$NEKO_USER" \
+      --ownership preserve --path-policy trusted
+    return
   fi
-  chown -R root:root "$NEKO_VAR/lego"
-  find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
-  find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
-  chown "root:${NEKO_USER}" "$NEKO_VAR/lego"
-  chmod 0750 "$NEKO_VAR/lego"
-  chown -R "root:${NEKO_USER}" "$NEKO_VAR/lego/certificates"
-  find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} +
-  find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
+  runtime_set_lego_permissions \
+    --lego-dir "$NEKO_VAR/lego" --service-user "$NEKO_USER" \
+    --ownership managed --path-policy trusted
 }
 
 resolve_strict_endpoints() {

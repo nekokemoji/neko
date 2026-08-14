@@ -545,37 +545,20 @@ validate_neko_runtime() {
     warn "Neko 的公网严格 A/AAAA 域名验证失败。"
     return 1
   fi
-  "$NEKO_LIBEXEC/sing-box" check \
-    -c "${NEKO_CONFIG_DIR}/sing-box.json" >/dev/null || return 1
-  if network_mode_has_ipv4; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v4.json" >/dev/null || return 1
-  fi
-  if network_mode_has_ipv6; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v6.json" >/dev/null || return 1
-  fi
-  if network_mode_has_cross_routes; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v4-to-v6.json" >/dev/null || return 1
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v6-to-v4.json" >/dev/null || return 1
-  fi
-  "$NEKO_LIBEXEC/xray" run -test \
-    -c "${NEKO_CONFIG_DIR}/xray.json" >/dev/null || return 1
-  "$NEKO_LIBEXEC/caddy" validate \
-    --config "${NEKO_CONFIG_DIR}/Caddyfile" --adapter caddyfile \
-    >/dev/null || return 1
+  runtime_validate_core_configs \
+    --libexec-dir "$NEKO_LIBEXEC" --config-dir "$NEKO_CONFIG_DIR" \
+    --subscription-dir "$NEKO_SUB_DIR" \
+    --network-mode "$NETWORK_MODE" --output stdout-quiet || return 1
 
   if (( restart_services == 1 )); then
-    systemctl_akdns restart \
-      neko-caddy.service neko-sing-box.service neko-xray.service \
-      neko-hysteria.service || return 1
-    sleep "${NEKO_AKDNS_SERVICE_WAIT_SECONDS:-1}"
+    runtime_restart_service_set \
+      --systemctl-command systemctl_akdns \
+      --wait-seconds "${NEKO_AKDNS_SERVICE_WAIT_SECONDS:-1}" \
+      -- "${NEKO_RUNTIME_SERVICES[@]}" || return 1
+    return
   fi
-  for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
-    systemctl_akdns is-active --quiet "${service}.service" || return 1
-  done
+  runtime_services_are_active \
+    --systemctl-command systemctl_akdns -- "${NEKO_RUNTIME_SERVICES[@]}"
 }
 
 download_verified_akdns() {

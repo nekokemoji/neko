@@ -507,14 +507,9 @@ create_service_user_and_dirs() {
     fi
   fi
 
-  chown -R root:root "$NEKO_VAR/lego"
-  find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
-  find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
-  chown "root:${NEKO_USER}" "$NEKO_VAR/lego"
-  chmod 0750 "$NEKO_VAR/lego"
-  chown -R "root:${NEKO_USER}" "$NEKO_VAR/lego/certificates"
-  find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} +
-  find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
+  runtime_set_lego_permissions \
+    --lego-dir "$NEKO_VAR/lego" --service-user "$NEKO_USER" \
+    --ownership managed --path-policy trusted
 }
 
 install_payload() {
@@ -809,21 +804,11 @@ write_initial_state() {
 
 validate_generated_configs() {
   info "用冻结的核心二进制校验生成配置……"
-  "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/config/sing-box.json"
-  if network_mode_has_ipv4; then
-    "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v4.json"
-  fi
-  if network_mode_has_ipv6; then
-    "$NEKO_LIBEXEC/sing-box" check -c "$NEKO_ETC/subscriptions/sing-box-v6.json"
-  fi
-  if network_mode_has_cross_routes; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v4-to-v6.json"
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "$NEKO_ETC/subscriptions/sing-box-v6-to-v4.json"
-  fi
-  "$NEKO_LIBEXEC/xray" run -test -c "$NEKO_ETC/config/xray.json"
-  "$NEKO_LIBEXEC/caddy" validate --config "$NEKO_ETC/config/Caddyfile" --adapter caddyfile
+  runtime_validate_core_configs \
+    --libexec-dir "$NEKO_LIBEXEC" \
+    --config-dir "$NEKO_ETC/config" \
+    --subscription-dir "$NEKO_ETC/subscriptions" \
+    --network-mode "$NETWORK_MODE" --output visible
   ok "sing-box 服务端、当前线路客户端订阅、Xray 与 Caddy 配置校验通过。"
 }
 

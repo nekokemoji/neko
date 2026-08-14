@@ -22,3 +22,4 @@ shellcheck -x -e SC1090,SC1091,SC2016,SC2034 "${shell_files[@]}"
 
 bash "$ROOT/tests/release-contract.sh"
 bash "$ROOT/tests/release-contract-failures.sh"
+bash "$ROOT/tests/runtime-common.sh"

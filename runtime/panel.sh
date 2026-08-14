@@ -169,34 +169,16 @@ finish_access_transaction() {
 
 validate_runtime_configs() {
   load_state
-  "$NEKO_LIBEXEC/sing-box" check -c "${NEKO_CONFIG_DIR}/sing-box.json" >/dev/null
-  if network_mode_has_ipv4; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v4.json" >/dev/null
-  fi
-  if network_mode_has_ipv6; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v6.json" >/dev/null
-  fi
-  if network_mode_has_cross_routes; then
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v4-to-v6.json" >/dev/null
-    "$NEKO_LIBEXEC/sing-box" check \
-      -c "${NEKO_SUB_DIR}/sing-box-v6-to-v4.json" >/dev/null
-  fi
-  "$NEKO_LIBEXEC/xray" run -test -c "${NEKO_CONFIG_DIR}/xray.json" >/dev/null
-  "$NEKO_LIBEXEC/caddy" validate \
-    --config "${NEKO_CONFIG_DIR}/Caddyfile" --adapter caddyfile >/dev/null
+  runtime_validate_core_configs \
+    --libexec-dir "$NEKO_LIBEXEC" --config-dir "$NEKO_CONFIG_DIR" \
+    --subscription-dir "$NEKO_SUB_DIR" \
+    --network-mode "$NETWORK_MODE" --output stdout-quiet
 }
 
 restart_runtime_services() {
-  local service
-  systemctl restart \
-    neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service
-  sleep 1
-  for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
-    systemctl is-active --quiet "${service}.service" || return 1
-  done
+  runtime_restart_service_set \
+    --systemctl-command systemctl --wait-seconds 1 \
+    -- "${NEKO_RUNTIME_SERVICES[@]}"
 }
 
 enable_bbr() {
@@ -655,14 +637,9 @@ refresh_subscription_endpoints() {
 }
 
 set_runtime_certificate_permissions() {
-  chown -R root:root "$NEKO_VAR/lego"
-  find "$NEKO_VAR/lego" -type d -exec chmod 0700 {} +
-  find "$NEKO_VAR/lego" -type f -exec chmod 0600 {} +
-  chown "root:${NEKO_USER}" "$NEKO_VAR/lego"
-  chmod 0750 "$NEKO_VAR/lego"
-  chown -R "root:${NEKO_USER}" "$NEKO_VAR/lego/certificates"
-  find "$NEKO_VAR/lego/certificates" -type d -exec chmod 0750 {} +
-  find "$NEKO_VAR/lego/certificates" -type f -exec chmod 0640 {} +
+  runtime_set_lego_permissions \
+    --lego-dir "$NEKO_VAR/lego" --service-user "$NEKO_USER" \
+    --ownership managed --path-policy trusted
 }
 
 preflight_family_firewall_add() {
