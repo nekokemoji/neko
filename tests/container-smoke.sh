@@ -110,7 +110,26 @@ if ! command -v jq >/dev/null 2>&1; then
   esac
 fi
 
+if ! command -v cmp >/dev/null 2>&1 \
+  || ! command -v diff >/dev/null 2>&1; then
+  case "$EXPECTED_FAMILY" in
+    debian)
+      DEBIAN_FRONTEND=noninteractive apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        diffutils
+      ;;
+    rhel)
+      if command -v microdnf >/dev/null 2>&1; then
+        microdnf -y install diffutils
+      else
+        dnf -y install diffutils
+      fi
+      ;;
+  esac
+fi
+
 bash "$ROOT/tests/subscription-render-smoke.sh"
 bash "$ROOT/tests/family-render-smoke.sh"
 bash "$ROOT/tests/render-golden.sh"
+bash "$ROOT/tests/panel-bbr-transaction.sh"
 bash "$ROOT/tests/route-diagnostics.sh"
