@@ -1241,7 +1241,7 @@ main() {
   snapshot_upgrade_service_states
   ROLLBACK_READY=1
 
-  install -d -m 0755 -o root -g root "$NEKO_LIBEXEC/panel"
+  install -d -m 0755 "$NEKO_LIBEXEC/panel"
   for library_file in \
     common.sh common-platform.sh common-network.sh common-acme.sh \
     common-credentials.sh common-download.sh common-subscription.sh \
