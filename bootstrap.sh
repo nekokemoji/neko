@@ -113,7 +113,7 @@ tar --no-same-owner -xzf "$WORKDIR/neko.tar.gz" \
 
 for required_file in \
   install.sh versions.env \
-  lib/common.sh lib/state.sh lib/render.sh lib/firewall.sh \
+  lib/common.sh lib/state.sh lib/render.sh lib/firewall.sh lib/transaction.sh \
   runtime/panel.sh runtime/akdns.sh runtime/route-diagnostics.sh \
   runtime/renew.sh runtime/hysteria-dual.sh \
   systemd/neko-caddy.service systemd/neko-sing-box.service \
@@ -130,7 +130,8 @@ if [[ "${NEKO_BOOTSTRAP_TEST_MODE:-0}" == 1 ]]; then
     "$WORKDIR/source/lib/common.sh" \
     "$WORKDIR/source/lib/state.sh" \
     "$WORKDIR/source/lib/render.sh" \
-    "$WORKDIR/source/lib/firewall.sh"
+    "$WORKDIR/source/lib/firewall.sh" \
+    "$WORKDIR/source/lib/transaction.sh"
   printf '[测试] Bootstrap 已成功校验固定安装包。\n'
   exit 0
 fi

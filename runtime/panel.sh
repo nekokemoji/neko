@@ -15,15 +15,14 @@ export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
 source "${NEKO_LIBEXEC}/lib/common.sh"
 source "${NEKO_LIBEXEC}/lib/render.sh"
 source "${NEKO_LIBEXEC}/lib/firewall.sh"
+# shellcheck source=lib/transaction.sh
+source "${NEKO_LIBEXEC}/lib/transaction.sh"
 
 SYSCTL_FILE="${NEKO_BBR_SYSCTL_FILE:-/etc/sysctl.d/99-neko-bbr.conf}"
 FAMILY_BACKUP_DIR=""
-FAMILY_TRANSACTION_ACTIVE=0
 declare -a FAMILY_FIREWALL_ADDED_ZONES=()
 ACCESS_BACKUP_DIR=""
-ACCESS_TRANSACTION_ACTIVE=0
 BBR_BACKUP_DIR=""
-BBR_TRANSACTION_ACTIVE=0
 BBR_RELEASE_LOCK_ON_FINISH=0
 BBR_SYSCTL_FILE_EXISTED=0
 BBR_SYSCTL_TMP=""
@@ -111,6 +110,15 @@ cleanup_access_backup() {
   return 1
 }
 
+begin_access_transaction() {
+  if ! neko_transaction_begin \
+      --owner panel-access --rollback rollback_access_transaction \
+    || ! neko_transaction_snapshot --owner panel-access; then
+    neko_transaction_cancel --owner panel-access 2>/dev/null || true
+    return 1
+  fi
+}
+
 assert_access_source_tree() {
   local temp_base="${NEKO_PANEL_TMP_DIR%/}"
   [[ "$NEKO_ETC" == /* ]] \
@@ -142,7 +150,6 @@ assert_access_source_tree() {
 rollback_access_transaction() {
   local rollback_ok=1
   set +e
-  trap - EXIT INT TERM
   warn "订阅或节点凭据更新未完成，正在恢复原来的配置和服务……"
 
   if access_backup_path_is_safe; then
@@ -153,7 +160,6 @@ rollback_access_transaction() {
   validate_runtime_configs || rollback_ok=0
   restart_runtime_services || rollback_ok=0
 
-  ACCESS_TRANSACTION_ACTIVE=0
   release_maintenance_lock
   if (( rollback_ok == 1 )); then
     if cleanup_access_backup; then
@@ -166,15 +172,6 @@ rollback_access_transaction() {
     warn "自动恢复未完全成功；备份保留在 ${ACCESS_BACKUP_DIR}，请不要再次操作面板。"
   fi
   return "$((1 - rollback_ok))"
-}
-
-finish_access_transaction() {
-  local rc=$?
-  trap - EXIT INT TERM
-  if (( ACCESS_TRANSACTION_ACTIVE == 1 )); then
-    rollback_access_transaction || true
-  fi
-  exit "$rc"
 }
 
 validate_runtime_configs() {
@@ -303,10 +300,13 @@ begin_bbr_transaction() {
     fi
     BBR_SYSCTL_FILE_EXISTED=1
   fi
-  BBR_TRANSACTION_ACTIVE=1
-  trap finish_bbr_transaction EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  if ! neko_transaction_begin \
+      --owner panel-bbr --rollback rollback_bbr_transaction \
+    || ! neko_transaction_snapshot --owner panel-bbr; then
+    neko_transaction_cancel --owner panel-bbr 2>/dev/null || true
+    cleanup_bbr_backup || true
+    return 1
+  fi
 }
 
 bbr_write_managed_sysctl_file() {
@@ -406,7 +406,6 @@ bbr_live_snapshot_matches() {
 rollback_bbr_transaction() {
   local rollback_ok=1 sysctl_file_ok=1
   set +e
-  trap - EXIT INT TERM
   warn "BBR 更新未完成，正在恢复原来的状态、sysctl 文件和内核值……"
   [[ -z "$BBR_SYSCTL_TMP" ]] || rm -f -- "$BBR_SYSCTL_TMP"
   BBR_SYSCTL_TMP=""
@@ -424,7 +423,6 @@ rollback_bbr_transaction() {
   bbr_unload_extra_snapshot_modules || rollback_ok=0
   bbr_live_snapshot_matches || rollback_ok=0
 
-  BBR_TRANSACTION_ACTIVE=0
   if (( BBR_RELEASE_LOCK_ON_FINISH == 1 )); then
     release_maintenance_lock
   fi
@@ -441,26 +439,17 @@ rollback_bbr_transaction() {
   return "$((1 - rollback_ok))"
 }
 
-finish_bbr_transaction() {
-  local rc=$?
-  trap - EXIT INT TERM
-  if (( BBR_TRANSACTION_ACTIVE == 1 )); then
-    rollback_bbr_transaction || true
-  fi
-  exit "$rc"
-}
-
 abort_bbr_transaction() {
   local restored_message="$1" failed_message="$2"
-  if rollback_bbr_transaction; then
+  if neko_transaction_rollback --owner panel-bbr; then
     die "$restored_message"
   fi
   die "$failed_message"
 }
 
 complete_bbr_transaction() {
-  BBR_TRANSACTION_ACTIVE=0
-  trap - EXIT INT TERM
+  neko_transaction_validate --owner panel-bbr
+  neko_transaction_commit --owner panel-bbr
   cleanup_bbr_backup \
     || warn "BBR 操作已完成，但临时备份无法清理：${BBR_BACKUP_DIR}"
   if (( BBR_RELEASE_LOCK_ON_FINISH == 1 )); then
@@ -855,10 +844,11 @@ rotate_subscription() {
     die "无法完整备份当前配置；没有重置任何订阅 URL。"
   fi
 
-  ACCESS_TRANSACTION_ACTIVE=1
-  trap finish_access_transaction EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  if ! begin_access_transaction; then
+    cleanup_access_backup || true
+    release_maintenance_lock
+    die "无法启动订阅 URL 顶层事务；没有修改任何内容。"
+  fi
 
   if ! atomic_json_update \
       'if $rotate_ipv4 then .subscription.ipv4_token = $ipv4_token else . end
@@ -876,7 +866,7 @@ rotate_subscription() {
       --arg ipv6_token "$new_ipv6_token" \
       --arg ipv4_to_ipv6_token "$new_ipv4_to_ipv6_token" \
       --arg ipv6_to_ipv4_token "$new_ipv6_to_ipv4_token"; then
-    if rollback_access_transaction; then
+    if neko_transaction_rollback --owner panel-access; then
       die "订阅令牌写入失败，已恢复原订阅、原配置和服务。"
     fi
     die "订阅令牌写入失败，且自动恢复未完全成功；请保留上方备份并停止继续操作。"
@@ -884,9 +874,9 @@ rotate_subscription() {
 
   if render_all \
     && validate_runtime_configs \
-    && restart_runtime_services; then
-    ACCESS_TRANSACTION_ACTIVE=0
-    trap - EXIT INT TERM
+    && restart_runtime_services \
+    && neko_transaction_validate --owner panel-access \
+    && neko_transaction_commit --owner panel-access; then
     cleanup_access_backup \
       || warn "订阅 URL 已重置，但临时备份无法清理：${ACCESS_BACKUP_DIR}"
     release_maintenance_lock
@@ -895,7 +885,7 @@ rotate_subscription() {
     return 0
   fi
 
-  if rollback_access_transaction; then
+  if neko_transaction_rollback --owner panel-access; then
     die "订阅 URL 重置失败，已恢复原订阅、原配置和服务。"
   fi
   die "订阅 URL 重置失败，且自动恢复未完全成功；请保留上方备份并停止继续操作。"
@@ -1011,10 +1001,11 @@ rotate_node_credentials() {
     die "无法完整备份当前配置；没有修改订阅或节点凭据。"
   fi
 
-  ACCESS_TRANSACTION_ACTIVE=1
-  trap finish_access_transaction EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  if ! begin_access_transaction; then
+    cleanup_access_backup || true
+    release_maintenance_lock
+    die "无法启动节点凭据顶层事务；没有修改任何内容。"
+  fi
 
   if ! atomic_json_update \
       '.credentials.hysteria2_password = $hy2_password
@@ -1064,8 +1055,7 @@ rotate_node_credentials() {
       --arg ipv6_token "$new_ipv6_token" \
       --arg ipv4_to_ipv6_token "$new_ipv4_to_ipv6_token" \
       --arg ipv6_to_ipv4_token "$new_ipv6_to_ipv4_token"; then
-    ACCESS_TRANSACTION_ACTIVE=0
-    trap - EXIT INT TERM
+    neko_transaction_cancel --owner panel-access
     cleanup_access_backup || true
     release_maintenance_lock
     die "无法写入新节点凭据；原状态和运行服务均未修改。"
@@ -1073,9 +1063,9 @@ rotate_node_credentials() {
 
   if render_all \
     && validate_runtime_configs \
-    && restart_runtime_services; then
-    ACCESS_TRANSACTION_ACTIVE=0
-    trap - EXIT INT TERM
+    && restart_runtime_services \
+    && neko_transaction_validate --owner panel-access \
+    && neko_transaction_commit --owner panel-access; then
     cleanup_access_backup \
       || warn "节点已换新，但临时备份无法清理：${ACCESS_BACKUP_DIR}"
     release_maintenance_lock
@@ -1090,7 +1080,7 @@ rotate_node_credentials() {
     return 0
   fi
 
-  if rollback_access_transaction; then
+  if neko_transaction_rollback --owner panel-access; then
     die "节点凭据更新失败，已恢复原订阅、原节点和服务。"
   fi
   die "节点凭据更新失败，且自动恢复未完全成功；请保留上方备份并停止继续操作。"
@@ -1290,7 +1280,6 @@ sync_firewall_for_family_add() {
 rollback_family_transaction() {
   local rollback_ok=1 zone service firewall_manager
   set +e
-  trap - EXIT INT TERM
   warn "地址族补装未完成，正在恢复原来的安装状态……"
 
   if family_restore_paths_are_safe; then
@@ -1338,7 +1327,6 @@ rollback_family_transaction() {
     systemctl is-active --quiet "${service}.service" || rollback_ok=0
   done
 
-  FAMILY_TRANSACTION_ACTIVE=0
   release_maintenance_lock
   if (( rollback_ok == 1 )); then
     if cleanup_family_backup; then
@@ -1351,15 +1339,6 @@ rollback_family_transaction() {
     warn "自动恢复未完全成功；备份保留在 ${FAMILY_BACKUP_DIR}，请不要再次操作面板。"
   fi
   return "$((1 - rollback_ok))"
-}
-
-finish_family_transaction() {
-  local rc=$?
-  trap - EXIT INT TERM
-  if (( FAMILY_TRANSACTION_ACTIVE == 1 )); then
-    rollback_family_transaction || true
-  fi
-  exit "$rc"
 }
 
 add_missing_address_family() {
@@ -1485,10 +1464,14 @@ add_missing_address_family() {
       ;;
   esac
   FAMILY_FIREWALL_ADDED_ZONES=()
-  FAMILY_TRANSACTION_ACTIVE=1
-  trap finish_family_transaction EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  if ! neko_transaction_begin \
+      --owner panel-family --rollback rollback_family_transaction \
+    || ! neko_transaction_snapshot --owner panel-family; then
+    neko_transaction_cancel --owner panel-family 2>/dev/null || true
+    cleanup_family_backup || true
+    release_maintenance_lock
+    die "无法启动地址族补装顶层事务；未修改现有安装。"
+  fi
 
   atomic_json_update \
     '.network.mode = "dual"
@@ -1570,8 +1553,8 @@ add_missing_address_family() {
       || die "${service} 在补装后未保持运行。"
   done
 
-  FAMILY_TRANSACTION_ACTIVE=0
-  trap - EXIT INT TERM
+  neko_transaction_validate --owner panel-family
+  neko_transaction_commit --owner panel-family
   cleanup_family_backup \
     || warn "补装已成功，但临时备份无法清理：${FAMILY_BACKUP_DIR}"
   release_maintenance_lock
