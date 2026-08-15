@@ -21,6 +21,13 @@ QRC_STAGE_DIR=""
 QRC_STAGED_BINARY=""
 NEXTTRACE_STAGE_DIR=""
 NEXTTRACE_STAGED_BINARY=""
+CORE_STAGE_DIR=""
+CORE_STAGE_BIN_DIR=""
+CORE_TARGET_MANIFEST=""
+CORE_UPGRADE_REQUIRED=0
+CORE_ARCH=""
+CORE_ARCH_KEY=""
+CORE_ACTIVATION_TEMPS=()
 ROLLBACK_READY=0
 UPGRADE_FIREWALL_MANAGER="none"
 export NEKO_ETC NEKO_VAR NEKO_LIBEXEC NEKO_SYSTEMD NEKO_STATE NEKO_USER
@@ -138,6 +145,21 @@ cleanup_nexttrace_stage() {
   fi
 }
 
+cleanup_core_stage() {
+  local base="${NEKO_UPDATE_TMP_DIR%/}" temp
+  for temp in "${CORE_ACTIVATION_TEMPS[@]:-}"; do
+    [[ -n "$temp" && "$temp" == "$NEKO_LIBEXEC"/.*.next.* ]] \
+      && rm -f -- "$temp"
+  done
+  CORE_ACTIVATION_TEMPS=()
+  [[ -n "$CORE_STAGE_DIR" ]] || return 0
+  if [[ -n "$base" && "$CORE_STAGE_DIR" == "$base"/neko-core-stage.* ]]; then
+    rm -rf -- "$CORE_STAGE_DIR"
+    CORE_STAGE_DIR=""
+    CORE_STAGE_BIN_DIR=""
+  fi
+}
+
 
 stage_optional_nexttrace() {
   local nexttrace_source="${NEKO_UPDATE_NEXTTRACE_BINARY:-}"
@@ -245,6 +267,7 @@ rollback_upgrade() {
   restore_tree "$BACKUP_DIR/lego" "$NEKO_VAR/lego" || rollback_ok=0
   restore_tree "$BACKUP_DIR/lib" "$NEKO_LIBEXEC/lib" || rollback_ok=0
   cp -a -- "$BACKUP_DIR/versions.env" "$NEKO_LIBEXEC/versions.env" || rollback_ok=0
+  restore_core_binaries || rollback_ok=0
   cp -a -- "$BACKUP_DIR/panel.sh" "$NEKO_LIBEXEC/panel.sh" || rollback_ok=0
   cp -a -- "$BACKUP_DIR/renew.sh" "$NEKO_LIBEXEC/renew.sh" || rollback_ok=0
   restore_optional_file \
@@ -284,15 +307,18 @@ rollback_upgrade() {
       ;;
   esac
   systemctl daemon-reload >/dev/null 2>&1 || rollback_ok=0
-  systemctl restart \
-    neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service \
-    >/dev/null 2>&1 || rollback_ok=0
+  restore_upgrade_service_states || rollback_ok=0
   if (( rollback_ok == 1 )); then
     cleanup_qrc_stage
     cleanup_nexttrace_stage
+    cleanup_core_stage
     cleanup_backup
   else
+    cleanup_qrc_stage
+    cleanup_nexttrace_stage
+    cleanup_core_stage
     warn "自动恢复未完全成功；为防止数据丢失，备份保留在 ${BACKUP_DIR}。"
+    warn "请停止 Neko 服务且不要再次升级；核对后从该目录恢复 etc、lego、lib、core、versions.env 和单元文件，再按 services.state 恢复服务启停状态。"
   fi
   exit "$rc"
 }
@@ -305,6 +331,7 @@ finish_upgrade() {
   fi
   cleanup_qrc_stage
   cleanup_nexttrace_stage
+  cleanup_core_stage
   cleanup_backup
   exit "$rc"
 }
@@ -400,59 +427,431 @@ core_version_output_matches() {
   esac
 }
 
-verify_core_upgrade_contract() {
-  local architecture component prefix binary label version_key hash_key
+core_spec_rows() {
+  printf '%s\n' \
+    'XRAY|xray|Xray' \
+    'SING_BOX|sing-box|sing-box' \
+    'HYSTERIA|hysteria|Hysteria' \
+    'CADDY|caddy|Caddy' \
+    'LEGO|lego|lego'
+}
+
+upgrade_test_failpoint() {
+  local point="$1"
+  [[ "${NEKO_UPDATE_TEST_MODE:-0}" == 1 ]] || return 0
+  case ",${NEKO_UPDATE_TEST_FAIL_POINTS:-}," in
+    *",${point},"*)
+      warn "测试故障注入：${point}"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+upgrade_test_event() {
+  [[ "${NEKO_UPDATE_TEST_MODE:-0}" == 1 \
+    && -n "${NEKO_UPDATE_TEST_EVENT_LOG:-}" ]] || return 0
+  printf '%s\n' "$1" >> "$NEKO_UPDATE_TEST_EVENT_LOG"
+}
+
+upgrade_test_signal_point() {
+  local point="$1"
+  [[ "${NEKO_UPDATE_TEST_MODE:-0}" == 1 ]] || return 0
+  case ",${NEKO_UPDATE_TEST_FAIL_POINTS:-}," in
+    *",signal-int-${point},"*)
+      warn "测试信号注入：signal-int-${point}"
+      kill -INT "$$"
+      return 1
+      ;;
+    *",signal-term-${point},"*)
+      warn "测试信号注入：signal-term-${point}"
+      kill -TERM "$$"
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+core_binary_version_output() {
+  local binary="$1" path="$2"
+  case "$binary" in
+    xray|sing-box|hysteria|caddy) "$path" version 2>&1 ;;
+    lego) "$path" --version 2>&1 ;;
+    *) return 64 ;;
+  esac
+}
+
+prepare_core_upgrade_contract() {
+  local prefix binary label version_key hash_key
   local installed_version installed_hash target_version target_hash
-  local version_output
-  local installed_manifest="$NEKO_LIBEXEC/versions.env"
-  local -a core_specs=(
-    'XRAY:xray:Xray'
-    'SING_BOX:sing-box:sing-box'
-    'HYSTERIA:hysteria:Hysteria'
-    'CADDY:caddy:Caddy'
-    'LEGO:lego:lego'
-  )
+  local version_output installed_manifest="$NEKO_LIBEXEC/versions.env"
 
   case "${ARCH_OVERRIDE:-$(uname -m)}" in
-    x86_64|amd64) architecture=AMD64 ;;
-    aarch64|arm64) architecture=ARM64 ;;
+    x86_64|amd64) CORE_ARCH=amd64; CORE_ARCH_KEY=AMD64 ;;
+    aarch64|arm64) CORE_ARCH=arm64; CORE_ARCH_KEY=ARM64 ;;
     *) die "当前 CPU 没有可验证的 Neko 核心清单；未开始升级。" ;;
   esac
+  CORE_TARGET_MANIFEST="$SCRIPT_DIR/versions.env"
+  if [[ -n "${NEKO_UPDATE_TARGET_VERSIONS_FILE:-}" ]]; then
+    [[ "${NEKO_UPDATE_TEST_MODE:-0}" == 1 ]] \
+      || die "生产升级不接受外部目标版本清单。"
+    CORE_TARGET_MANIFEST="$NEKO_UPDATE_TARGET_VERSIONS_FILE"
+  fi
+  [[ -f "$CORE_TARGET_MANIFEST" && ! -L "$CORE_TARGET_MANIFEST" ]] \
+    || die "目标核心版本清单缺失或类型异常；未开始升级。"
 
-  for component in "${core_specs[@]}"; do
-    IFS=: read -r prefix binary label <<< "$component"
+  CORE_UPGRADE_REQUIRED=0
+  while IFS='|' read -r prefix binary label; do
     version_key="${prefix}_VERSION"
-    hash_key="${prefix}_${architecture}_SHA256"
+    hash_key="${prefix}_${CORE_ARCH_KEY}_SHA256"
     installed_version="$(
       installed_manifest_value "$installed_manifest" "$version_key"
     )" || die "已安装版本清单缺少有效的 ${version_key}；未开始升级。"
     installed_hash="$(
       installed_manifest_value "$installed_manifest" "$hash_key"
     )" || die "已安装版本清单缺少有效的 ${hash_key}；未开始升级。"
-    target_version="${!version_key}"
-    target_hash="${!hash_key}"
-
-    [[ "$installed_version" == "$target_version" ]] || die \
-      "目标 ${label} 核心版本 ${target_version} 与已安装清单 ${installed_version} 不同；当前升级器尚未实现核心二进制事务，未开始升级。"
-    [[ "$installed_hash" == "$target_hash" ]] || die \
-      "目标 ${label} ${target_version} 校验值与已安装清单不同；当前升级器尚未实现核心二进制事务，未开始升级。"
+    target_version="$(
+      installed_manifest_value "$CORE_TARGET_MANIFEST" "$version_key"
+    )" || die "目标版本清单缺少有效的 ${version_key}；未开始升级。"
+    target_hash="$(
+      installed_manifest_value "$CORE_TARGET_MANIFEST" "$hash_key"
+    )" || die "目标版本清单缺少有效的 ${hash_key}；未开始升级。"
     [[ "$installed_hash" =~ ^[0-9a-f]{64}$ ]] \
       || die "已安装 ${label} 校验值格式无效；未开始升级。"
-
-    case "$binary" in
-      xray) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
-      sing-box) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
-      hysteria) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
-      caddy) version_output="$("$NEKO_LIBEXEC/$binary" version 2>&1)" ;;
-      lego) version_output="$("$NEKO_LIBEXEC/$binary" --version 2>&1)" ;;
-    esac || die "无法读取已安装 ${label} 的版本身份；未开始升级。"
+    [[ "$target_hash" =~ ^[0-9a-f]{64}$ ]] \
+      || die "目标 ${label} 缺少固定 SHA-256；未开始升级。"
+    [[ -x "$NEKO_LIBEXEC/$binary" ]] \
+      || die "已安装 ${label} 核心不可执行；未开始升级。"
+    version_output="$(
+      core_binary_version_output "$binary" "$NEKO_LIBEXEC/$binary"
+    )" || die "无法读取已安装 ${label} 的版本身份；未开始升级。"
     core_version_output_matches "$binary" "$installed_version" "$version_output" \
       || die "已安装 ${label} 无法确认版本 ${installed_version}；未开始升级。"
+    if [[ "$installed_version" != "$target_version" \
+      || "$installed_hash" != "$target_hash" ]]; then
+      CORE_UPGRADE_REQUIRED=1
+    fi
+  done < <(core_spec_rows)
+}
+
+stage_core_release_artifact() {
+  local label="$1" url="$2" expected="$3" fixture_name="$4" output="$5"
+  local source_dir="${NEKO_UPDATE_CORE_ARCHIVE_DIR:-}"
+  upgrade_test_failpoint "download-${fixture_name}" || return
+  if [[ -n "$source_dir" ]]; then
+    [[ "${NEKO_UPDATE_TEST_MODE:-0}" == 1 ]] \
+      || die "生产升级不接受本地核心归档目录。"
+    [[ -f "$source_dir/$fixture_name" \
+      && ! -L "$source_dir/$fixture_name" ]] \
+      || { warn "测试核心归档缺失：${fixture_name}"; return 1; }
+    upgrade_test_failpoint "copy-${fixture_name}" || return
+    install -m 0600 -- "$source_dir/$fixture_name" "$output" || return
+    printf '%s  %s\n' "$expected" "$output" \
+      | sha256sum --check --status || {
+        warn "${label} 的 SHA-256 校验失败。"
+        return 1
+      }
+  else
+    download_verified "$label" "$url" "$expected" "$output"
+  fi
+}
+
+stage_core_upgrade_set() {
+  local prefix binary label version_key hash_key version hash output
+  local xray_asset sing_asset hysteria_asset caddy_asset lego_asset
+  (( CORE_UPGRADE_REQUIRED == 1 )) || return 0
+  CORE_STAGE_DIR="$(
+    mktemp -d "${NEKO_UPDATE_TMP_DIR%/}/neko-core-stage.XXXXXX"
+  )" || die "无法创建核心升级暂存目录。"
+  chmod 0700 "$CORE_STAGE_DIR"
+  CORE_STAGE_BIN_DIR="$CORE_STAGE_DIR/bin"
+  install -d -m 0700 \
+    "$CORE_STAGE_DIR/downloads" "$CORE_STAGE_DIR/unpack" \
+    "$CORE_STAGE_BIN_DIR"
+
+  if [[ "$CORE_ARCH" == amd64 ]]; then
+    xray_asset=Xray-linux-64.zip
+  else
+    xray_asset=Xray-linux-arm64-v8a.zip
+  fi
+  version="$(installed_manifest_value "$CORE_TARGET_MANIFEST" XRAY_VERSION)"
+  hash="$(
+    installed_manifest_value \
+      "$CORE_TARGET_MANIFEST" "XRAY_${CORE_ARCH_KEY}_SHA256"
+  )"
+  stage_core_release_artifact "Xray ${version}" \
+    "https://github.com/XTLS/Xray-core/releases/download/v${version}/${xray_asset}" \
+    "$hash" xray.zip "$CORE_STAGE_DIR/downloads/xray.zip" \
+    || die "Xray 核心暂存失败。"
+
+  version="$(installed_manifest_value "$CORE_TARGET_MANIFEST" SING_BOX_VERSION)"
+  hash="$(
+    installed_manifest_value \
+      "$CORE_TARGET_MANIFEST" "SING_BOX_${CORE_ARCH_KEY}_SHA256"
+  )"
+  sing_asset="sing-box-${version}-linux-${CORE_ARCH}.tar.gz"
+  stage_core_release_artifact "sing-box ${version}" \
+    "https://github.com/SagerNet/sing-box/releases/download/v${version}/${sing_asset}" \
+    "$hash" sing-box.tar.gz "$CORE_STAGE_DIR/downloads/sing-box.tar.gz" \
+    || die "sing-box 核心暂存失败。"
+
+  version="$(installed_manifest_value "$CORE_TARGET_MANIFEST" HYSTERIA_VERSION)"
+  hash="$(
+    installed_manifest_value \
+      "$CORE_TARGET_MANIFEST" "HYSTERIA_${CORE_ARCH_KEY}_SHA256"
+  )"
+  hysteria_asset="hysteria-linux-${CORE_ARCH}"
+  stage_core_release_artifact "Hysteria ${version}" \
+    "https://github.com/apernet/hysteria/releases/download/app%2Fv${version}/${hysteria_asset}" \
+    "$hash" hysteria "$CORE_STAGE_DIR/downloads/hysteria" \
+    || die "Hysteria 核心暂存失败。"
+
+  version="$(installed_manifest_value "$CORE_TARGET_MANIFEST" CADDY_VERSION)"
+  hash="$(
+    installed_manifest_value \
+      "$CORE_TARGET_MANIFEST" "CADDY_${CORE_ARCH_KEY}_SHA256"
+  )"
+  caddy_asset="caddy_${version}_linux_${CORE_ARCH}.tar.gz"
+  stage_core_release_artifact "Caddy ${version}" \
+    "https://github.com/caddyserver/caddy/releases/download/v${version}/${caddy_asset}" \
+    "$hash" caddy.tar.gz "$CORE_STAGE_DIR/downloads/caddy.tar.gz" \
+    || die "Caddy 核心暂存失败。"
+
+  version="$(installed_manifest_value "$CORE_TARGET_MANIFEST" LEGO_VERSION)"
+  hash="$(
+    installed_manifest_value \
+      "$CORE_TARGET_MANIFEST" "LEGO_${CORE_ARCH_KEY}_SHA256"
+  )"
+  lego_asset="lego_v${version}_linux_${CORE_ARCH}.tar.gz"
+  stage_core_release_artifact "lego ${version}" \
+    "https://github.com/go-acme/lego/releases/download/v${version}/${lego_asset}" \
+    "$hash" lego.tar.gz "$CORE_STAGE_DIR/downloads/lego.tar.gz" \
+    || die "lego 核心暂存失败。"
+
+  install -d -m 0700 \
+    "$CORE_STAGE_DIR/unpack/xray" "$CORE_STAGE_DIR/unpack/caddy" \
+    "$CORE_STAGE_DIR/unpack/lego"
+  unzip -q "$CORE_STAGE_DIR/downloads/xray.zip" \
+    -d "$CORE_STAGE_DIR/unpack/xray" \
+    || die "Xray 核心解压失败。"
+  version="$(installed_manifest_value "$CORE_TARGET_MANIFEST" SING_BOX_VERSION)"
+  tar --no-same-owner -xzf "$CORE_STAGE_DIR/downloads/sing-box.tar.gz" \
+    -C "$CORE_STAGE_DIR/unpack" || die "sing-box 核心解压失败。"
+  tar --no-same-owner -xzf "$CORE_STAGE_DIR/downloads/caddy.tar.gz" \
+    -C "$CORE_STAGE_DIR/unpack/caddy" || die "Caddy 核心解压失败。"
+  tar --no-same-owner -xzf "$CORE_STAGE_DIR/downloads/lego.tar.gz" \
+    -C "$CORE_STAGE_DIR/unpack/lego" || die "lego 核心解压失败。"
+  install -m 0755 "$CORE_STAGE_DIR/unpack/xray/xray" \
+    "$CORE_STAGE_BIN_DIR/xray"
+  install -m 0755 \
+    "$CORE_STAGE_DIR/unpack/sing-box-${version}-linux-${CORE_ARCH}/sing-box" \
+    "$CORE_STAGE_BIN_DIR/sing-box"
+  install -m 0755 "$CORE_STAGE_DIR/downloads/hysteria" \
+    "$CORE_STAGE_BIN_DIR/hysteria"
+  install -m 0755 "$CORE_STAGE_DIR/unpack/caddy/caddy" \
+    "$CORE_STAGE_BIN_DIR/caddy"
+  install -m 0755 "$CORE_STAGE_DIR/unpack/lego/lego" \
+    "$CORE_STAGE_BIN_DIR/lego"
+
+  while IFS='|' read -r prefix binary label; do
+    version_key="${prefix}_VERSION"
+    version="$(
+      installed_manifest_value "$CORE_TARGET_MANIFEST" "$version_key"
+    )"
+    output="$(
+      core_binary_version_output "$binary" "$CORE_STAGE_BIN_DIR/$binary"
+    )" || die "暂存 ${label} 无法执行无副作用版本检查。"
+    core_version_output_matches "$binary" "$version" "$output" \
+      || die "暂存 ${label} 无法确认目标版本 ${version}。"
+  done < <(core_spec_rows)
+  upgrade_test_event core-stage-validated
+  upgrade_test_signal_point after-core-staging
+  ok "五个目标核心已完成固定校验值和版本身份验证。"
+}
+
+target_core_binary() {
+  local binary="$1"
+  if (( CORE_UPGRADE_REQUIRED == 1 )); then
+    printf '%s' "$CORE_STAGE_BIN_DIR/$binary"
+  else
+    printf '%s' "$NEKO_LIBEXEC/$binary"
+  fi
+}
+
+snapshot_core_binaries() {
+  local prefix binary label
+  install -d -m 0700 "$BACKUP_DIR/core"
+  while IFS='|' read -r prefix binary label; do
+    cp -a -- "$NEKO_LIBEXEC/$binary" "$BACKUP_DIR/core/$binary" \
+      || die "无法快照已安装 ${label} 核心。"
+  done < <(core_spec_rows)
+}
+
+snapshot_upgrade_service_states() {
+  local service state state_rc
+  : > "$BACKUP_DIR/services.state"
+  chmod 0600 "$BACKUP_DIR/services.state"
+  for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
+    if systemctl is-active --quiet "${service}.service"; then
+      state=active
+    else
+      state_rc=$?
+      (( state_rc == 3 )) \
+        || die "无法快照 ${service} 的升级前运行状态。"
+      state=inactive
+    fi
+    printf '%s %s\n' "$service" "$state" >> "$BACKUP_DIR/services.state"
   done
+}
+
+restore_core_binaries() {
+  local prefix binary label tmp restore_ok=1
+  while IFS='|' read -r prefix binary label; do
+    if ! upgrade_test_failpoint "rollback-file-${binary}"; then
+      restore_ok=0
+      continue
+    fi
+    if ! tmp="$(mktemp "${NEKO_LIBEXEC}/.${binary}.rollback.XXXXXX")"; then
+      restore_ok=0
+      continue
+    fi
+    rm -f -- "$tmp"
+    if ! cp -a -- "$BACKUP_DIR/core/$binary" "$tmp" \
+      || ! mv -f -- "$tmp" "$NEKO_LIBEXEC/$binary"; then
+      rm -f -- "$tmp"
+      restore_ok=0
+    fi
+  done < <(core_spec_rows)
+  (( restore_ok == 1 ))
+}
+
+restore_upgrade_service_states() {
+  local service state state_rc restore_ok=1
+  [[ -r "$BACKUP_DIR/services.state" ]] || return 1
+  while read -r service state; do
+    case "$state" in
+      active)
+        upgrade_test_failpoint "rollback-service-${service}" \
+          || { restore_ok=0; continue; }
+        systemctl restart "${service}.service" >/dev/null 2>&1 \
+          && systemctl is-active --quiet "${service}.service" \
+          || restore_ok=0
+        ;;
+      inactive)
+        if ! systemctl stop "${service}.service" >/dev/null 2>&1; then
+          restore_ok=0
+        elif systemctl is-active --quiet "${service}.service"; then
+          restore_ok=0
+        else
+          state_rc=$?
+          (( state_rc == 3 )) || restore_ok=0
+        fi
+        ;;
+      *) restore_ok=0 ;;
+    esac
+  done < "$BACKUP_DIR/services.state"
+  (( restore_ok == 1 ))
+}
+
+validate_configs_with_core_dir() {
+  local core_dir="$1" family check_log check_rc
+  runtime_validate_core_configs \
+    --libexec-dir "$core_dir" \
+    --config-dir "$NEKO_ETC/config" \
+    --subscription-dir "$NEKO_ETC/subscriptions" \
+    --network-mode "$NETWORK_MODE" --output stdout-quiet || return
+
+  for family in v4 v6 v4-to-v6 v6-to-v4; do
+    [[ -s "$NEKO_ETC/config/hysteria-${family}.yaml" ]] || continue
+    check_log="$(mktemp "$BACKUP_DIR/hysteria-check.XXXXXX")" || return
+    check_rc=0
+    PATH=/nonexistent "$core_dir/hysteria" server \
+      --disable-update-check \
+      --config "$NEKO_ETC/config/hysteria-${family}.yaml" \
+      >"$check_log" 2>&1 || check_rc=$?
+    if (( check_rc == 0 )) \
+      || ! grep -Fq 'executable file not found' "$check_log"; then
+      rm -f -- "$check_log"
+      return 1
+    fi
+    rm -f -- "$check_log"
+  done
+}
+
+activate_staged_core_set() {
+  local prefix binary label temp
+  (( CORE_UPGRADE_REQUIRED == 1 )) || return 0
+  CORE_ACTIVATION_TEMPS=()
+  while IFS='|' read -r prefix binary label; do
+    temp="$(mktemp "${NEKO_LIBEXEC}/.${binary}.next.XXXXXX")" || return
+    if ! upgrade_test_failpoint "activation-copy-${binary}" \
+      || ! install -m 0700 "$CORE_STAGE_BIN_DIR/$binary" "$temp"; then
+      rm -f -- "$temp"
+      return 1
+    fi
+    chown root:root "$temp" 2>/dev/null || true
+    CORE_ACTIVATION_TEMPS+=("$temp")
+  done < <(core_spec_rows)
+
+  while IFS='|' read -r prefix binary label; do
+    upgrade_test_failpoint "activate-${binary}" || return
+    temp=""
+    for temp in "${CORE_ACTIVATION_TEMPS[@]}"; do
+      [[ "$temp" == "$NEKO_LIBEXEC/.${binary}.next."* ]] || continue
+      chmod 0755 "$temp" || return
+      mv -f -- "$temp" "$NEKO_LIBEXEC/$binary" || return
+      upgrade_test_event "activate-${binary}"
+      break
+    done
+    [[ -n "$temp" ]] || return 1
+  done < <(core_spec_rows)
+  CORE_ACTIVATION_TEMPS=()
+  upgrade_test_signal_point after-core-activation
+  ok "五个目标核心已在明确提交点完成整组激活。"
+}
+
+restart_and_verify_upgrade_services() {
+  local service
+  for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
+    upgrade_test_failpoint "service-${service}" || return
+    systemctl restart "${service}.service" || return
+    systemctl is-active --quiet "${service}.service" || return
+    upgrade_test_event "service-${service}"
+  done
+}
+
+commit_target_versions_manifest() {
+  local tmp
+  tmp="$(mktemp "${NEKO_LIBEXEC}/.versions.env.next.XXXXXX")" || return
+  if ! install -m 0644 "$CORE_TARGET_MANIFEST" "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  chown root:root "$tmp" 2>/dev/null || true
+  if ! upgrade_test_failpoint manifest-commit \
+    || ! mv -f -- "$tmp" "$NEKO_LIBEXEC/versions.env"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  upgrade_test_event manifest-committed
+}
+
+verify_committed_core_set() {
+  local prefix binary label version output
+  while IFS='|' read -r prefix binary label; do
+    version="$(
+      installed_manifest_value \
+        "$NEKO_LIBEXEC/versions.env" "${prefix}_VERSION"
+    )" || return
+    output="$(core_binary_version_output "$binary" "$NEKO_LIBEXEC/$binary")" \
+      || return
+    core_version_output_matches "$binary" "$version" "$output" || return
+  done < <(core_spec_rows)
 }
 
 main() {
   local current_schema current_release certificate_domain service
+  local reality_key_binary target_validation_dir
   local trojan_port trojan_password hy2_start hy2_end port
   local tuic_port ss_port anytls_port vision_port xhttp_port
   local cross_hy2_start="null" cross_hy2_end="null"
@@ -467,7 +866,9 @@ main() {
   if (( EUID != 0 )) && [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     die "请使用 root 运行升级脚本。"
   fi
-  require_commands flock jq openssl find cp systemctl stat env ip awk sed timeout ss
+  require_commands \
+    flock jq openssl find cp systemctl stat env ip awk sed timeout ss \
+    curl sha256sum tar unzip install mktemp mv chmod chown
 
   # Serialize before reading mutable state.  Panel address-family operations,
   # token rotation and certificate renewal use the same lock.
@@ -498,12 +899,10 @@ main() {
     && -r "$SCRIPT_DIR/runtime/hysteria-dual.sh" \
     && -r "$SCRIPT_DIR/runtime/akdns.sh" \
     && -r "$SCRIPT_DIR/systemd/neko-hysteria.service" ]] || die "升级包不完整。"
-  # The current upgrader migrates scripts, state and generated configuration,
-  # but it does not yet provide an atomic core-binary replacement transaction.
-  # Refuse before staging or changing anything if that missing transaction
-  # would be required, or if the installed files already diverge from their
-  # committed manifest.
-  verify_core_upgrade_contract
+  # Confirm the installed set against its own committed manifest before any
+  # download or mutation. A different target is then handled as one complete
+  # five-core transaction rather than rejected or upgraded piecemeal.
+  prepare_core_upgrade_contract
   validate_state_source_contract "$NEKO_STATE" 1 "$NEKO_STATE_SCHEMA" \
     || die "现有 state.json 不符合可升级状态契约；未开始升级。"
   current_schema="$(jq -er '
@@ -677,12 +1076,14 @@ main() {
     fi
   fi
 
+  stage_core_upgrade_set
   if [[ "$anyreality_enabled" != true ]]; then
     reserve_random_port anyreality_port
     if network_mode_has_cross_routes; then
       reserve_random_port cross_anyreality_port
     fi
-    anyreality_pair="$("$NEKO_LIBEXEC/sing-box" generate reality-keypair)" \
+    reality_key_binary="$(target_core_binary sing-box)"
+    anyreality_pair="$("$reality_key_binary" generate reality-keypair)" \
       || die "无法生成 AnyReality REALITY 密钥。"
     anyreality_private="$(awk -F': ' '/^PrivateKey:/ {print $2}' <<< "$anyreality_pair")"
     anyreality_public="$(awk -F': ' '/^PublicKey:/ {print $2}' <<< "$anyreality_pair")"
@@ -731,7 +1132,6 @@ main() {
     assert_network_mode_kernel "$NETWORK_MODE"
     assert_strict_addresses_local "$NETWORK_MODE"
   fi
-
   BACKUP_DIR="$(mktemp -d "${NEKO_UPDATE_TMP_DIR%/}/neko-upgrade-backup.XXXXXX")"
   UPGRADE_FIREWALL_MANAGER="$(
     jq -r '.firewall.manager // "none"' "$NEKO_STATE"
@@ -781,13 +1181,14 @@ main() {
   [[ ! -e "$NEKO_SYSTEMD/neko-hysteria.service" ]] \
     || cp -a -- \
       "$NEKO_SYSTEMD/neko-hysteria.service" "$BACKUP_DIR/neko-hysteria.service"
+  snapshot_core_binaries
+  snapshot_upgrade_service_states
   ROLLBACK_READY=1
 
   install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
   install -m 0644 "$SCRIPT_DIR/lib/state.sh" "$NEKO_LIBEXEC/lib/state.sh"
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
-  install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
   install -m 0755 \
     "$SCRIPT_DIR/runtime/route-diagnostics.sh" "$NEKO_LIBEXEC/route-diagnostics.sh"
@@ -839,7 +1240,15 @@ main() {
     "$NEKO_ETC/subscriptions/shadowrocket.txt" \
     "$NEKO_ETC/subscriptions/shadowrocket.txt.before-ss2022-diagnostic" \
     "$NEKO_ETC/subscriptions/shadowrocket.txt.before-all-protocol-diagnostic"
-  validate_installed_configs
+  target_validation_dir="$NEKO_LIBEXEC"
+  (( CORE_UPGRADE_REQUIRED == 0 )) \
+    || target_validation_dir="$CORE_STAGE_BIN_DIR"
+  upgrade_test_failpoint staged-config-validation \
+    || die "测试注入：暂存核心配置校验失败。"
+  validate_configs_with_core_dir "$target_validation_dir" \
+    || die "目标核心未通过暂存配置与客户端订阅校验。"
+  upgrade_test_event config-validated
+  activate_staged_core_set || die "目标核心整组激活失败。"
   systemctl restart neko-caddy.service
   systemctl is-active --quiet neko-caddy.service
 
@@ -874,18 +1283,23 @@ main() {
   render_all
   validate_installed_configs
   sync_managed_firewall_profile
-  systemctl restart \
-    neko-caddy.service neko-sing-box.service neko-xray.service neko-hysteria.service
+  restart_and_verify_upgrade_services \
+    || die "升级服务重启或健康检查失败。"
   if [[ "${NEKO_UPDATE_TEST_MODE:-0}" != "1" ]]; then
     sleep 2
   fi
   for service in neko-caddy neko-sing-box neko-xray neko-hysteria; do
-    systemctl is-active --quiet "${service}.service" || die "${service} 升级后未保持运行。"
+    systemctl is-active --quiet "${service}.service" \
+      || die "${service} 升级后未保持运行。"
   done
+  commit_target_versions_manifest || die "目标核心版本清单提交失败。"
+  verify_committed_core_set \
+    || die "核心版本清单与实际二进制身份不一致。"
 
   ROLLBACK_READY=0
   cleanup_qrc_stage
   cleanup_nexttrace_stage
+  cleanup_core_stage
   cleanup_backup
   ok "已从 Neko ${current_release} 升级到 ${NEKO_RELEASE}。"
   show_subscription_links
