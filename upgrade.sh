@@ -678,6 +678,15 @@ target_core_binary() {
   fi
 }
 
+set_upgrade_root_owner() {
+  local path="$1"
+  if (( EUID == 0 )); then
+    chown root:root "$path"
+  else
+    [[ "${NEKO_UPDATE_TEST_MODE:-0}" == 1 ]]
+  fi
+}
+
 snapshot_core_binaries() {
   local prefix binary label
   install -d -m 0700 "$BACKUP_DIR/core"
@@ -754,29 +763,37 @@ restore_upgrade_service_states() {
 }
 
 validate_configs_with_core_dir() {
-  local core_dir="$1" family check_log check_rc
+  local core_dir="$1" family check_log check_rc timeout_binary
   runtime_validate_core_configs \
     --libexec-dir "$core_dir" \
     --config-dir "$NEKO_ETC/config" \
     --subscription-dir "$NEKO_ETC/subscriptions" \
     --network-mode "$NETWORK_MODE" --output stdout-quiet || return
 
+  timeout_binary="$(command -v timeout)" || return
   for family in v4 v6 v4-to-v6 v6-to-v4; do
     [[ -s "$NEKO_ETC/config/hysteria-${family}.yaml" ]] || continue
     check_log="$(mktemp "$BACKUP_DIR/hysteria-check.XXXXXX")" || return
     check_rc=0
-    PATH=/nonexistent "$core_dir/hysteria" server \
-      --disable-update-check \
+    PATH=/nonexistent "$timeout_binary" --signal=TERM --kill-after=1s 2s \
+      "$core_dir/hysteria" server --disable-update-check \
       --config "$NEKO_ETC/config/hysteria-${family}.yaml" \
       >"$check_log" 2>&1 || check_rc=$?
-    if (( check_rc == 0 )) \
-      || ! grep -Fq 'executable file not found' "$check_log"; then
+    if (( check_rc == 124 )) \
+      || grep -Fq 'executable file not found' "$check_log" \
+      || { grep -Fq 'invalid config: listen: listen udp' "$check_log" \
+        && grep -Fq 'bind: address already in use' "$check_log"; } \
+      || { [[ "${NEKO_UPDATE_TEST_MODE:-0}" == 1 ]] \
+        && grep -Fq 'invalid config: listen: listen udp' "$check_log" \
+        && grep -Fq 'bind: cannot assign requested address' "$check_log"; }; then
+      rm -f -- "$check_log"
+      continue
+    else
       warn "Hysteria ${family} 暂存配置校验失败（退出码 ${check_rc}）："
       sed -n '1,40p' "$check_log" >&2
       rm -f -- "$check_log"
       return 1
     fi
-    rm -f -- "$check_log"
   done
 }
 
@@ -791,7 +808,10 @@ activate_staged_core_set() {
       rm -f -- "$temp"
       return 1
     fi
-    chown root:root "$temp" 2>/dev/null || true
+    if ! set_upgrade_root_owner "$temp"; then
+      rm -f -- "$temp"
+      return 1
+    fi
     CORE_ACTIVATION_TEMPS+=("$temp")
   done < <(core_spec_rows)
 
@@ -829,7 +849,10 @@ commit_target_versions_manifest() {
     rm -f -- "$tmp"
     return 1
   fi
-  chown root:root "$tmp" 2>/dev/null || true
+  if ! set_upgrade_root_owner "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
   if ! upgrade_test_failpoint manifest-commit \
     || ! mv -f -- "$tmp" "$NEKO_LIBEXEC/versions.env"; then
     rm -f -- "$tmp"

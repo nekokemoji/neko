@@ -14,6 +14,7 @@ printf '[升级事务] 构造五核心固定版本测试归档……\n'
 
 CORE_TEST_TARGET_VERSION="9.9.9-test"
 CORE_TEST_OLD_VERSION="0.0.1-test"
+CORE_TEST_OWNER="$(id -u):$(id -g)"
 CORE_TEST_RELEASE_ROOT="$WORK/core-upgrade-release"
 CORE_TEST_ARCHIVES="$CORE_TEST_RELEASE_ROOT/archives"
 CORE_TEST_TARGET_MANIFEST="$CORE_TEST_RELEASE_ROOT/versions.env"
@@ -257,7 +258,7 @@ for core_tx_binary in xray sing-box hysteria caddy lego; do
   )"
   grep -Fq "$CORE_TEST_TARGET_VERSION" <<< "$core_tx_output"
   [[ "$(stat -c '%a:%u:%g' "$CORE_TX_OK/libexec/$core_tx_binary")" \
-    == '755:0:0' ]]
+    == "755:${CORE_TEST_OWNER}" ]]
 done
 core_tx_expected_events="$(printf '%s\n' \
   core-stage-validated \
@@ -420,7 +421,8 @@ set -e
 core_tx_backups=("$CORE_TX_ROLLBACK_FILE/tmp"/neko-upgrade-backup.*)
 (( ${#core_tx_backups[@]} == 1 )) && [[ -d "${core_tx_backups[0]}" ]]
 core_tx_backup="${core_tx_backups[0]}"
-[[ "$(stat -c '%a:%u:%g' "$core_tx_backup")" == '700:0:0' ]]
+[[ "$(stat -c '%a:%u:%g' "$core_tx_backup")" \
+  == "700:${CORE_TEST_OWNER}" ]]
 [[ "$(core_test_set_manifest "$core_tx_backup/core")" \
   == "$core_tx_old_core_manifest" ]]
 grep -Fq "备份保留在 ${core_tx_backup}" \
@@ -447,7 +449,8 @@ set -e
 core_tx_backups=("$CORE_TX_ROLLBACK_SERVICE/tmp"/neko-upgrade-backup.*)
 (( ${#core_tx_backups[@]} == 1 )) && [[ -d "${core_tx_backups[0]}" ]]
 core_tx_backup="${core_tx_backups[0]}"
-[[ "$(stat -c '%a:%u:%g' "$core_tx_backup")" == '700:0:0' ]]
+[[ "$(stat -c '%a:%u:%g' "$core_tx_backup")" \
+  == "700:${CORE_TEST_OWNER}" ]]
 [[ "$(core_test_set_manifest "$core_tx_backup/core")" \
   == "$core_tx_old_core_manifest" ]]
 grep -Fq "备份保留在 ${core_tx_backup}" \
