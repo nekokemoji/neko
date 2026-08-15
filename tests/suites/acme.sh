@@ -106,6 +106,10 @@ for installed_runtime in \
   panel.sh akdns.sh route-diagnostics.sh renew.sh hysteria-dual.sh; do
   [[ -x "$PAYLOAD_WORK/libexec/$installed_runtime" ]]
 done
+for installed_library in \
+  common.sh state.sh render.sh firewall.sh transaction.sh; do
+  [[ -r "$PAYLOAD_WORK/libexec/lib/$installed_library" ]]
+done
 [[ ! -e "$PAYLOAD_WORK/libexec/diagnostics.sh" ]]
 [[ "$(<"$PAYLOAD_WORK/link.log")" \
   == "-s $PAYLOAD_WORK/libexec/panel.sh /usr/local/bin/neko" ]]

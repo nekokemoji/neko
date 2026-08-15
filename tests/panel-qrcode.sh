@@ -9,7 +9,7 @@ trap 'rm -rf -- "$WORK"' EXIT
 mkdir -p "$WORK/etc" "$WORK/libexec/lib"
 cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/etc/state.json"
 cp -a -- "$ROOT/lib/common.sh" "$ROOT/lib/state.sh" "$ROOT/lib/render.sh" \
-  "$ROOT/lib/firewall.sh" "$WORK/libexec/lib/"
+  "$ROOT/lib/firewall.sh" "$ROOT/lib/transaction.sh" "$WORK/libexec/lib/"
 cp -a -- "$ROOT/runtime/panel.sh" "$WORK/libexec/panel.sh"
 
 cat > "$WORK/fake-qrc" <<'EOF'

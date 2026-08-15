@@ -23,6 +23,8 @@ source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/render.sh"
 # shellcheck source=lib/firewall.sh
 source "$SCRIPT_DIR/lib/firewall.sh"
+# shellcheck source=lib/transaction.sh
+source "$SCRIPT_DIR/lib/transaction.sh"
 
 DOMAIN_INPUT=""
 EMAIL_INPUT=""
@@ -542,6 +544,8 @@ install_payload() {
   install -m 0644 "$SCRIPT_DIR/lib/state.sh" "$NEKO_LIBEXEC/lib/state.sh"
   install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
   install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
+  install -m 0644 \
+    "$SCRIPT_DIR/lib/transaction.sh" "$NEKO_LIBEXEC/lib/transaction.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/akdns.sh" "$NEKO_LIBEXEC/akdns.sh"
   install -m 0755 \
