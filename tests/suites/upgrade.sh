@@ -242,7 +242,7 @@ if find "$UPGRADE_VERSION_MANIFEST_MISMATCH/tmp" -mindepth 1 -print -quit \
   printf '核心清单不同时不应创建升级暂存或备份。\n' >&2
   exit 1
 fi
-grep -Fq '当前升级器尚未实现核心二进制事务，未开始升级' \
+grep -Fq '已安装 Xray 无法确认版本 0.0.0-test；未开始升级' \
   "$UPGRADE_VERSION_MANIFEST_MISMATCH/upgrade.log"
 
 UPGRADE_ACTUAL_CORE_MISMATCH="$WORK/upgrade-actual-core-mismatch"
@@ -665,7 +665,7 @@ subscriptions_before="$(
 )"
 set +e
 run_upgrade "$UPGRADE_FAIL" \
-  NEKO_TEST_SYSTEMCTL_FAIL_PATTERN='neko-sing-box.service' \
+  NEKO_TEST_SYSTEMCTL_FAIL_PATTERN='restart neko-sing-box.service' \
   NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE="$UPGRADE_FAIL/systemctl-failed-once" \
   > "$UPGRADE_FAIL/upgrade.log" 2>&1
 upgrade_rc=$?
@@ -694,5 +694,8 @@ if find "$UPGRADE_FAIL/tmp" -maxdepth 1 \
   printf '升级回滚后没有清理备份目录。\n' >&2
   exit 1
 fi
+
+# shellcheck source=tests/suites/upgrade-core-transaction.sh
+source "$ROOT/tests/suites/upgrade-core-transaction.sh"
 
 printf '全部测试通过。\n'

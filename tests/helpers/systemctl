@@ -6,6 +6,12 @@ if [[ -n "${NEKO_TEST_SYSTEMCTL_LOG:-}" ]]; then
   printf '%s\n' "$*" >> "$NEKO_TEST_SYSTEMCTL_LOG"
 fi
 
+if [[ "${1:-}" == is-active \
+  && -n "${NEKO_TEST_SYSTEMCTL_INACTIVE_PATTERN:-}" \
+  && "$*" == *"$NEKO_TEST_SYSTEMCTL_INACTIVE_PATTERN"* ]]; then
+  exit 3
+fi
+
 if [[ -n "${NEKO_TEST_SYSTEMCTL_FAIL_PATTERN:-}" \
   && "$*" == *"$NEKO_TEST_SYSTEMCTL_FAIL_PATTERN"* ]]; then
   if [[ -z "${NEKO_TEST_SYSTEMCTL_FAIL_ONCE_FILE:-}" \
