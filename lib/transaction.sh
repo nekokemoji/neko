@@ -37,11 +37,13 @@ neko_transaction_parse_owner() {
 
 neko_transaction_assert_owner() {
   local owner="$1"
-  (( NEKO_TRANSACTION_ACTIVE == 1 \
-    && NEKO_TRANSACTION_ROLLING_BACK == 0 )) \
-    && [[ "$NEKO_TRANSACTION_OWNER" == "$owner" ]] \
-    || neko_transaction_fail \
+  if (( NEKO_TRANSACTION_ACTIVE != 1 \
+      || NEKO_TRANSACTION_ROLLING_BACK != 0 )) \
+    || [[ "$NEKO_TRANSACTION_OWNER" != "$owner" ]]; then
+    neko_transaction_fail \
       "${owner} 不是当前活动的顶层事务 owner。"
+    return
+  fi
 }
 
 neko_transaction_begin() {
