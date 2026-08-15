@@ -771,6 +771,8 @@ validate_configs_with_core_dir() {
       >"$check_log" 2>&1 || check_rc=$?
     if (( check_rc == 0 )) \
       || ! grep -Fq 'executable file not found' "$check_log"; then
+      warn "Hysteria ${family} 暂存配置校验失败（退出码 ${check_rc}）："
+      sed -n '1,40p' "$check_log" >&2
       rm -f -- "$check_log"
       return 1
     fi
