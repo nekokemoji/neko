@@ -120,6 +120,7 @@ prepare_upgrade_install() {
   cp -a -- "$ROOT/lib/." "$target/libexec/lib/"
   cp -a -- "$ROOT/versions.env" "$target/libexec/versions.env"
   cp -a -- "$ROOT/runtime/panel.sh" "$ROOT/runtime/renew.sh" "$target/libexec/"
+  cp -a -- "$ROOT/runtime/panel" "$target/libexec/"
   cp -a -- \
     "$ROOT/tests/fixtures/neko-hysteria-legacy.service" \
     "$target/systemd/neko-hysteria.service"
@@ -325,6 +326,10 @@ run_upgrade "$UPGRADE_OK" > "$UPGRADE_OK/upgrade.log"
 [[ -x "$UPGRADE_OK/libexec/hysteria-dual.sh" ]]
 [[ -x "$UPGRADE_OK/libexec/route-diagnostics.sh" ]]
 [[ -x "$UPGRADE_OK/libexec/akdns.sh" ]]
+for panel_module in \
+  system.sh access.sh family.sh third-party.sh akdns-menu.sh route-guide.sh ui.sh; do
+  [[ -r "$UPGRADE_OK/libexec/panel/$panel_module" ]]
+done
 [[ ! -e "$UPGRADE_OK/libexec/diagnostics.sh" ]]
 cmp -s -- "$QRC" "$UPGRADE_OK/libexec/qrc"
 cmp -s -- "$NEXTTRACE" "$UPGRADE_OK/libexec/nexttrace-tiny"
@@ -640,6 +645,11 @@ assert_anyreality_migrated "$UPGRADE_V6"
 
 UPGRADE_FAIL="$WORK/upgrade-fail"
 prepare_upgrade_install "$UPGRADE_FAIL"
+# Model a pre-R8 installation: the façade existed, but no panel module tree did.
+rm -rf -- "$UPGRADE_FAIL/libexec/panel"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "legacy panel\\n"' \
+  > "$UPGRADE_FAIL/libexec/panel.sh"
+chmod 0755 "$UPGRADE_FAIL/libexec/panel.sh"
 printf '%s\n' '<service><port protocol="tcp" port="23000"/></service>' \
   > "$UPGRADE_FAIL/firewall/neko-proxy.xml"
 jq '
@@ -687,6 +697,7 @@ grep -Fxq -- '--reload' "$UPGRADE_FAIL/firewall/commands.log"
 [[ ! -e "$UPGRADE_FAIL/libexec/hysteria-dual.sh" ]]
 [[ ! -e "$UPGRADE_FAIL/libexec/akdns.sh" ]]
 [[ ! -e "$UPGRADE_FAIL/libexec/diagnostics.sh" ]]
+[[ ! -e "$UPGRADE_FAIL/libexec/panel" ]]
 grep -Fq '正在恢复升级前的状态' "$UPGRADE_FAIL/upgrade.log"
 if find "$UPGRADE_FAIL/tmp" -maxdepth 1 \
     \( -name 'neko-upgrade-backup.*' -o -name 'neko-qrc-stage.*' -o -name 'neko-nexttrace-stage.*' \) \

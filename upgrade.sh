@@ -250,6 +250,15 @@ restore_tree() {
   cp -a -- "$backup" "$target"
 }
 
+restore_optional_tree() {
+  local backup="$1" target="$2"
+  if [[ -e "$backup" ]]; then
+    restore_tree "$backup" "$target"
+  else
+    rm -rf -- "$target"
+  fi
+}
+
 restore_optional_file() {
   local backup="$1" target="$2"
   if [[ -e "$backup" ]]; then
@@ -266,6 +275,8 @@ rollback_upgrade() {
   restore_tree "$BACKUP_DIR/etc" "$NEKO_ETC" || rollback_ok=0
   restore_tree "$BACKUP_DIR/lego" "$NEKO_VAR/lego" || rollback_ok=0
   restore_tree "$BACKUP_DIR/lib" "$NEKO_LIBEXEC/lib" || rollback_ok=0
+  restore_optional_tree \
+    "$BACKUP_DIR/panel" "$NEKO_LIBEXEC/panel" || rollback_ok=0
   cp -a -- "$BACKUP_DIR/versions.env" "$NEKO_LIBEXEC/versions.env" || rollback_ok=0
   restore_core_binaries || rollback_ok=0
   cp -a -- "$BACKUP_DIR/panel.sh" "$NEKO_LIBEXEC/panel.sh" || rollback_ok=0
@@ -875,7 +886,8 @@ verify_committed_core_set() {
 }
 
 main() {
-  local current_schema current_release certificate_domain service
+  local current_schema current_release certificate_domain service source_file
+  local library_file panel_module
   local reality_key_binary target_validation_dir
   local trojan_port trojan_password hy2_start hy2_end port
   local tuic_port ss_port anytls_port vision_port xhttp_port
@@ -926,6 +938,21 @@ main() {
     && -r "$SCRIPT_DIR/runtime/hysteria-dual.sh" \
     && -r "$SCRIPT_DIR/runtime/akdns.sh" \
     && -r "$SCRIPT_DIR/systemd/neko-hysteria.service" ]] || die "升级包不完整。"
+  for source_file in \
+    lib/common-platform.sh lib/common-network.sh lib/common-acme.sh \
+    lib/common-credentials.sh lib/common-download.sh lib/common-subscription.sh \
+    lib/render-server.sh lib/render-caddy.sh lib/render-client.sh \
+    lib/render-route-model.sh lib/render-subscriptions.sh \
+    runtime/panel/system.sh runtime/panel/access.sh runtime/panel/family.sh \
+    runtime/panel/third-party.sh runtime/panel/akdns-menu.sh \
+    runtime/panel/route-guide.sh runtime/panel/ui.sh; do
+    [[ -r "$SCRIPT_DIR/$source_file" ]] || die "升级包缺少 ${source_file}。"
+  done
+  if [[ -e "$NEKO_LIBEXEC/panel" ]] \
+    && { [[ ! -d "$NEKO_LIBEXEC/panel" ]] \
+      || [[ -L "$NEKO_LIBEXEC/panel" ]]; }; then
+    die "现有面板模块目录类型异常；未开始升级。"
+  fi
   # Confirm the installed set against its own committed manifest before any
   # download or mutation. A different target is then handled as one complete
   # five-core transaction rather than rejected or upgraded piecemeal.
@@ -1188,6 +1215,8 @@ main() {
   cp -a -- "$NEKO_ETC" "$BACKUP_DIR/etc"
   cp -a -- "$NEKO_VAR/lego" "$BACKUP_DIR/lego"
   cp -a -- "$NEKO_LIBEXEC/lib" "$BACKUP_DIR/lib"
+  [[ ! -e "$NEKO_LIBEXEC/panel" ]] \
+    || cp -a -- "$NEKO_LIBEXEC/panel" "$BACKUP_DIR/panel"
   cp -a -- "$NEKO_LIBEXEC/versions.env" "$BACKUP_DIR/versions.env"
   cp -a -- "$NEKO_LIBEXEC/panel.sh" "$BACKUP_DIR/panel.sh"
   cp -a -- "$NEKO_LIBEXEC/renew.sh" "$BACKUP_DIR/renew.sh"
@@ -1212,13 +1241,21 @@ main() {
   snapshot_upgrade_service_states
   ROLLBACK_READY=1
 
-  install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
-  install -m 0644 "$SCRIPT_DIR/lib/state.sh" "$NEKO_LIBEXEC/lib/state.sh"
-  install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
-  install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
-  install -m 0644 \
-    "$SCRIPT_DIR/lib/transaction.sh" "$NEKO_LIBEXEC/lib/transaction.sh"
+  install -d -m 0755 "$NEKO_LIBEXEC/panel"
+  for library_file in \
+    common.sh common-platform.sh common-network.sh common-acme.sh \
+    common-credentials.sh common-download.sh common-subscription.sh \
+    state.sh render.sh render-server.sh render-caddy.sh render-client.sh \
+    render-route-model.sh render-subscriptions.sh firewall.sh transaction.sh; do
+    install -m 0644 \
+      "$SCRIPT_DIR/lib/$library_file" "$NEKO_LIBEXEC/lib/$library_file"
+  done
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
+  for panel_module in \
+    system.sh access.sh family.sh third-party.sh akdns-menu.sh route-guide.sh ui.sh; do
+    install -m 0644 \
+      "$SCRIPT_DIR/runtime/panel/$panel_module" "$NEKO_LIBEXEC/panel/$panel_module"
+  done
   install -m 0755 \
     "$SCRIPT_DIR/runtime/route-diagnostics.sh" "$NEKO_LIBEXEC/route-diagnostics.sh"
   install -m 0755 "$SCRIPT_DIR/runtime/renew.sh" "$NEKO_LIBEXEC/renew.sh"

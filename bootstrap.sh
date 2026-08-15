@@ -113,8 +113,15 @@ tar --no-same-owner -xzf "$WORKDIR/neko.tar.gz" \
 
 for required_file in \
   install.sh versions.env \
-  lib/common.sh lib/state.sh lib/render.sh lib/firewall.sh lib/transaction.sh \
-  runtime/panel.sh runtime/akdns.sh runtime/route-diagnostics.sh \
+  lib/common.sh lib/common-platform.sh lib/common-network.sh lib/common-acme.sh \
+  lib/common-credentials.sh lib/common-download.sh lib/common-subscription.sh \
+  lib/state.sh lib/render.sh lib/render-server.sh lib/render-caddy.sh \
+  lib/render-client.sh lib/render-route-model.sh lib/render-subscriptions.sh \
+  lib/firewall.sh lib/transaction.sh \
+  runtime/panel.sh runtime/panel/system.sh runtime/panel/access.sh \
+  runtime/panel/family.sh runtime/panel/third-party.sh \
+  runtime/panel/akdns-menu.sh runtime/panel/route-guide.sh runtime/panel/ui.sh \
+  runtime/akdns.sh runtime/route-diagnostics.sh \
   runtime/renew.sh runtime/hysteria-dual.sh \
   systemd/neko-caddy.service systemd/neko-sing-box.service \
   systemd/neko-xray.service systemd/neko-hysteria.service \
@@ -128,10 +135,29 @@ grep -Fq 'NEKO_RELEASE="1.13.1"' "$WORKDIR/source/versions.env" \
 if [[ "${NEKO_BOOTSTRAP_TEST_MODE:-0}" == 1 ]]; then
   bash -n "$WORKDIR/source/install.sh" \
     "$WORKDIR/source/lib/common.sh" \
+    "$WORKDIR/source/lib/common-platform.sh" \
+    "$WORKDIR/source/lib/common-network.sh" \
+    "$WORKDIR/source/lib/common-acme.sh" \
+    "$WORKDIR/source/lib/common-credentials.sh" \
+    "$WORKDIR/source/lib/common-download.sh" \
+    "$WORKDIR/source/lib/common-subscription.sh" \
     "$WORKDIR/source/lib/state.sh" \
     "$WORKDIR/source/lib/render.sh" \
+    "$WORKDIR/source/lib/render-server.sh" \
+    "$WORKDIR/source/lib/render-caddy.sh" \
+    "$WORKDIR/source/lib/render-client.sh" \
+    "$WORKDIR/source/lib/render-route-model.sh" \
+    "$WORKDIR/source/lib/render-subscriptions.sh" \
     "$WORKDIR/source/lib/firewall.sh" \
-    "$WORKDIR/source/lib/transaction.sh"
+    "$WORKDIR/source/lib/transaction.sh" \
+    "$WORKDIR/source/runtime/panel.sh" \
+    "$WORKDIR/source/runtime/panel/system.sh" \
+    "$WORKDIR/source/runtime/panel/access.sh" \
+    "$WORKDIR/source/runtime/panel/family.sh" \
+    "$WORKDIR/source/runtime/panel/third-party.sh" \
+    "$WORKDIR/source/runtime/panel/akdns-menu.sh" \
+    "$WORKDIR/source/runtime/panel/route-guide.sh" \
+    "$WORKDIR/source/runtime/panel/ui.sh"
   printf '[测试] Bootstrap 已成功校验固定安装包。\n'
   exit 0
 fi

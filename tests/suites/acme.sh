@@ -107,8 +107,15 @@ for installed_runtime in \
   [[ -x "$PAYLOAD_WORK/libexec/$installed_runtime" ]]
 done
 for installed_library in \
-  common.sh state.sh render.sh firewall.sh transaction.sh; do
+  common.sh common-platform.sh common-network.sh common-acme.sh \
+  common-credentials.sh common-download.sh common-subscription.sh \
+  state.sh render.sh render-server.sh render-caddy.sh render-client.sh \
+  render-route-model.sh render-subscriptions.sh firewall.sh transaction.sh; do
   [[ -r "$PAYLOAD_WORK/libexec/lib/$installed_library" ]]
+done
+for installed_panel_module in \
+  system.sh access.sh family.sh third-party.sh akdns-menu.sh route-guide.sh ui.sh; do
+  [[ -r "$PAYLOAD_WORK/libexec/panel/$installed_panel_module" ]]
 done
 [[ ! -e "$PAYLOAD_WORK/libexec/diagnostics.sh" ]]
 [[ "$(<"$PAYLOAD_WORK/link.log")" \

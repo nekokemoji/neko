@@ -6,11 +6,11 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-panel-qr.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
-mkdir -p "$WORK/etc" "$WORK/libexec/lib"
+mkdir -p "$WORK/etc" "$WORK/libexec/lib" "$WORK/libexec/panel"
 cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/etc/state.json"
-cp -a -- "$ROOT/lib/common.sh" "$ROOT/lib/state.sh" "$ROOT/lib/render.sh" \
-  "$ROOT/lib/firewall.sh" "$ROOT/lib/transaction.sh" "$WORK/libexec/lib/"
+cp -a -- "$ROOT/lib/"*.sh "$WORK/libexec/lib/"
 cp -a -- "$ROOT/runtime/panel.sh" "$WORK/libexec/panel.sh"
+cp -a -- "$ROOT/runtime/panel/"*.sh "$WORK/libexec/panel/"
 
 cat > "$WORK/fake-qrc" <<'EOF'
 #!/usr/bin/env bash

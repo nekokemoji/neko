@@ -496,7 +496,8 @@ create_service_user_and_dirs() {
   # setgid makes lego's root-created HTTP-01 challenge files inherit the
   # service group, so the unprivileged Caddy process can serve them.
   install -d -m 2750 -o root -g "$NEKO_USER" "$NEKO_VAR/acme"
-  install -d -m 0755 -o root -g root "$NEKO_LIBEXEC" "$NEKO_LIBEXEC/lib"
+  install -d -m 0755 -o root -g root \
+    "$NEKO_LIBEXEC" "$NEKO_LIBEXEC/lib" "$NEKO_LIBEXEC/panel"
   install -d -m 0750 -o "$NEKO_USER" -g "$NEKO_USER" \
     "$NEKO_VAR/caddy" "$NEKO_VAR/caddy/data" "$NEKO_VAR/caddy/config"
 
@@ -515,7 +516,8 @@ create_service_user_and_dirs() {
 }
 
 install_payload() {
-  local qrc_tmp="" nexttrace_tmp="" unit
+  local qrc_tmp="" nexttrace_tmp="" unit library_file panel_module
+  install -d -m 0755 "$NEKO_LIBEXEC/lib" "$NEKO_LIBEXEC/panel"
   install -m 0755 "$WORKDIR/bin/xray" "$NEKO_LIBEXEC/xray"
   install -m 0755 "$WORKDIR/bin/sing-box" "$NEKO_LIBEXEC/sing-box"
   install -m 0755 "$WORKDIR/bin/hysteria" "$NEKO_LIBEXEC/hysteria"
@@ -540,13 +542,20 @@ install_payload() {
     fi
   fi
   install -m 0644 "$SCRIPT_DIR/versions.env" "$NEKO_LIBEXEC/versions.env"
-  install -m 0644 "$SCRIPT_DIR/lib/common.sh" "$NEKO_LIBEXEC/lib/common.sh"
-  install -m 0644 "$SCRIPT_DIR/lib/state.sh" "$NEKO_LIBEXEC/lib/state.sh"
-  install -m 0644 "$SCRIPT_DIR/lib/render.sh" "$NEKO_LIBEXEC/lib/render.sh"
-  install -m 0644 "$SCRIPT_DIR/lib/firewall.sh" "$NEKO_LIBEXEC/lib/firewall.sh"
-  install -m 0644 \
-    "$SCRIPT_DIR/lib/transaction.sh" "$NEKO_LIBEXEC/lib/transaction.sh"
+  for library_file in \
+    common.sh common-platform.sh common-network.sh common-acme.sh \
+    common-credentials.sh common-download.sh common-subscription.sh \
+    state.sh render.sh render-server.sh render-caddy.sh render-client.sh \
+    render-route-model.sh render-subscriptions.sh firewall.sh transaction.sh; do
+    install -m 0644 \
+      "$SCRIPT_DIR/lib/$library_file" "$NEKO_LIBEXEC/lib/$library_file"
+  done
   install -m 0755 "$SCRIPT_DIR/runtime/panel.sh" "$NEKO_LIBEXEC/panel.sh"
+  for panel_module in \
+    system.sh access.sh family.sh third-party.sh akdns-menu.sh route-guide.sh ui.sh; do
+    install -m 0644 \
+      "$SCRIPT_DIR/runtime/panel/$panel_module" "$NEKO_LIBEXEC/panel/$panel_module"
+  done
   install -m 0755 "$SCRIPT_DIR/runtime/akdns.sh" "$NEKO_LIBEXEC/akdns.sh"
   install -m 0755 \
     "$SCRIPT_DIR/runtime/route-diagnostics.sh" "$NEKO_LIBEXEC/route-diagnostics.sh"
