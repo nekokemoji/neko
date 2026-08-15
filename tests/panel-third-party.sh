@@ -11,9 +11,7 @@ source "$ROOT/versions.env"
 
 mkdir -p "$WORK/bin" "$WORK/tmp" "$WORK/libexec/lib"
 cp -a -- \
-  "$ROOT/lib/common.sh" "$ROOT/lib/state.sh" \
-  "$ROOT/lib/render.sh" "$ROOT/lib/firewall.sh" "$ROOT/lib/transaction.sh" \
-  "$WORK/libexec/lib/"
+  "$ROOT/lib/"*.sh "$WORK/libexec/lib/"
 cat > "$WORK/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail

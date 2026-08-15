@@ -20,7 +20,14 @@ fail_contract() {
 
 for required_file in \
   versions.env bootstrap.sh README.md TESTING.md \
-  lib/common.sh lib/state.sh lib/transaction.sh \
+  lib/common.sh lib/common-platform.sh lib/common-network.sh lib/common-acme.sh \
+  lib/common-credentials.sh lib/common-download.sh lib/common-subscription.sh \
+  lib/state.sh lib/render.sh lib/render-server.sh lib/render-caddy.sh \
+  lib/render-client.sh lib/render-route-model.sh lib/render-subscriptions.sh \
+  lib/firewall.sh lib/transaction.sh \
+  runtime/panel.sh runtime/panel/system.sh runtime/panel/access.sh \
+  runtime/panel/family.sh runtime/panel/third-party.sh \
+  runtime/panel/akdns-menu.sh runtime/panel/route-guide.sh runtime/panel/ui.sh \
   tests/fixtures/state.json tests/run.sh; do
   [[ -s "$ROOT/$required_file" ]] \
     || fail_contract "缺少 ${required_file}"

@@ -27,9 +27,9 @@ setup_case() {
   printf 'hosts: files resolve [!UNAVAIL=return] dns\n' \
     > "$target/system/etc/nsswitch.conf"
   cp -a -- "$ROOT/versions.env" "$target/neko/libexec/versions.env"
-  cp -a -- "$ROOT/lib/common.sh" "$target/neko/libexec/lib/common.sh"
-  cp -a -- "$ROOT/lib/state.sh" "$target/neko/libexec/lib/state.sh"
-  cp -a -- "$ROOT/lib/render.sh" "$target/neko/libexec/lib/render.sh"
+  cp -a -- \
+    "$ROOT/lib/common"*.sh "$ROOT/lib/render"*.sh "$ROOT/lib/state.sh" \
+    "$target/neko/libexec/lib/"
   printf 'public\n' > "$target/neko/etc/subscriptions/dns-mode"
   for service in \
     systemd-resolved.service \

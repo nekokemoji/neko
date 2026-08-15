@@ -7,13 +7,16 @@ TOOLS="${NEKO_TEST_TOOLS_DIR:-$ROOT/tests/.tools}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/neko-release-contract.XXXXXX")"
 trap 'rm -rf -- "$WORK"' EXIT
 
-mkdir -p "$WORK/root/lib" "$WORK/root/tests/fixtures" "$WORK/root/tests/suites"
+mkdir -p \
+  "$WORK/root/lib" "$WORK/root/runtime/panel" \
+  "$WORK/root/tests/fixtures" "$WORK/root/tests/suites"
 cp -a -- \
   "$ROOT/versions.env" "$ROOT/bootstrap.sh" "$ROOT/README.md" \
   "$ROOT/TESTING.md" "$WORK/root/"
 cp -a -- \
-  "$ROOT/lib/common.sh" "$ROOT/lib/state.sh" "$ROOT/lib/transaction.sh" \
-  "$WORK/root/lib/"
+  "$ROOT/lib/"*.sh "$WORK/root/lib/"
+cp -a -- "$ROOT/runtime/panel.sh" "$WORK/root/runtime/panel.sh"
+cp -a -- "$ROOT/runtime/panel/"*.sh "$WORK/root/runtime/panel/"
 cp -a -- "$ROOT/tests/fixtures/state.json" "$WORK/root/tests/fixtures/"
 cp -a -- "$ROOT/tests/run.sh" "$WORK/root/tests/"
 cp -a -- "$ROOT/tests/suites/." "$WORK/root/tests/suites/"
